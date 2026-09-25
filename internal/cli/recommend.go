@@ -62,7 +62,7 @@ type recommendJSONRecommendation struct {
 type recommendJSONScope struct {
 	Path            string                        `json:"path"`
 	Status          recommend.Status              `json:"status"`
-	Technologies    []stack.Technology             `json:"technologies"`
+	Technologies    []stack.Technology            `json:"technologies"`
 	Evidence        []stack.Evidence              `json:"evidence"`
 	Diagnostics     []stack.Diagnostic            `json:"diagnostics"`
 	Recommendations []recommendJSONRecommendation `json:"recommendations"`
@@ -70,9 +70,9 @@ type recommendJSONScope struct {
 }
 
 type recommendJSONResult struct {
-	Project       string               `json:"project"`
-	ScanComplete  bool                 `json:"scanComplete"`
-	Scopes        []recommendJSONScope `json:"scopes"`
+	Project      string               `json:"project"`
+	ScanComplete bool                 `json:"scanComplete"`
+	Scopes       []recommendJSONScope `json:"scopes"`
 }
 
 type recommendJSONError struct {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type Capability string
@@ -31,6 +32,22 @@ type ConfigReference struct {
 	Name string `json:"name" yaml:"name"`
 }
 
+// Redacted returns an output-safe reference. The kind remains useful for
+// diagnostics, while the external lookup name is omitted from evidence.
+func (r ConfigReference) Redacted() ConfigReference {
+	r.Name = "[redacted]"
+	return r
+}
+
+func (r ConfigReference) MarshalJSON() ([]byte, error) {
+	type plain ConfigReference
+	return json.Marshal(plain(r.Redacted()))
+}
+
+func (r ConfigReference) MarshalYAML() (any, error) {
+	return map[string]string{"kind": r.Kind, "name": "[redacted]"}, nil
+}
+
 type ProviderConfig struct {
 	Version       string          `json:"version" yaml:"version"`
 	ID            string          `json:"id" yaml:"id"`
@@ -44,8 +61,11 @@ func (c ProviderConfig) Validate() error {
 	if c.Version != "v1" {
 		return fmt.Errorf("unsupported memory provider configuration version %q", c.Version)
 	}
-	if strings.TrimSpace(c.ID) == "" || strings.TrimSpace(c.Provider) == "" {
-		return fmt.Errorf("memory provider id and provider are required")
+	if err := validateToken("memory provider id", c.ID); err != nil {
+		return err
+	}
+	if err := validateToken("memory provider", c.Provider); err != nil {
+		return err
 	}
 	if err := c.Configuration.validate(); err != nil {
 		return err
@@ -58,10 +78,16 @@ func (c ProviderConfig) Validate() error {
 			return fmt.Errorf("unsupported memory scope %q", scope)
 		}
 	}
+	if duplicates := duplicateScopes(c.Scopes); len(duplicates) > 0 {
+		return fmt.Errorf("duplicate memory scope %q", duplicates[0])
+	}
 	for _, capability := range c.Capabilities {
 		if capability != CapabilityRead && capability != CapabilityWrite && capability != CapabilitySearch {
 			return fmt.Errorf("unsupported memory capability %q", capability)
 		}
+	}
+	if duplicates := duplicateCapabilities(c.Capabilities); len(duplicates) > 0 {
+		return fmt.Errorf("duplicate memory capability %q", duplicates[0])
 	}
 	return nil
 }
@@ -72,10 +98,61 @@ func (r ConfigReference) validate() error {
 	default:
 		return fmt.Errorf("unsupported memory configuration reference kind %q", r.Kind)
 	}
-	if strings.TrimSpace(r.Name) == "" || strings.ContainsAny(r.Name, "=\n\r") {
+	if strings.TrimSpace(r.Name) == "" || strings.ContainsAny(r.Name, "\x00\n\r") {
 		return fmt.Errorf("memory configuration reference must name an external value, not contain it")
 	}
+	if r.Kind == "env" && !validEnvironmentName(r.Name) {
+		return fmt.Errorf("memory environment reference must be a valid environment variable name")
+	}
 	return nil
+}
+
+func validateToken(label, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("%s must not contain whitespace or control characters", label)
+		}
+	}
+	return nil
+}
+
+func validEnvironmentName(value string) bool {
+	for i, r := range value {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_' || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return value != ""
+}
+
+func duplicateScopes(values []Scope) []Scope {
+	seen := make(map[Scope]struct{}, len(values))
+	var duplicates []Scope
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			duplicates = append(duplicates, value)
+			continue
+		}
+		seen[value] = struct{}{}
+	}
+	return duplicates
+}
+
+func duplicateCapabilities(values []Capability) []Capability {
+	seen := make(map[Capability]struct{}, len(values))
+	var duplicates []Capability
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			duplicates = append(duplicates, value)
+			continue
+		}
+		seen[value] = struct{}{}
+	}
+	return duplicates
 }
 
 // Redacted returns an output-safe view. Reference names are intentionally
@@ -124,6 +201,8 @@ type AgentAccess struct {
 // assumes that a configured provider is reachable or available.
 type ProviderStatus struct {
 	Available    bool         `json:"available" yaml:"available"`
+	Unsupported  bool         `json:"unsupported,omitempty" yaml:"unsupported,omitempty"`
+	Reason       string       `json:"reason,omitempty" yaml:"reason,omitempty"`
 	Capabilities []Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	Scopes       []Scope      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }

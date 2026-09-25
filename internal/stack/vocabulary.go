@@ -6,11 +6,11 @@ type Category string
 
 const (
 	CategoryLanguage  Category = "language"
-	CategoryFramework  Category = "framework"
-	CategoryBuildTool  Category = "build-tool"
-	CategoryDatabase   Category = "database"
-	CategoryContainer  Category = "container"
-	CategoryAgent      Category = "agent"
+	CategoryFramework Category = "framework"
+	CategoryBuildTool Category = "build-tool"
+	CategoryDatabase  Category = "database"
+	CategoryContainer Category = "container"
+	CategoryAgent     Category = "agent"
 )
 
 // Technology is one entry in the normalized technology vocabulary. ID is the

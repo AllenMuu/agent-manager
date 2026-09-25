@@ -8,13 +8,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
+
+	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
 var (
 	ErrNotConfirmed     = fmt.Errorf("operation was not confirmed")
 	ErrUnexpectedState  = fmt.Errorf("operation paths changed since confirmation")
 	ErrJournalCommitted = fmt.Errorf("operation journal was published but post-commit sync failed")
+	ErrUnsafePath       = fmt.Errorf("refusing unsafe operation path")
 )
 
 // Snapshot records a path's state in an operation backup directory.
@@ -34,11 +38,21 @@ type Entry struct {
 	After        []Snapshot `json:"after"`
 }
 
+// RecordMetadata describes the versioned resource envelope for a journal
+// record. It is optional so existing Skill callers retain their source API.
+type RecordMetadata struct {
+	Version      string
+	ResourceKind string
+}
+
 // Journal persists reversible operation entries at Path.
 type Journal struct {
 	Path string
 	// BeforeRestorePublish is an optional fault-injection seam for restore tests.
 	BeforeRestorePublish func(path string) error
+	// BeforeJournalDirectorySync is an optional fault-injection seam that runs
+	// after the journal file is published, modeling a post-commit sync error.
+	BeforeJournalDirectorySync func() error
 }
 
 // New creates a journal that persists entries at path.
@@ -72,12 +86,27 @@ func (j *Journal) Capture(paths []string) ([]Snapshot, error) {
 }
 
 // Record appends a confirmed operation with both pre- and post-operation state.
-func (j *Journal) Record(operation string, before, after []Snapshot) error {
+func (j *Journal) Record(operation string, before, after []Snapshot, metadata ...RecordMetadata) error {
+	plan := Plan{Operation: operation}
+	if len(metadata) > 0 {
+		plan.Version = metadata[0].Version
+		plan.ResourceKind = metadata[0].ResourceKind
+	}
+	return j.RecordPlan(plan, before, after)
+}
+
+// RecordPlan appends a confirmed operation using the plan's versioned
+// resource metadata. Empty metadata retains the legacy Skill defaults.
+func (j *Journal) RecordPlan(plan Plan, before, after []Snapshot) error {
+	version, kind := normalizeMetadata(plan.Version, plan.ResourceKind)
+	if err := validateMetadata(version, kind); err != nil {
+		return err
+	}
 	entries, err := j.entries()
 	if err != nil {
 		return err
 	}
-	entries = append(entries, Entry{Version: "v1", ResourceKind: "skill", Operation: operation, At: time.Now().UTC(), Before: before, After: after})
+	entries = append(entries, Entry{Version: version, ResourceKind: kind, Operation: plan.Operation, At: time.Now().UTC(), Before: before, After: after})
 	return j.write(entries)
 }
 
@@ -142,7 +171,7 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 		return fmt.Errorf("operation journal is empty")
 	}
 	entry := entries[len(entries)-1]
-	plan := Plan{Operation: "undo " + entry.Operation}
+	plan := Plan{Version: entry.Version, ResourceKind: entry.ResourceKind, Operation: "undo " + entry.Operation}
 	for _, snapshot := range entry.Before {
 		plan.Changes = append(plan.Changes, Change{Path: snapshot.Path, Action: "restore pre-operation state"})
 	}
@@ -170,28 +199,74 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 	return nil
 }
 
+func normalizeMetadata(version, kind string) (string, string) {
+	if version == "" {
+		version = "v1"
+	}
+	if kind == "" {
+		kind = "skill"
+	}
+	return version, kind
+}
+
+func validateMetadata(version, kind string) error {
+	if version != "v1" {
+		return fmt.Errorf("unsupported operation journal version %q", version)
+	}
+	switch resource.Kind(kind) {
+	case resource.Skill, resource.SubAgent, resource.Memory:
+		return nil
+	default:
+		return fmt.Errorf("unsupported operation journal resource kind %q", kind)
+	}
+}
+
 // Restore replaces the supplied explicit paths with their captured state.
 // It is used to roll back an incomplete staged operation.
 func (j *Journal) Restore(snapshots []Snapshot) error {
-	// Validate every backup before touching any current path.
-	for _, snapshot := range snapshots {
+	// Validate each snapshot independently before touching any current path. An
+	// unsafe parent must remain fail-closed, but must not prevent unrelated
+	// snapshots from being restored (for example, a transaction whose second
+	// project parent was swapped after its first publication).
+	parentIdentities := make([][]restoreParentIdentity, len(snapshots))
+	eligible := make([]bool, len(snapshots))
+	var preflightErrs []error
+	for i, snapshot := range snapshots {
+		identities, err := captureRestoreParentIdentities(snapshot.Path)
+		if err != nil {
+			preflightErrs = append(preflightErrs, fmt.Errorf("skip restore %s: %w", snapshot.Path, err))
+			continue
+		}
+		parentIdentities[i] = identities
+		eligible[i] = true
+	}
+	for i, snapshot := range snapshots {
+		if !eligible[i] {
+			continue
+		}
 		if !snapshot.Exists {
 			continue
 		}
 		if _, err := os.Lstat(snapshot.Backup); err != nil {
-			return fmt.Errorf("preflight backup %s: %w", snapshot.Backup, err)
+			preflightErrs = append(preflightErrs, fmt.Errorf("skip restore %s: preflight backup %s: %w", snapshot.Path, snapshot.Backup, err))
+			eligible[i] = false
 		}
 	}
 	// Build every replacement before removing an existing target.
 	type stage struct{ root, candidate, previous string }
 	staged := make([]stage, len(snapshots))
 	for i, snapshot := range snapshots {
-		root, err := os.MkdirTemp(filepath.Dir(snapshot.Path), ".skill-manager-restore-")
+		if !eligible[i] {
+			continue
+		}
+		// Keep recovery staging beside the journal, not beneath the target
+		// parent. If a target parent is replaced after staging, cleanup must not
+		// follow that replacement into an external directory.
+		root, err := os.MkdirTemp(filepath.Dir(j.Path), ".skill-manager-restore-")
 		if err != nil {
 			return fmt.Errorf("stage restore %s: %w", snapshot.Path, err)
 		}
 		staged[i] = stage{root: root, candidate: filepath.Join(root, "candidate"), previous: filepath.Join(root, "previous")}
-		defer os.RemoveAll(root)
 		if !snapshot.Exists {
 			continue
 		}
@@ -201,18 +276,54 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 	}
 	moved := make([]bool, len(snapshots))
 	published := make([]bool, len(snapshots))
+	removed := make([]bool, len(snapshots))
+	retained := make([]bool, len(snapshots))
+	defer func() {
+		for i := range staged {
+			if staged[i].root == "" || retained[i] {
+				continue
+			}
+			_ = os.RemoveAll(staged[i].root)
+		}
+	}()
 	rollback := func() error {
 		var errs []error
 		for i := len(snapshots) - 1; i >= 0; i-- {
-			if !moved[i] && !published[i] {
+			if !moved[i] && !published[i] && !removed[i] {
+				continue
+			}
+			if err := restoreParentsMatch(parentIdentities[i]); err != nil {
+				retained[i] = true
+				errs = append(errs, fmt.Errorf("preserved restore staging at %s: %w", staged[i].root, err))
 				continue
 			}
 			if published[i] {
-				if err := os.RemoveAll(snapshots[i].Path); err != nil {
-					errs = append(errs, err)
+				owned, matchErr := pathsEqual(snapshots[i].Path, snapshots[i].Backup)
+				if matchErr != nil {
+					if !os.IsNotExist(matchErr) {
+						errs = append(errs, fmt.Errorf("preserve unexpected restore target %s: %w", snapshots[i].Path, matchErr))
+					}
+				} else if owned {
+					if err := os.Remove(snapshots[i].Path); err != nil && !os.IsNotExist(err) {
+						errs = append(errs, err)
+					}
+				} else {
+					errs = append(errs, fmt.Errorf("preserved unexpected restore target %s", snapshots[i].Path))
 				}
 			}
-			if _, err := os.Lstat(staged[i].previous); err == nil {
+			if removed[i] {
+				if _, err := os.Lstat(snapshots[i].Path); err != nil && !os.IsNotExist(err) {
+					errs = append(errs, err)
+				} else if err == nil {
+					errs = append(errs, fmt.Errorf("preserved unexpected late restore target %s", snapshots[i].Path))
+				}
+			}
+			if _, err := os.Lstat(snapshots[i].Path); err == nil {
+				retained[i] = true
+				errs = append(errs, fmt.Errorf("preserved restore staging at %s: unexpected late restore target %s", staged[i].root, snapshots[i].Path))
+			} else if !os.IsNotExist(err) {
+				errs = append(errs, err)
+			} else if _, err := os.Lstat(staged[i].previous); err == nil {
 				if err := os.Rename(staged[i].previous, snapshots[i].Path); err != nil {
 					errs = append(errs, err)
 				}
@@ -221,6 +332,13 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 		return errors.Join(errs...)
 	}
 	for i, snapshot := range snapshots {
+		if !eligible[i] {
+			continue
+		}
+		if err := restoreParentsMatch(parentIdentities[i]); err != nil {
+			retained[i] = true
+			return errors.Join(err, rollback())
+		}
 		if _, err := os.Lstat(snapshot.Path); err == nil {
 			if err := os.Rename(snapshot.Path, staged[i].previous); err != nil {
 				return errors.Join(fmt.Errorf("stage current %s: %w", snapshot.Path, err), rollback())
@@ -234,12 +352,85 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 				return errors.Join(err, rollback())
 			}
 		}
+		if err := restoreParentsMatch(parentIdentities[i]); err != nil {
+			retained[i] = true
+			return errors.Join(err, rollback())
+		}
 		if snapshot.Exists {
 			if err := os.Rename(staged[i].candidate, snapshot.Path); err != nil {
 				return errors.Join(fmt.Errorf("publish restore %s: %w", snapshot.Path, err), rollback())
 			}
+			published[i] = true
+		} else {
+			removed[i] = true
 		}
-		published[i] = true
+	}
+	return errors.Join(preflightErrs...)
+}
+
+// restoreParentIdentity tracks every ancestor so Restore can refuse a replaced
+// parent rather than risking a path-based rename into an external tree.
+type restoreParentIdentity struct {
+	path string
+	info os.FileInfo
+}
+
+func captureRestoreParentIdentities(path string) ([]restoreParentIdentity, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve restore path: %v", ErrUnsafePath, err)
+	}
+	parent := filepath.Dir(abs)
+	if info, inspectErr := os.Lstat(parent); inspectErr != nil {
+		return nil, fmt.Errorf("%w: inspect restore parent %s: %v", ErrUnsafePath, parent, inspectErr)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: restore parent %s is a symlink", ErrUnsafePath, parent)
+	}
+	identities := make([]restoreParentIdentity, 0, 4)
+	for {
+		rawInfo, inspectErr := os.Lstat(parent)
+		if inspectErr != nil {
+			return nil, fmt.Errorf("%w: inspect restore parent %s: %v", ErrUnsafePath, parent, inspectErr)
+		}
+		if rawInfo.Mode()&os.ModeSymlink != 0 && !trustedSystemParentSymlink(parent) {
+			return nil, fmt.Errorf("%w: restore ancestor %s is a symlink", ErrUnsafePath, parent)
+		}
+		info, inspectErr := os.Stat(parent)
+		if inspectErr != nil {
+			return nil, fmt.Errorf("%w: inspect restore parent %s: %v", ErrUnsafePath, parent, inspectErr)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%w: restore parent %s is not a directory", ErrUnsafePath, parent)
+		}
+		identities = append(identities, restoreParentIdentity{path: parent, info: info})
+		next := filepath.Dir(parent)
+		if next == parent {
+			return identities, nil
+		}
+		parent = next
+	}
+}
+
+func trustedSystemParentSymlink(path string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return (path == "/var" && resolved == "/private/var") || (path == "/tmp" && resolved == "/private/tmp")
+}
+
+func restoreParentsMatch(identities []restoreParentIdentity) error {
+	for _, expected := range identities {
+		current, err := os.Stat(expected.path)
+		if err != nil {
+			return fmt.Errorf("%w: restore parent %s changed: %v", ErrUnsafePath, expected.path, err)
+		}
+		if !os.SameFile(expected.info, current) {
+			return fmt.Errorf("%w: restore parent %s changed", ErrUnsafePath, expected.path)
+		}
 	}
 	return nil
 }
@@ -263,8 +454,8 @@ func (j *Journal) entries() ([]Entry, error) {
 		if entries[i].ResourceKind == "" {
 			entries[i].ResourceKind = "skill"
 		}
-		if entries[i].Version != "v1" {
-			return nil, fmt.Errorf("unsupported operation journal version %q", entries[i].Version)
+		if err := validateMetadata(entries[i].Version, entries[i].ResourceKind); err != nil {
+			return nil, err
 		}
 	}
 	return entries, nil
@@ -298,11 +489,18 @@ func (j *Journal) write(entries []Entry) error {
 	if err := os.Rename(tmpName, j.Path); err != nil {
 		return fmt.Errorf("publish operation journal: %w", err)
 	}
-	if dir, err := os.Open(filepath.Dir(j.Path)); err == nil {
-		defer dir.Close()
-		if err := dir.Sync(); err != nil {
-			return errors.Join(ErrJournalCommitted, fmt.Errorf("sync operation journal directory: %w", err))
+	if j.BeforeJournalDirectorySync != nil {
+		if err := j.BeforeJournalDirectorySync(); err != nil {
+			return errors.Join(ErrJournalCommitted, err)
 		}
+	}
+	dir, err := os.Open(filepath.Dir(j.Path))
+	if err != nil {
+		return errors.Join(ErrJournalCommitted, fmt.Errorf("open operation journal directory after publish: %w", err))
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return errors.Join(ErrJournalCommitted, fmt.Errorf("sync operation journal directory: %w", err))
 	}
 	return nil
 }

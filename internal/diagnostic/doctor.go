@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
-	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
 // Finding is one non-mutating diagnostic result.
@@ -30,7 +30,8 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 	if err != nil {
 		return nil, err
 	}
-	_, invalid, err := catalog.Discover(library)
+	skillHandler := resource.NewSkillHandler()
+	_, invalid, err := skillHandler.Discover(library)
 	if err != nil {
 		return nil, err
 	}
@@ -44,24 +45,41 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 		findings = append(findings, Finding{d.Path, "invalid catalog entry: " + d.Message})
 	}
 	for _, a := range adapter.Supported() {
-		root := filepath.Dir(a.ProjectSkillPath(project, "placeholder"))
-		entries, err := os.ReadDir(root)
-		if os.IsNotExist(err) {
-			continue
+		for _, kind := range a.ResourceKinds() {
+			capabilities := a.Capabilities(kind)
+			values := make([]string, len(capabilities))
+			for i, capability := range capabilities {
+				values[i] = string(capability)
+			}
+			if len(values) == 0 {
+				values = []string{"none"}
+			}
+			findings = append(findings, Finding{
+				Path:    string(a.Target()),
+				Message: fmt.Sprintf("adapter capabilities: %s supports %s (%s)", a.Target(), kind, strings.Join(values, ", ")),
+			})
 		}
+	}
+	for _, a := range adapter.Supported() {
+		inspections, err := a.Inspect(adapter.InspectionRequest{Project: project, Kind: resource.Skill})
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			path := filepath.Join(root, entry.Name())
+		for _, inspection := range inspections {
+			path := inspection.Path
 			info, err := os.Lstat(path)
 			if err != nil {
 				return nil, err
 			}
 			if info.Mode()&os.ModeSymlink == 0 {
+				findings = append(findings, Finding{path, "unmanaged resource"})
 				continue
 			}
 			target, err := os.Readlink(path)
+			if err != nil {
+				return nil, err
+			}
+			managedByLibrary, err := skillHandler.ManagesSource(library, inspection.Identifier, target)
 			if err != nil {
 				return nil, err
 			}
@@ -70,29 +88,27 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 				if recordErr != nil {
 					return nil, recordErr
 				}
-				if target == filepath.Join(library, entry.Name()) || (owned && recorded == target) {
+				if managedByLibrary || (owned && recorded == target) {
 					findings = append(findings, Finding{path, "orphaned managed link: " + target})
 				} else {
 					findings = append(findings, Finding{path, "ambiguous dangling link: refusing automatic reconciliation"})
 				}
 			} else if err != nil {
 				return nil, fmt.Errorf("inspect link target %s: %w", target, err)
+			} else if !managedByLibrary {
+				findings = append(findings, Finding{path, "unmanaged resource"})
 			}
-			if target == filepath.Join(library, entry.Name()) {
+			if managedByLibrary {
 				managedPaths = append(managedPaths, path)
 			}
 		}
 	}
-	entries, err := os.ReadDir(project)
+	unsupportedRoots, err := adapter.UnsupportedAgentRoots(project)
 	if err != nil {
 		return nil, err
 	}
-	for _, entry := range entries {
-		if entry.IsDir() && len(entry.Name()) > 1 && entry.Name()[0] == '.' && entry.Name() != ".git" && entry.Name() != ".codex" && entry.Name() != ".claude" {
-			if _, err := os.Stat(filepath.Join(project, entry.Name(), "skills")); err == nil {
-				findings = append(findings, Finding{filepath.Join(project, entry.Name()), "unsupported agent skill location"})
-			}
-		}
+	for _, root := range unsupportedRoots {
+		findings = append(findings, Finding{root, "unsupported agent skill location"})
 	}
 	if _, err := os.Stat(filepath.Join(project, ".git")); err == nil {
 		if err := exec.Command("git", "-C", project, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
@@ -131,7 +147,8 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 	if len(journals) > 0 && journals[0] != nil {
 		journal = journals[0]
 	}
-	plan := operation.Plan{Operation: "update managed-link Git guidance"}
+	plan := operation.NewPlan("update managed-link Git guidance")
+	skillHandler := resource.NewSkillHandler()
 	lines := make([]string, 0, len(paths))
 	for _, path := range paths {
 		info, err := os.Lstat(path)
@@ -145,8 +162,12 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 		if err != nil {
 			return plan, err
 		}
+		_, identifier, supportedPlacement := adapter.MatchProjectSkillPath(project, path)
+		if !supportedPlacement {
+			return plan, fmt.Errorf("refusing unsupported managed-link placement %s", path)
+		}
 		targetOwned := false
-		if ok, err := eligible(target, filepath.Base(path)); err == nil && ok {
+		if ok, err := eligibleSkill(skillHandler, target, identifier); err == nil && ok {
 			targetOwned = true
 		} else if err != nil {
 			return plan, err
@@ -169,11 +190,8 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 			return plan, fmt.Errorf("managed path outside project: %s", path)
 		}
 		slashRel := filepath.ToSlash(rel)
-		if !strings.HasPrefix(slashRel, ".codex/skills/") && !strings.HasPrefix(slashRel, ".claude/skills/") {
-			return plan, fmt.Errorf("refusing unsupported managed-link placement %s", path)
-		}
-		lines = append(lines, "/"+filepath.ToSlash(rel))
-		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: "/" + filepath.ToSlash(rel)})
+		lines = append(lines, "/"+slashRel)
+		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: "/" + slashRel})
 	}
 	if existing, err := os.ReadFile(gitignore); err == nil {
 		kept := plan.Changes[:0]
@@ -233,7 +251,7 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 	if err != nil {
 		return plan, errors.Join(err, journal.Restore(before))
 	}
-	if err := journal.Record("update managed-link Git guidance", before, after); err != nil {
+	if err := journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}
@@ -244,6 +262,10 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 
 // Reconcile repoints orphaned supported-agent links to eligible configured library skills.
 func Reconcile(library, project string, journal *operation.Journal, confirm func(operation.Plan) bool) (operation.Plan, error) {
+	return reconcileWithHandler(library, project, journal, confirm, resource.NewSkillHandler())
+}
+
+func reconcileWithHandler(library, project string, journal *operation.Journal, confirm func(operation.Plan) bool, handler resource.ResourceHandler) (operation.Plan, error) {
 	if journal == nil {
 		return operation.Plan{}, errors.New("operation journal is not configured")
 	}
@@ -255,54 +277,58 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 	if err != nil {
 		return operation.Plan{}, err
 	}
-	plan := operation.Plan{Operation: "reconcile"}
+	plan := operation.NewPlan("reconcile")
 	var paths, targets, originals []string
+	var placementTargets []adapter.Target
+	var requests []resource.SkillLifecycleRequest
 	for _, a := range adapter.Supported() {
-		root := filepath.Dir(a.ProjectSkillPath(project, "placeholder"))
-		entries, err := os.ReadDir(root)
-		if os.IsNotExist(err) {
-			continue
-		}
+		inspections, err := a.Inspect(adapter.InspectionRequest{Project: project, Kind: resource.Skill})
 		if err != nil {
 			return plan, err
 		}
-		for _, entry := range entries {
-			path := filepath.Join(root, entry.Name())
-			info, err := os.Lstat(path)
-			if err != nil {
-				return plan, err
-			}
-			if info.Mode()&os.ModeSymlink == 0 {
-				continue
-			}
-			old, err := os.Readlink(path)
-			if err != nil {
-				return plan, err
-			}
-			if _, err := os.Stat(old); err == nil {
-				continue
-			} else if !os.IsNotExist(err) {
-				return plan, fmt.Errorf("inspect link target %s: %w", old, err)
-			}
+		for _, inspection := range inspections {
+			path := inspection.Path
 			recorded, managed, err := journal.RecordedLinkTarget(path)
 			if err != nil {
 				return plan, err
 			}
-			if old != filepath.Join(library, entry.Name()) && (!managed || recorded != old) {
-				continue
+			baseRequest := resource.SkillLifecycleRequest{
+				Action:        resource.LifecycleReconcile,
+				LibraryPath:   library,
+				ProjectPath:   project,
+				Identifier:    inspection.Identifier,
+				JournalSource: recorded,
+				JournalOwned:  managed,
 			}
-			target := filepath.Join(library, entry.Name())
-			ok, err := eligible(target, entry.Name())
+			base, err := planSkillLifecycle(handler, baseRequest)
 			if err != nil {
 				return plan, err
 			}
-			if !ok {
+			placement, err := a.PlanPlacement(adapter.PlacementRequest{Project: project, Resource: base.Resource})
+			if err != nil {
+				return plan, err
+			}
+			if placement.Identifier != inspection.Identifier {
+				return plan, fmt.Errorf("adapter placement identifier mismatch for %s", path)
+			}
+			if placement.Destination != path {
+				return plan, fmt.Errorf("adapter placement destination mismatch for %s", path)
+			}
+			request := baseRequest
+			request.PlacementPath = placement.Destination
+			planned, err := planSkillLifecycle(handler, request)
+			if err != nil {
+				return plan, err
+			}
+			if !planned.Applicable {
 				continue
 			}
-			plan.Changes = append(plan.Changes, operation.Change{Path: path, Action: "repoint orphaned managed link", Detail: target})
+			appendSkillLifecyclePlan(&plan, planned)
 			paths = append(paths, path)
-			targets = append(targets, target)
-			originals = append(originals, old)
+			targets = append(targets, planned.SourcePath)
+			originals = append(originals, planned.CurrentSource)
+			placementTargets = append(placementTargets, a.Target())
+			requests = append(requests, request)
 		}
 	}
 	if len(paths) == 0 {
@@ -314,20 +340,15 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 	// Preflight every exact source and construct all replacements before the
 	// first publication. A later concurrent edit therefore leaves every link
 	// unchanged.
-	for i, path := range paths {
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink == 0 {
-			return plan, operation.ErrUnexpectedState
+	for i := range paths {
+		if err := adapter.ValidateProjectPlacement(placementTargets[i], project, paths[i], requests[i].Identifier); err != nil {
+			return plan, err
 		}
-		old, err := os.Readlink(path)
-		if err != nil || old != originals[i] {
-			return plan, operation.ErrUnexpectedState
-		}
-		ok, err := eligible(targets[i], filepath.Base(path))
+		replanned, err := planSkillLifecycle(handler, requests[i])
 		if err != nil {
 			return plan, err
 		}
-		if !ok {
+		if !replanned.Applicable || replanned.CurrentSource != originals[i] || replanned.SourcePath != targets[i] {
 			return plan, operation.ErrUnexpectedState
 		}
 	}
@@ -373,6 +394,9 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 		return journal.Restore(snapshots)
 	}
 	for i, path := range paths {
+		if err := adapter.ValidateProjectPlacement(placementTargets[i], project, path, requests[i].Identifier); err != nil {
+			return plan, errors.Join(err, rollback())
+		}
 		old, err := os.Readlink(path)
 		if err != nil || old != originals[i] {
 			return plan, errors.Join(operation.ErrUnexpectedState, rollback())
@@ -388,7 +412,7 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 		if err != nil || latest != originals[i] {
 			return plan, errors.Join(operation.ErrUnexpectedState, rollback())
 		}
-		if err := os.Rename(stages[i], path); err != nil {
+		if err := adapter.PublishStagedLink(project, path, stages[i], originals[i]); err != nil {
 			return plan, errors.Join(err, rollback())
 		}
 		stages[i] = ""
@@ -398,7 +422,7 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 	if err != nil {
 		return plan, errors.Join(err, journal.Restore(before))
 	}
-	if err := journal.Record("reconcile", before, after); err != nil {
+	if err := journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}
@@ -412,28 +436,32 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	if !force {
 		return operation.Plan{}, errors.New("library deletion requires force confirmation because it can orphan managed links; run doctor first")
 	}
-	if err := adapter.ValidateIdentifier(identifier); err != nil {
-		return operation.Plan{}, err
-	}
 	library, err := filepath.Abs(library)
 	if err != nil {
 		return operation.Plan{}, err
 	}
-	path := filepath.Join(library, identifier)
-	ok, err := eligible(path, identifier)
+	skillHandler := resource.NewSkillHandler()
+	managedResource, err := skillHandler.LibraryResource(library, identifier)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	path := managedResource.Provenance.Source
+	ok, err := skillHandler.Eligible(identifier, path)
 	if err != nil {
 		return operation.Plan{}, err
 	}
 	if !ok {
 		return operation.Plan{}, fmt.Errorf("refusing ineligible library skill %q", identifier)
 	}
-	plan := operation.Plan{Operation: "delete library skill", Changes: []operation.Change{{Path: path, Action: "delete library skill"}}, Warnings: []string{"deletion can orphan managed links; run doctor before and after deletion"}}
+	plan := operation.NewPlan("delete library skill")
+	plan.Changes = []operation.Change{{Path: path, Action: "delete library skill"}}
+	plan.Warnings = []string{"deletion can orphan managed links; run doctor before and after deletion"}
 	if confirm == nil || !confirm(plan) {
 		return plan, operation.ErrNotConfirmed
 	}
 	// Revalidate after confirmation: an attacker or concurrent process may have
 	// replaced the directory with an unmanaged path while the plan was visible.
-	ok, err = eligible(path, identifier)
+	ok, err = skillHandler.Eligible(identifier, path)
 	if err != nil {
 		return plan, err
 	}
@@ -461,7 +489,7 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	if err != nil {
 		return plan, errors.Join(err, journal.Restore(before))
 	}
-	if err := journal.Record("delete library skill", before, after); err != nil {
+	if err := journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}
@@ -472,15 +500,30 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	}
 	return plan, nil
 }
-func eligible(path, identifier string) (bool, error) {
-	skills, _, err := catalog.Discover(filepath.Dir(path))
+
+func planSkillLifecycle(handler resource.ResourceHandler, request resource.SkillLifecycleRequest) (resource.SkillLifecyclePlan, error) {
+	planned, err := handler.PlanLifecycle(request)
 	if err != nil {
-		return false, err
+		return resource.SkillLifecyclePlan{}, err
 	}
-	for _, s := range skills {
-		if s.Identifier == identifier && s.SourcePath == path {
-			return true, nil
-		}
+	plan, ok := planned.(resource.SkillLifecyclePlan)
+	if !ok {
+		return resource.SkillLifecyclePlan{}, fmt.Errorf("resource handler returned %T for Skill lifecycle request", planned)
 	}
-	return false, nil
+	return plan, nil
+}
+
+func appendSkillLifecyclePlan(destination *operation.Plan, source resource.SkillLifecyclePlan) {
+	for _, change := range source.Changes {
+		destination.Changes = append(destination.Changes, operation.Change{Path: change.Path, Action: change.Action, Detail: change.Detail})
+	}
+	destination.Warnings = append(destination.Warnings, source.Warnings...)
+}
+
+func eligibleSkill(handler resource.SkillHandler, path, identifier string) (bool, error) {
+	ok, err := handler.Eligible(identifier, path)
+	if err != nil && os.IsNotExist(err) {
+		return false, nil
+	}
+	return ok, err
 }

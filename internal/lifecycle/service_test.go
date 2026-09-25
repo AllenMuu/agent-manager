@@ -10,7 +10,43 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/resource"
 )
+
+type recordingSkillHandler struct {
+	resource.SkillHandler
+	actions []resource.LifecycleAction
+}
+
+func (h *recordingSkillHandler) PlanLifecycle(request resource.LifecycleRequest) (resource.LifecyclePlan, error) {
+	plan, err := h.SkillHandler.PlanLifecycle(request)
+	if err == nil {
+		h.actions = append(h.actions, plan.(resource.SkillLifecyclePlan).Action)
+	}
+	return plan, err
+}
+
+func TestServiceCoordinatesActivationThroughResourceHandlerPlan(t *testing.T) {
+	root, project, skill := fixture(t)
+	handler := &recordingSkillHandler{}
+	svc := lifecycle.NewWithResourceHandler(
+		filepath.Join(root, "library"),
+		operation.New(filepath.Join(root, "journal.json")),
+		func(operation.Plan) bool { return true },
+		handler,
+	)
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	if len(handler.actions) == 0 {
+		t.Fatal("activation bypassed ResourceHandler.PlanLifecycle")
+	}
+	for _, action := range handler.actions {
+		if action != resource.LifecycleActivate {
+			t.Fatalf("handler actions = %v, want activation only", handler.actions)
+		}
+	}
+}
 
 func TestAddCreatesAbsoluteLinksForSelectedTargetsAndWarnsOnCompatibility(t *testing.T) {
 	root, project, skill := fixture(t)
@@ -58,6 +94,113 @@ func TestAddRequiresConfirmationAndRefusesUnmanagedDestination(t *testing.T) {
 	}
 }
 
+func TestAddRejectsConflictChangedDuringConfirmation(t *testing.T) {
+	root, project, skill := fixture(t)
+	a, _ := adapter.For(adapter.Codex)
+	destination := a.ProjectSkillPath(project, skill.Identifier)
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "original.txt"), []byte("original unmanaged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
+		if err := os.RemoveAll(destination); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, []byte("new owner"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}, lifecycle.Options{Conflict: lifecycle.ConflictReplace, Force: true}); !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("Add() error = %v, want unsafe path", err)
+	}
+	if got, readErr := os.ReadFile(destination); readErr != nil || string(got) != "new owner" {
+		t.Fatalf("new owner changed: %q, %v", got, readErr)
+	}
+	if _, ok, journalErr := journal.Latest(); journalErr != nil || ok {
+		t.Fatalf("Add() journal state = ok=%v err=%v, want no entry", ok, journalErr)
+	}
+	assertCapturedOriginal(t, journal, "original.txt", "original unmanaged")
+}
+
+func TestAddPreservesLateOwnerAndStagedOriginalWhenDiscardFails(t *testing.T) {
+	root, project, skill := fixture(t)
+	a, _ := adapter.For(adapter.Codex)
+	destination := a.ProjectSkillPath(project, skill.Identifier)
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("original owner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	svc.BeforeDiscard = func() error {
+		if err := os.Remove(destination); err != nil {
+			return err
+		}
+		if err := os.WriteFile(destination, []byte("late owner"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("discard failure")
+	}
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}, lifecycle.Options{Conflict: lifecycle.ConflictReplace, Force: true}); err == nil {
+		t.Fatal("Add unexpectedly succeeded")
+	}
+	if got, err := os.ReadFile(destination); err != nil || string(got) != "late owner" {
+		t.Fatalf("late owner = %q, %v", got, err)
+	}
+	recovery, err := filepath.Glob(destination + ".skill-manager-recovery-*")
+	if err != nil || len(recovery) != 1 {
+		t.Fatalf("recovery paths = %#v, %v", recovery, err)
+	}
+	if got, err := os.ReadFile(recovery[0]); err != nil || string(got) != "original owner" {
+		t.Fatalf("staged original = %q, %v", got, err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("failed operation journal latest = ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAddManyRejectsConflictChangedDuringConfirmation(t *testing.T) {
+	root, project, one := fixture(t)
+	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
+	a, _ := adapter.For(adapter.Codex)
+	destination := a.ProjectSkillPath(project, one.Identifier)
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "original.txt"), []byte("original unmanaged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
+		if err := os.RemoveAll(destination); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, []byte("new owner"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	if _, err := svc.AddMany(project, []catalog.Skill{one, two}, []adapter.Target{adapter.Codex}, lifecycle.Options{Conflict: lifecycle.ConflictReplace, Force: true}); !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("AddMany() error = %v, want unsafe path", err)
+	}
+	if got, readErr := os.ReadFile(destination); readErr != nil || string(got) != "new owner" {
+		t.Fatalf("new owner changed: %q, %v", got, readErr)
+	}
+	if _, err := os.Lstat(a.ProjectSkillPath(project, two.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("second destination after rejected AddMany() = %v, want absent", err)
+	}
+	if _, ok, journalErr := journal.Latest(); journalErr != nil || ok {
+		t.Fatalf("AddMany() journal state = ok=%v err=%v, want no entry", ok, journalErr)
+	}
+	assertCapturedOriginal(t, journal, "original.txt", "original unmanaged")
+}
+
 func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
@@ -75,7 +218,15 @@ func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
 func TestAddManySecondPublicationFailureRollsBack(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
-	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "j.json")), func(operation.Plan) bool { return true })
+	journal := operation.New(filepath.Join(root, "j.json"))
+	if err := journal.Record("baseline", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := os.ReadFile(journal.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
 	calls := 0
 	svc.BeforePublish = func(string) error {
 		calls++
@@ -91,6 +242,111 @@ func TestAddManySecondPublicationFailureRollsBack(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(project, ".codex", "skills", id)); !os.IsNotExist(err) {
 			t.Fatalf("%s remains", id)
 		}
+	}
+	if got, readErr := os.ReadFile(journal.Path); readErr != nil || string(got) != string(baseline) {
+		t.Fatalf("journal after interrupted publication = %q, %v; want unchanged %q", got, readErr, baseline)
+	}
+}
+
+func TestAddManyRollbackRestoresReplacedPathWhenLaterPublicationFails(t *testing.T) {
+	root, project, one := fixture(t)
+	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
+	a, _ := adapter.For(adapter.Codex)
+	first := a.ProjectSkillPath(project, one.Identifier)
+	if err := os.MkdirAll(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first, "original"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	svc.BeforePublish = func(string) error { return errors.New("publication interrupted") }
+	if _, err := svc.AddMany(project, []catalog.Skill{one, two}, []adapter.Target{adapter.Codex}, lifecycle.Options{Conflict: lifecycle.ConflictReplace, Force: true}); err == nil {
+		t.Fatal("expected publication failure")
+	}
+	if got, readErr := os.ReadFile(filepath.Join(first, "original")); readErr != nil || string(got) != "original" {
+		t.Fatalf("replaced path was not restored: %q, %v", got, readErr)
+	}
+	if info, err := os.Lstat(first); err != nil || !info.IsDir() {
+		t.Fatalf("first path after rollback = %#v, %v", info, err)
+	}
+	if _, err := os.Lstat(a.ProjectSkillPath(project, two.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("second path after rollback = %v, want absent", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("failed batch journal state = ok=%v err=%v, want no entry", ok, err)
+	}
+}
+
+func TestAddManyPreservesLateOwnerWhileRollingBackEarlierPublication(t *testing.T) {
+	root, project, one := fixture(t)
+	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
+	a, _ := adapter.For(adapter.Codex)
+	late := a.ProjectSkillPath(project, two.Identifier)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	called := 0
+	svc.BeforePublish = func(string) error {
+		called++
+		if called == 1 {
+			if err := os.WriteFile(late, []byte("late owner"), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if _, err := svc.AddMany(project, []catalog.Skill{one, two}, []adapter.Target{adapter.Codex}); !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("AddMany error = %v, want unsafe path", err)
+	}
+	if got, readErr := os.ReadFile(late); readErr != nil || string(got) != "late owner" {
+		t.Fatalf("late owner changed: %q, %v", got, readErr)
+	}
+	if _, err := os.Lstat(a.ProjectSkillPath(project, one.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("earlier publication was not rolled back: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("failed batch journal state = ok=%v err=%v, want no entry", ok, err)
+	}
+}
+
+func TestAddDoesNotFollowSkillsParentSwappedBeforeFinalPublish(t *testing.T) {
+	root, project, skill := fixture(t)
+	a, _ := adapter.For(adapter.Codex)
+	destination := a.ProjectSkillPath(project, skill.Identifier)
+	parent := filepath.Dir(destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recoverableParent := parent + "-recoverable"
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("external owner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	svc.BeforeFinalPublish = func() error {
+		if err := os.Rename(parent, recoverableParent); err != nil {
+			return err
+		}
+		return os.Symlink(external, parent)
+	}
+
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}); !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("Add() error = %v, want unsafe path", err)
+	}
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "external owner" {
+		t.Fatalf("external sentinel changed: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(external, skill.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("external destination was published: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(recoverableParent, skill.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("managed link remained in recoverable parent: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("parent-swap journal state = ok=%v err=%v, want no entry", ok, err)
 	}
 }
 
@@ -169,6 +425,30 @@ func TestListReportsOrphanedLibraryLink(t *testing.T) {
 	}
 }
 
+func TestListSkipsUnsupportedSymlinkSkillsLocation(t *testing.T) {
+	root, project, _ := fixture(t)
+	external := filepath.Join(root, "external-skills")
+	if err := os.MkdirAll(filepath.Join(external, "local"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(project, ".foo", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	items, err := svc.List(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Target == "foo" {
+			t.Fatalf("unsupported symlink location was inventoried: %#v", item)
+		}
+	}
+}
+
 func TestAdoptRefusesConflictThenReplacesProjectDirectoryWithManagedLink(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
@@ -213,6 +493,67 @@ func TestForkMakesIndependentCopyWithoutChangingLibrary(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(skill.SourcePath, "local.txt")); !os.IsNotExist(err) {
 		t.Fatalf("library changed by fork: %v", err)
+	}
+}
+
+func TestExecutableSkillContentIsOpaqueDuringCopySnapshotRollbackAndUndo(t *testing.T) {
+	root, project, skill := fixture(t)
+	marker := filepath.Join(root, "executed")
+	script := filepath.Join(skill.SourcePath, "run.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An interrupted copy must roll back to the managed link and leave no
+	// executable side effect or extra journal entry.
+	svc.BeforePublish = func(string) error { return errors.New("interrupt") }
+	if _, err := svc.Fork(project, adapter.Codex, skill.Identifier); err == nil {
+		t.Fatal("interrupted fork unexpectedly succeeded")
+	}
+	a, _ := adapter.For(adapter.Codex)
+	path := a.ProjectSkillPath(project, skill.Identifier)
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("rollback path = %#v, %v; want managed link", info, err)
+	}
+	assertNoAdoptionStages(t, filepath.Dir(path))
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("executable ran during rollback; marker stat error = %v", err)
+	}
+	entry, ok, err := journal.Latest()
+	if err != nil || !ok || entry.Operation != "activate" {
+		t.Fatalf("journal after interrupted fork = %#v, ok=%v err=%v; want prior activation only", entry, ok, err)
+	}
+
+	// A successful copy and its journal snapshot preserve executable bytes and
+	// mode, and undo restores the original link without invoking the file.
+	svc.BeforePublish = nil
+	if _, err := svc.Fork(project, adapter.Codex, skill.Identifier); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(path, "run.sh"))
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("copied executable metadata = %#v, %v", info, err)
+	}
+	contents, err := os.ReadFile(filepath.Join(path, "run.sh"))
+	if err != nil || string(contents) != "#!/bin/sh\ntouch "+marker+"\n" {
+		t.Fatalf("copied executable contents = %q, %v", contents, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("executable ran during copy or snapshot; marker stat error = %v", err)
+	}
+	if err := svc.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(path); err != nil || target != skill.SourcePath {
+		t.Fatalf("undo path = %q, %v; want managed link", target, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("executable ran during undo; marker stat error = %v", err)
 	}
 }
 
@@ -347,6 +688,46 @@ func TestRemoveRevalidatesLinkAfterConfirmation(t *testing.T) {
 	}
 }
 
+func TestRemoveRejectsProjectParentSwapBeforeAnchoredMutation(t *testing.T) {
+	root, project, skill := fixture(t)
+	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := adapter.For(adapter.Codex)
+	destination := a.ProjectSkillPath(project, skill.Identifier)
+	external := filepath.Join(root, "external", "skills")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalTarget := filepath.Join(root, "external", "original")
+	if err := os.MkdirAll(externalTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(external, skill.Identifier)
+	if err := os.Symlink(externalTarget, externalPath); err != nil {
+		t.Fatal(err)
+	}
+	swapped := false
+	svc.BeforePublish = func(step string) error {
+		if step != "remove-before" || swapped {
+			return nil
+		}
+		swapped = true
+		codexRoot := filepath.Dir(filepath.Dir(destination))
+		if err := os.Rename(codexRoot, codexRoot+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Dir(external), codexRoot)
+	}
+	if _, err := svc.Remove(project, adapter.Codex, skill.Identifier); err == nil {
+		t.Fatal("Remove unexpectedly succeeded after parent swap")
+	}
+	if got, err := os.Readlink(externalPath); err != nil || got != externalTarget {
+		t.Fatalf("external owner changed: %q, %v", got, err)
+	}
+}
+
 func TestAdoptRevalidatesLibraryConflictAfterConfirmation(t *testing.T) {
 	root := t.TempDir()
 	project, library := filepath.Join(root, "project"), filepath.Join(root, "library")
@@ -441,6 +822,51 @@ func TestForkManyRestoresAllLinksWhenSecondPublicationFails(t *testing.T) {
 	}
 }
 
+func TestForkManyRejectsSecondProjectParentSwapWithoutExternalMutation(t *testing.T) {
+	root, project, skill := fixture(t)
+	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	if _, err := svc.Add(project, skill, []adapter.Target{adapter.ClaudeCode, adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(root, "external", "skills")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalTarget := filepath.Join(root, "external", "owner")
+	if err := os.MkdirAll(externalTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(external, skill.Identifier)
+	if err := os.Symlink(externalTarget, externalPath); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	svc.BeforePublish = func(step string) error {
+		if step != "fork-published" {
+			return nil
+		}
+		calls++
+		if calls != 1 {
+			return nil
+		}
+		codexRoot := filepath.Join(project, ".codex")
+		if err := os.Rename(codexRoot, codexRoot+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Dir(external), codexRoot)
+	}
+	if _, err := svc.ForkMany(project, skill.Identifier, []adapter.Target{adapter.ClaudeCode, adapter.Codex}); err == nil {
+		t.Fatal("ForkMany unexpectedly succeeded after parent swap")
+	}
+	if got, err := os.Readlink(externalPath); err != nil || got != externalTarget {
+		t.Fatalf("external owner changed: %q, %v", got, err)
+	}
+	claude, _ := adapter.For(adapter.ClaudeCode)
+	if got, err := os.Readlink(claude.ProjectSkillPath(project, skill.Identifier)); err != nil || got != skill.SourcePath {
+		t.Fatalf("first fork target was not restored: %q, %v", got, err)
+	}
+}
+
 func TestAdoptRefusesProjectEditAfterCopyIsStaged(t *testing.T) {
 	root := t.TempDir()
 	project, library := filepath.Join(root, "project"), filepath.Join(root, "library")
@@ -463,6 +889,47 @@ func TestAdoptRefusesProjectEditAfterCopyIsStaged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(library, "demo")); !os.IsNotExist(err) {
 		t.Fatalf("staged library copy was retained: %v", err)
+	}
+}
+
+func TestAdoptRejectsProjectParentSwapBeforeLinkPublication(t *testing.T) {
+	root := t.TempDir()
+	project, library := filepath.Join(root, "project"), filepath.Join(root, "library")
+	local := writeSkill(t, filepath.Join(project, ".codex", "skills", "demo"), "demo")
+	external := filepath.Join(root, "external", "skills")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalTarget := filepath.Join(root, "external", "owner")
+	if err := os.MkdirAll(externalTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(external, "demo")
+	if err := os.Symlink(externalTarget, externalPath); err != nil {
+		t.Fatal(err)
+	}
+	svc := lifecycle.New(library, operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	svc.BeforePublish = func(step string) error {
+		if step != "adopt-staged" {
+			return nil
+		}
+		codexRoot := filepath.Join(project, ".codex")
+		if err := os.Rename(codexRoot, codexRoot+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Dir(external), codexRoot)
+	}
+	if _, err := svc.Adopt(project, adapter.Codex, "demo"); err == nil {
+		t.Fatal("Adopt unexpectedly succeeded after parent swap")
+	}
+	if got, err := os.Readlink(externalPath); err != nil || got != externalTarget {
+		t.Fatalf("external owner changed: %q, %v", got, err)
+	}
+	if _, err := os.Stat(local.SourcePath); err != nil {
+		t.Fatalf("original project tree missing: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(library, "demo")); !os.IsNotExist(err) {
+		t.Fatalf("library copy remained after rejected adoption: %v", err)
 	}
 }
 
@@ -584,6 +1051,17 @@ func writeSkill(t *testing.T, dir, id string) catalog.Skill {
 		t.Fatal(err)
 	}
 	return catalog.Skill{Identifier: id, SourcePath: dir}
+}
+
+func assertCapturedOriginal(t *testing.T, journal *operation.Journal, name, want string) {
+	t.Helper()
+	backups, err := filepath.Glob(filepath.Join(filepath.Dir(journal.Path), ".skill-manager-journal", "*"))
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("captured prior content = %#v, %v; want one recoverable snapshot", backups, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(backups[0], name)); err != nil || string(got) != want {
+		t.Fatalf("captured prior content = %q, %v", got, err)
+	}
 }
 func hasStatus(items []lifecycle.Item, id string, status lifecycle.Status) bool {
 	for _, item := range items {

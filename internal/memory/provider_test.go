@@ -119,6 +119,60 @@ func TestProviderStatusMapsOnlyCapabilitiesTheAgentSupports(t *testing.T) {
 	}
 }
 
+func TestBuildStatusReportsProviderCapabilitiesUnsupportedByAgent(t *testing.T) {
+	config := &memory.ProviderConfig{Provider: memory.FileProviderID}
+	report := memory.BuildStatus(config, memory.ProviderStatus{
+		Available:    true,
+		Capabilities: []memory.Capability{memory.CapabilityRead, memory.CapabilitySearch},
+		Scopes:       []memory.Scope{memory.ScopeUser, memory.ScopeProject},
+	}, []memory.AgentAccess{{
+		Agent:        "codex",
+		Capabilities: []memory.Capability{memory.CapabilityRead},
+		Scopes:       []memory.Scope{memory.ScopeUser},
+	}}, nil)
+	if len(report.Agents) != 1 {
+		t.Fatalf("agents = %#v, want one agent", report.Agents)
+	}
+	agent := report.Agents[0]
+	if len(agent.Capabilities) != 1 || agent.Capabilities[0] != memory.CapabilityRead {
+		t.Fatalf("capabilities = %#v, want read intersection", agent.Capabilities)
+	}
+	if len(agent.UnsupportedCapabilities) != 1 || agent.UnsupportedCapabilities[0] != memory.CapabilitySearch {
+		t.Fatalf("unsupported capabilities = %#v, want search gap", agent.UnsupportedCapabilities)
+	}
+	if len(agent.UnsupportedScopes) != 1 || agent.UnsupportedScopes[0] != memory.ScopeProject {
+		t.Fatalf("unsupported scopes = %#v, want project gap", agent.UnsupportedScopes)
+	}
+}
+
+func TestBuildStatusSplitsUnavailableAndUnsupportedProviderGaps(t *testing.T) {
+	config := &memory.ProviderConfig{
+		Provider:     memory.FileProviderID,
+		Capabilities: []memory.Capability{memory.CapabilityRead, memory.CapabilitySearch},
+		Scopes:       []memory.Scope{memory.ScopeUser, memory.ScopeProject},
+	}
+	report := memory.BuildStatus(config, memory.ProviderStatus{
+		Reason: "provider is unavailable",
+	}, []memory.AgentAccess{{
+		Agent:        "codex",
+		Capabilities: []memory.Capability{memory.CapabilityRead},
+		Scopes:       []memory.Scope{memory.ScopeUser},
+	}}, nil)
+	agent := report.Agents[0]
+	if len(agent.UnsupportedCapabilities) != 1 || agent.UnsupportedCapabilities[0] != memory.CapabilitySearch {
+		t.Fatalf("unsupported capabilities = %#v, want search only", agent.UnsupportedCapabilities)
+	}
+	if len(agent.UnavailableCapabilities) != 1 || agent.UnavailableCapabilities[0] != memory.CapabilityRead {
+		t.Fatalf("unavailable capabilities = %#v, want read only", agent.UnavailableCapabilities)
+	}
+	if len(agent.UnsupportedScopes) != 1 || agent.UnsupportedScopes[0] != memory.ScopeProject {
+		t.Fatalf("unsupported scopes = %#v, want project only", agent.UnsupportedScopes)
+	}
+	if len(agent.UnavailableScopes) != 1 || agent.UnavailableScopes[0] != memory.ScopeUser {
+		t.Fatalf("unavailable scopes = %#v, want user only", agent.UnavailableScopes)
+	}
+}
+
 func TestUnavailableProviderMapsToNoAgentAccess(t *testing.T) {
 	got := memory.MapAgentAccess(memory.ProviderStatus{Available: false, Capabilities: []memory.Capability{memory.CapabilityRead}, Scopes: []memory.Scope{memory.ScopeProject}}, memory.AgentAccess{
 		Agent: "codex", Capabilities: []memory.Capability{memory.CapabilityRead}, Scopes: []memory.Scope{memory.ScopeProject},
@@ -153,4 +207,97 @@ func TestOrdinaryProviderInspectionDoesNotWrite(t *testing.T) {
 	if provider.statusCalls != 1 {
 		t.Fatalf("provider status calls = %d, want 1", provider.statusCalls)
 	}
+}
+
+func TestFakeProviderStatusMatrixMapsAdapterAccessWithoutPromotion(t *testing.T) {
+	config := &memory.ProviderConfig{
+		Version: "v1", ID: "local", Provider: memory.FileProviderID,
+		Configuration: memory.ConfigReference{Kind: "file", Name: "/tmp/provider-store"},
+		Capabilities:  []memory.Capability{memory.CapabilityRead, memory.CapabilityWrite, memory.CapabilitySearch},
+		Scopes:        []memory.Scope{memory.ScopeUser, memory.ScopeProject},
+	}
+	integration := memory.AgentAccess{
+		Agent:        "codex",
+		Capabilities: []memory.Capability{memory.CapabilityRead, memory.CapabilitySearch},
+		Scopes:       []memory.Scope{memory.ScopeProject},
+	}
+	cases := []struct {
+		name        string
+		status      memory.ProviderStatus
+		wantState   string
+		wantAccess  []memory.Capability
+		wantMissing []memory.Capability
+	}{
+		{
+			name:        "available",
+			status:      memory.ProviderStatus{Available: true, Capabilities: config.Capabilities, Scopes: config.Scopes},
+			wantState:   memory.StateAvailable,
+			wantAccess:  []memory.Capability{memory.CapabilityRead, memory.CapabilitySearch},
+			wantMissing: []memory.Capability{memory.CapabilityWrite},
+		},
+		{
+			name:        "unavailable",
+			status:      memory.ProviderStatus{Reason: "provider is unavailable", Capabilities: config.Capabilities, Scopes: config.Scopes},
+			wantState:   memory.StateUnavailable,
+			wantAccess:  nil,
+			wantMissing: []memory.Capability{memory.CapabilityWrite},
+		},
+		{
+			name:        "unsupported",
+			status:      memory.ProviderStatus{Unsupported: true, Reason: "provider is not supported locally"},
+			wantState:   memory.StateUnsupported,
+			wantAccess:  nil,
+			wantMissing: config.Capabilities,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &localTestProvider{status: tc.status}
+			report := memory.BuildStatus(config, provider.Status(), []memory.AgentAccess{integration}, nil)
+			if report.State != tc.wantState {
+				t.Fatalf("provider state = %q, want %q", report.State, tc.wantState)
+			}
+			agent := findAgentStatus(report, integration.Agent)
+			if agent == nil {
+				t.Fatalf("agent %q missing from %#v", integration.Agent, report.Agents)
+			}
+			if !sameCapabilities(agent.Capabilities, tc.wantAccess) {
+				t.Fatalf("mapped capabilities = %#v, want %#v", agent.Capabilities, tc.wantAccess)
+			}
+			if tc.wantState == memory.StateUnavailable && len(agent.UnavailableCapabilities) != 2 {
+				t.Fatalf("unavailable capabilities = %#v, want read/search intersection", agent.UnavailableCapabilities)
+			}
+			if !sameCapabilities(agent.UnsupportedCapabilities, tc.wantMissing) && tc.wantState != memory.StateUnavailable {
+				t.Fatalf("unsupported capabilities = %#v, want %#v", agent.UnsupportedCapabilities, tc.wantMissing)
+			}
+			mapped := memory.MapAgentAccess(provider.Status(), integration)
+			if !sameCapabilities(mapped.Capabilities, tc.wantAccess) {
+				t.Fatalf("adapter mapping = %#v, want %#v", mapped.Capabilities, tc.wantAccess)
+			}
+			if provider.promoteCalls != 0 {
+				t.Fatalf("status and mapping promoted %d values, want 0", provider.promoteCalls)
+			}
+		})
+	}
+}
+
+func findAgentStatus(report memory.StatusReport, id string) *memory.AgentStatus {
+	for i := range report.Agents {
+		if report.Agents[i].Agent == id {
+			return &report.Agents[i]
+		}
+	}
+	return nil
+}
+
+func sameCapabilities(got, want []memory.Capability) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

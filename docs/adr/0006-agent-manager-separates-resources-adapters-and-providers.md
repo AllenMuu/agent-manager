@@ -11,3 +11,21 @@ Existing Skill Manager state remains a first-class Skill resource domain. The `a
 - Split resource lifecycle rules, agent runtime adapters, and Memory providers behind explicit capability contracts.
 
 The third option is selected. It preserves guarded and reversible Skill link operations, exposes unsupported runtime capabilities instead of silently discarding data, and permits provider-backed Memory without treating it as a filesystem resource. A generic filesystem abstraction was rejected because links, canonical SubAgent definitions, and provider-backed Memory do not share safe mutation semantics.
+
+## Local provider selection
+
+For the initial provider boundary, Agent Manager selects a local file-backed
+provider as the feasible implementation. Capability discovery validates an
+already-existing regular file and reports the configured read, write, and
+search capabilities and user/project scopes without creating or mutating the
+file during discovery; writes are reserved for an explicit confirmed
+promotion. Network-backed providers are intentionally unavailable by default: the
+configuration stores only a non-secret `file` reference, and an unavailable or
+misconfigured path returns an actionable local status.
+
+On platforms without a portable no-follow open primitive (including Plan 9,
+Solaris, and illumos), discovery uses `Lstat`, an ordinary read-only open, and
+post-open file-identity verification. This rejects direct symlink references
+and ordinary replacement races, but has a weaker guarantee than the Unix
+`O_NOFOLLOW` or Windows reparse-point paths if a platform permits a symlink
+swap during the open itself; such a mismatch is rejected after opening.

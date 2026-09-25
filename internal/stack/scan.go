@@ -31,7 +31,7 @@ type Scope struct {
 	Path         string
 	Technologies []string
 	Evidence     []Evidence
-	Diagnostics   []Diagnostic
+	Diagnostics  []Diagnostic
 }
 
 // Result is the outcome of a static project scan.

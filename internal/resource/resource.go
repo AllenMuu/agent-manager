@@ -2,10 +2,15 @@
 package resource
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 )
+
+// ErrUnsupportedCapabilities identifies a target that cannot represent a
+// resource's declared requirements.
+var ErrUnsupportedCapabilities = errors.New("resource capabilities are unsupported")
 
 // Kind identifies a managed resource domain.
 type Kind string
@@ -47,13 +52,125 @@ type ManagedResource struct {
 	RequiredCapabilities []Capability  `json:"requiredCapabilities,omitempty" yaml:"requiredCapabilities,omitempty"`
 }
 
-// Handler owns validation rules for one managed resource kind.
-type Handler interface {
-	Kind() Kind
-	Validate(ManagedResource) error
+// PlacementPlan is an agent-neutral operation description. Adapters may
+// translate it into a runtime-specific destination and apply it through an
+// explicitly guarded filesystem integration.
+type PlacementPlan struct {
+	Resource ManagedResource
+	// Project identifies the selected project root whose adapter-owned
+	// location may be mutated. Adapters use it to reject destinations supplied
+	// by an untrusted caller.
+	Project      string
+	Capabilities []Capability
+	Missing      []Capability
+	Warnings     []string
+	// These fields are populated only when a caller explicitly opts into
+	// guarded local filesystem placement. They remain opaque here so the
+	// resource package does not depend on delivery-layer operation types.
+	Destination string
+	Conflict    string
+	Force       bool
+	Journal     any
+	Confirm     any
 }
 
-// SkillHandler validates the existing directory-Skill resource domain.
+// ResourceHandler owns canonical catalog, inspection, and validation rules for
+// one managed resource kind. It is deliberately free of agent locations:
+// adapters translate a valid resource into a runtime-specific placement.
+type ResourceHandler interface {
+	Kind() Kind
+	Validate(ManagedResource) error
+	Catalog(string) ([]ManagedResource, []Diagnostic, error)
+	Inspect(string) (ManagedResource, error)
+	PlanLifecycle(LifecycleRequest) (LifecyclePlan, error)
+}
+
+// Handler is retained as a source-compatible name while callers migrate to
+// ResourceHandler.
+type Handler = ResourceHandler
+
+// LifecycleAction identifies a resource-domain lifecycle decision. Handlers
+// may expose action-specific request and plan types; the shared contract does
+// not assume that every resource is represented by a filesystem link.
+type LifecycleAction string
+
+const (
+	LifecycleActivate  LifecycleAction = "activate"
+	LifecycleRemove    LifecycleAction = "remove"
+	LifecycleAdopt     LifecycleAction = "adopt"
+	LifecycleFork      LifecycleAction = "fork"
+	LifecycleReconcile LifecycleAction = "reconcile"
+)
+
+// LifecycleRequest is implemented by resource-specific planning requests.
+type LifecycleRequest interface {
+	ActionKind() LifecycleAction
+}
+
+// LifecyclePlan is implemented by resource-specific lifecycle plans. Delivery
+// services coordinate confirmation and mutation after composing a handler plan
+// with an adapter-owned runtime placement.
+type LifecyclePlan interface {
+	ActionKind() LifecycleAction
+}
+
+// LifecycleChange is one handler-planned change for a delivery preview.
+type LifecycleChange struct {
+	Path   string
+	Action string
+	Detail string
+}
+
+// SkillConflictStrategy selects a supported filesystem-Skill conflict policy.
+type SkillConflictStrategy string
+
+const SkillConflictReplace SkillConflictStrategy = "replace"
+
+var (
+	ErrUnsafeLifecycle   = errors.New("refusing unmanaged or unexpected path")
+	ErrForceRequired     = errors.New("conflict strategy requires force confirmation")
+	ErrLifecycleConflict = errors.New("operation conflicts with existing skill")
+)
+
+// SkillLifecycleRequest contains the filesystem state a SkillHandler needs to
+// validate and plan. PlacementPath is supplied by an AgentAdapter; the handler
+// never derives a runtime location.
+type SkillLifecycleRequest struct {
+	Action      LifecycleAction
+	LibraryPath string
+	// ProjectPath is the selected project root for adapter-owned placement.
+	// It is kept at the lifecycle boundary so mutation cannot trust an
+	// arbitrary PlacementPath supplied by a downstream plan.
+	ProjectPath   string
+	Resource      ManagedResource
+	CatalogEntry  *SkillCatalogEntry
+	Identifier    string
+	PlacementPath string
+	Target        string
+	Conflict      SkillConflictStrategy
+	Force         bool
+	JournalSource string
+	JournalOwned  bool
+}
+
+func (r SkillLifecycleRequest) ActionKind() LifecycleAction { return r.Action }
+
+// SkillLifecyclePlan is the handler-owned validation and planning result for a
+// filesystem-backed Skill. Filesystem mutation remains the coordinator's job.
+type SkillLifecyclePlan struct {
+	Action          LifecycleAction
+	Resource        ManagedResource
+	SourcePath      string
+	CurrentSource   string
+	ReplaceExisting bool
+	Applicable      bool
+	Changes         []LifecycleChange
+	Warnings        []string
+}
+
+func (p SkillLifecyclePlan) ActionKind() LifecycleAction { return p.Action }
+
+// SkillHandler owns the existing directory-Skill catalog and lifecycle rules.
 type SkillHandler struct{}
 
 // NewSkillHandler constructs the handler for managed Skills.

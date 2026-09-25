@@ -21,7 +21,7 @@ type Action string
 
 const (
 	ActionReviewRecommendations Action = "review_recommendations"
-	ActionUseCatalogSearch       Action = "use_catalog_search"
+	ActionUseCatalogSearch      Action = "use_catalog_search"
 	ActionAddSkillMetadata      Action = "add_skill_metadata"
 )
 
