@@ -77,7 +77,7 @@ var dependencyKeywords = []struct {
 func parsePackageJSON(contents []byte) []string {
 	var doc struct {
 		Dependencies         map[string]string `json:"dependencies"`
-		DevDependencies     map[string]string `json:"devDependencies"`
+		DevDependencies      map[string]string `json:"devDependencies"`
 		OptionalDependencies map[string]string `json:"optionalDependencies"`
 	}
 	ids := []string{"nodejs"}

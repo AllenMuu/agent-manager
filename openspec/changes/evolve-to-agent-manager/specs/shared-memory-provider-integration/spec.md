@@ -24,3 +24,18 @@ The system SHALL require an explicit user action to persist managed knowledge to
 #### Scenario: No promotion was requested
 - **WHEN** the user configures an agent or manages a resource without requesting Memory persistence
 - **THEN** the system does not write resource content or conversation history to the provider
+
+### Requirement: Local provider and no-network boundary
+The initial supported provider SHALL be a local file-backed provider. For that provider, `configuration.kind` SHALL be `file` and the reference SHALL name an already-existing absolute direct regular file without embedding secrets. Other non-secret reference kinds may be represented for providers without a local adapter, which status reports as unsupported. Discovery SHALL be read-only, SHALL reject symlink or non-regular paths, and SHALL NOT fetch, start, or configure a network provider. Missing or inaccessible files and configured provider types without a local adapter SHALL produce actionable unavailable or unsupported status.
+
+#### Scenario: Local provider discovery is available
+- **WHEN** the configured file reference points to an existing direct regular file
+- **THEN** status reports the declared capabilities and scopes without creating or modifying the file
+
+#### Scenario: Provider is unavailable or unsupported
+- **WHEN** the file reference is missing, inaccessible, replaced, or symlinked, or the configured provider has no local adapter
+- **THEN** status reports unavailable or unsupported with an actionable reason and performs no write or network operation
+
+#### Scenario: Explicit promotion is outside the filesystem journal
+- **WHEN** the user confirms `memory promote` for a supported scope and write capability
+- **THEN** the provider owns the append and its recovery/retention semantics; Agent Manager does not add a filesystem operation-journal entry or make it reversible through `undo`

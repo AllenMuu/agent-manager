@@ -121,12 +121,12 @@ func TestRecommendJSONInsufficientEvidenceIsEmptyState(t *testing.T) {
 	}
 	var doc struct {
 		Scopes []struct {
-			Status         string `json:"status"`
-			Technologies   []any   `json:"technologies"`
-			Evidence       []any   `json:"evidence"`
-			Diagnostics    []any   `json:"diagnostics"`
+			Status          string `json:"status"`
+			Technologies    []any  `json:"technologies"`
+			Evidence        []any  `json:"evidence"`
+			Diagnostics     []any  `json:"diagnostics"`
 			Recommendations []any  `json:"recommendations"`
-			NextAction     string `json:"nextAction"`
+			NextAction      string `json:"nextAction"`
 		} `json:"scopes"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
@@ -189,9 +189,11 @@ func TestRecommendMonorepoReportsIndependentScopes(t *testing.T) {
 	}
 	var doc struct {
 		Scopes []struct {
-			Path           string `json:"path"`
-			Status         string `json:"status"`
-			Technologies   []struct{ ID string `json:"id"` } `json:"technologies"`
+			Path         string `json:"path"`
+			Status       string `json:"status"`
+			Technologies []struct {
+				ID string `json:"id"`
+			} `json:"technologies"`
 		} `json:"scopes"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {

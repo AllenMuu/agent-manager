@@ -28,3 +28,7 @@ The system SHALL install a validated SubAgent only through a selected supported 
 #### Scenario: Installation would overwrite an unmanaged definition
 - **WHEN** an installation destination contains an unmanaged definition
 - **THEN** the system refuses to overwrite it without an explicit supported conflict strategy and force confirmation
+
+#### Scenario: Target has no verified SubAgent representation
+- **WHEN** a canonical SubAgent is targeted at Pi
+- **THEN** the system reports the unsupported target representation before confirmation and does not create or modify a target-native file

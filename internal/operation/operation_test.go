@@ -79,6 +79,113 @@ func TestPlanRendersChangesAndWarnings(t *testing.T) {
 	}
 }
 
+func TestRecordPlanPersistsPlanSchemaAndResourceMetadata(t *testing.T) {
+	root := t.TempDir()
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	plan := operation.Plan{Version: "v1", ResourceKind: "skill", Operation: "activate"}
+	if err := journal.RecordPlan(plan, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok, err := journal.Latest()
+	if err != nil || !ok {
+		t.Fatalf("Latest() = %#v, %v, %v", entry, ok, err)
+	}
+	if entry.Version != "v1" || entry.ResourceKind != "skill" || entry.Operation != "activate" {
+		t.Fatalf("entry metadata = %#v", entry)
+	}
+}
+
+func TestRecordPlanPreservesNonSkillPlanMetadataForUndo(t *testing.T) {
+	for _, resourceKind := range []string{"subagent", "memory"} {
+		t.Run(resourceKind, func(t *testing.T) {
+			journal := operation.New(filepath.Join(t.TempDir(), "journal.json"))
+			plan := operation.Plan{Version: "v1", ResourceKind: resourceKind, Operation: "install " + resourceKind}
+			if err := journal.RecordPlan(plan, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+
+			entry, ok, err := journal.Latest()
+			if err != nil || !ok {
+				t.Fatalf("Latest() = %#v, %v, %v", entry, ok, err)
+			}
+			if entry.Version != plan.Version || entry.ResourceKind != plan.ResourceKind || entry.Operation != plan.Operation {
+				t.Fatalf("entry metadata = %#v, want version=%q kind=%q operation=%q", entry, plan.Version, plan.ResourceKind, plan.Operation)
+			}
+
+			var undoPlan operation.Plan
+			err = journal.UndoLatest(func(candidate operation.Plan) bool {
+				undoPlan = candidate
+				return false
+			})
+			if !errors.Is(err, operation.ErrNotConfirmed) {
+				t.Fatalf("UndoLatest() = %v, want ErrNotConfirmed", err)
+			}
+			if undoPlan.Version != plan.Version || undoPlan.ResourceKind != plan.ResourceKind {
+				t.Fatalf("undo plan metadata = %#v, want version=%q kind=%q", undoPlan, plan.Version, plan.ResourceKind)
+			}
+		})
+	}
+}
+
+func TestRecordPlanRejectsUnknownMetadataWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		version, resourceKind string
+	}{
+		{name: "schema version", version: "v99", resourceKind: "skill"},
+		{name: "resource kind", version: "v1", resourceKind: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "journal.json")
+			journal := operation.New(path)
+			original := []byte(`[]`)
+			if err := os.WriteFile(path, original, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := journal.RecordPlan(operation.Plan{
+				Version: tc.version, ResourceKind: tc.resourceKind, Operation: "activate",
+			}, nil, nil)
+			if err == nil {
+				t.Fatal("RecordPlan unexpectedly succeeded")
+			}
+			got, readErr := os.ReadFile(path)
+			if readErr != nil || string(got) != string(original) {
+				t.Fatalf("journal after rejected record = %q, %v; want unchanged %q", got, readErr, original)
+			}
+		})
+	}
+}
+
+func TestUndoPreviewCarriesLegacyAndVersionedSkillMetadata(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name                  string
+		data                  map[string]any
+		wantVersion, wantKind string
+	}{
+		{name: "legacy", data: map[string]any{"operation": "activate"}, wantVersion: "v1", wantKind: "skill"},
+		{name: "versioned", data: map[string]any{"version": "v1", "resourceKind": "skill", "operation": "activate"}, wantVersion: "v1", wantKind: "skill"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			journalPath := filepath.Join(root, tc.name+".json")
+			contents, err := json.Marshal([]map[string]any{tc.data})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(journalPath, contents, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var preview operation.Plan
+			if err := operation.New(journalPath).UndoLatest(func(p operation.Plan) bool { preview = p; return false }); !errors.Is(err, operation.ErrNotConfirmed) {
+				t.Fatalf("UndoLatest = %v", err)
+			}
+			if preview.Version != tc.wantVersion || preview.ResourceKind != tc.wantKind {
+				t.Fatalf("preview metadata = %#v", preview)
+			}
+		})
+	}
+}
+
 func TestJournalUndoRestoresLatestPreOperationState(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "skill")
@@ -170,7 +277,7 @@ func TestJournalUndoRefusesUnexpectedCurrentState(t *testing.T) {
 	}
 }
 
-func TestRestorePreflightPreservesAllCurrentPathsWhenBackupIsMissing(t *testing.T) {
+func TestRestoreSkipsMissingBackupButRestoresIndependentPaths(t *testing.T) {
 	root := t.TempDir()
 	first, second := filepath.Join(root, "first"), filepath.Join(root, "second")
 	if err := os.WriteFile(first, []byte("before-first"), 0o644); err != nil {
@@ -196,7 +303,7 @@ func TestRestorePreflightPreservesAllCurrentPathsWhenBackupIsMissing(t *testing.
 	if err := journal.Restore(snapshots); err == nil {
 		t.Fatal("Restore unexpectedly succeeded with missing backup")
 	}
-	for _, want := range []struct{ path, text string }{{first, "current-first"}, {second, "current-second"}} {
+	for _, want := range []struct{ path, text string }{{first, "before-first"}, {second, "current-second"}} {
 		got, err := os.ReadFile(want.path)
 		if err != nil || string(got) != want.text {
 			t.Fatalf("%s = %q, %v", want.path, got, err)
@@ -259,7 +366,8 @@ func TestRestoreRestoresMovedCurrentPathWhenSecondPublishFails(t *testing.T) {
 		}
 		return nil
 	}
-	if err := journal.Restore(snapshots); err == nil {
+	err = journal.Restore(snapshots)
+	if err == nil {
 		t.Fatal("Restore unexpectedly succeeded")
 	}
 	for _, want := range []struct{ path, text string }{{first, "current-first"}, {second, "current-second"}} {
@@ -298,7 +406,8 @@ func TestRestoreRemovesPublishedCandidateWhenItHadNoCurrentPath(t *testing.T) {
 		}
 		return nil
 	}
-	if err := journal.Restore(snapshots); err == nil {
+	err = journal.Restore(snapshots)
+	if err == nil {
 		t.Fatal("Restore unexpectedly succeeded")
 	}
 	if _, err := os.Lstat(first); !os.IsNotExist(err) {
@@ -306,5 +415,162 @@ func TestRestoreRemovesPublishedCandidateWhenItHadNoCurrentPath(t *testing.T) {
 	}
 	if got, err := os.ReadFile(second); err != nil || string(got) != "current-second" {
 		t.Fatalf("second current state = %q, %v", got, err)
+	}
+}
+
+func TestRestorePreservesLateOwnerForPublishedAbsentSnapshot(t *testing.T) {
+	root := t.TempDir()
+	first, second := filepath.Join(root, "first"), filepath.Join(root, "second")
+	if err := os.WriteFile(second, []byte("before-second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("current-second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	journal.BeforeRestorePublish = func(path string) error {
+		calls++
+		if calls == 2 {
+			if err := os.WriteFile(first, []byte("late owner"), 0o644); err != nil {
+				return err
+			}
+			return errors.New("publish failure")
+		}
+		return nil
+	}
+	if err := journal.Restore(snapshots); err == nil || !strings.Contains(err.Error(), "preserved restore staging") {
+		t.Fatal("Restore unexpectedly succeeded")
+	}
+	if got, readErr := os.ReadFile(first); readErr != nil || string(got) != "late owner" {
+		t.Fatalf("late owner = %q, %v; restore removed an unowned target", got, readErr)
+	}
+}
+
+func TestRestoreDoesNotOverwriteLateOwnerForPublishedExistingSnapshot(t *testing.T) {
+	root := t.TempDir()
+	first, second := filepath.Join(root, "first"), filepath.Join(root, "second")
+	if err := os.WriteFile(first, []byte("before-first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("before-second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("current-first"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("current-second"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	journal.BeforeRestorePublish = func(string) error {
+		calls++
+		if calls == 2 {
+			if err := os.WriteFile(first, []byte("late owner"), 0o644); err != nil {
+				return err
+			}
+			return errors.New("publish failure")
+		}
+		return nil
+	}
+	restoreErr := journal.Restore(snapshots)
+	if restoreErr == nil || !strings.Contains(restoreErr.Error(), "preserved restore staging") {
+		t.Fatal("Restore unexpectedly succeeded")
+	}
+	if got, readErr := os.ReadFile(first); readErr != nil || string(got) != "late owner" {
+		t.Fatalf("late owner = %q, %v; restore overwrote an unowned target", got, readErr)
+	}
+	marker := "preserved restore staging at "
+	start := strings.Index(restoreErr.Error(), marker)
+	if start < 0 {
+		t.Fatalf("restore error omitted recovery staging path: %v", restoreErr)
+	}
+	staging := restoreErr.Error()[start+len(marker):]
+	if end := strings.Index(staging, ": "); end >= 0 {
+		staging = staging[:end]
+	}
+	if got, readErr := os.ReadFile(filepath.Join(staging, "previous")); readErr != nil || string(got) != "current-first" {
+		t.Fatalf("staged original was not retained for recovery: %q, %v", got, readErr)
+	}
+}
+
+func TestRestoreRefusesReplacedParentWithoutTouchingExternalTree(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "project")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parent, "skill")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("external owner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recoverable := parent + "-recoverable"
+	journal.BeforeRestorePublish = func(string) error {
+		if err := os.Rename(parent, recoverable); err != nil {
+			return err
+		}
+		if err := os.Symlink(external, parent); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		return nil
+	}
+	err = journal.Restore(snapshots)
+	if !errors.Is(err, operation.ErrUnsafePath) {
+		t.Fatalf("Restore() error = %v, want unsafe path", err)
+	}
+	if got, readErr := os.ReadFile(sentinel); readErr != nil || string(got) != "external owner" {
+		t.Fatalf("external tree changed: %q, %v", got, readErr)
+	}
+}
+
+func TestRestoreRejectsNestedSymlinkAncestor(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(target, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "nested-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	path := filepath.Join(link, "child", "skill")
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Restore(snapshots); !errors.Is(err, operation.ErrUnsafePath) {
+		t.Fatalf("Restore() error = %v, want unsafe path", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "current" {
+		t.Fatalf("nested symlink ancestor target changed: %q, %v", got, readErr)
 	}
 }

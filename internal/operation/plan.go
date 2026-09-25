@@ -12,9 +12,22 @@ type Change struct {
 
 // Plan is a preview of a guarded operation.
 type Plan struct {
-	Operation string
-	Changes   []Change
-	Warnings  []string
+	// Version identifies the operation journal schema used by this plan.
+	// Empty values are normalized to the current schema when recorded.
+	Version string
+	// ResourceKind identifies the managed resource affected by this plan.
+	// Empty values are normalized to Skill for legacy callers.
+	ResourceKind string
+	Operation    string
+	Changes      []Change
+	Warnings     []string
+}
+
+// NewPlan creates a plan for the current Skill operation schema. It keeps
+// existing Skill workflows explicit while allowing future resource kinds to
+// construct plans with their own metadata.
+func NewPlan(operation string) Plan {
+	return Plan{Version: "v1", ResourceKind: "skill", Operation: operation}
 }
 
 // String renders a compact, human-readable preview.

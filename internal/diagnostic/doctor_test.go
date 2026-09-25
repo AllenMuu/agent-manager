@@ -34,6 +34,56 @@ func TestScanReportsCatalogOrphanUnsupportedAndGitGuidance(t *testing.T) {
 	}
 }
 
+func TestScanReportsAdapterCapabilitiesAndUnmanagedResources(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	project := filepath.Join(root, "project")
+	mustWrite(t, filepath.Join(library, "managed", "SKILL.md"), "---\nname: managed\ndescription: managed\n---\n")
+	mustWrite(t, filepath.Join(library, "managed", "check.sh"), "#!/bin/sh\nprintf executed > marker\n")
+	if err := os.Chmod(filepath.Join(library, "managed", "check.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(project, ".codex", "skills", "unmanaged", "SKILL.md"), "---\nname: unmanaged\ndescription: unmanaged\n---\n")
+	mustLink(t, filepath.Join(library, "orphan"), filepath.Join(project, ".codex", "skills", "orphan"))
+	mustMkdir(t, filepath.Join(project, ".other-agent", "skills"))
+
+	before := snapshotTree(t, root)
+	findings, err := diagnostic.Scan(library, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := findingsText(findings)
+	for _, want := range []string{"adapter capabilities", "filesystem-read", "unmanaged resource", "orphaned managed link", "unsupported agent skill location"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("findings %q do not contain %q", joined, want)
+		}
+	}
+	if got := snapshotTree(t, root); got != before {
+		t.Fatalf("diagnostics mutated filesystem:\nbefore=%s\nafter=%s", before, got)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".skill-manager", "journal.json")); !os.IsNotExist(err) {
+		t.Fatalf("diagnostics created journal: %v", err)
+	}
+}
+
+func TestScanTreatsPiAsSupportedLocation(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	project := filepath.Join(root, "project")
+	mustWrite(t, filepath.Join(library, "placeholder", "SKILL.md"), "---\nname: placeholder\ndescription: placeholder\n---\n")
+	mustMkdir(t, filepath.Join(project, ".pi", "skills"))
+
+	findings, err := diagnostic.Scan(library, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, finding := range findings {
+		if finding.Path == filepath.Join(project, ".pi") && strings.Contains(finding.Message, "unsupported agent") {
+			t.Fatalf("Pi location was reported as unsupported: %#v", finding)
+		}
+	}
+}
+
 func TestScanReportsTrackedIgnoredAndUntrackedManagedLinks(t *testing.T) {
 	root := t.TempDir()
 	lib := filepath.Join(root, "library")
@@ -113,6 +163,26 @@ func TestAddGitignoreRejectsUnmanagedAndSkipsExistingRule(t *testing.T) {
 	}
 }
 
+func TestAddGitignoreAcceptsPiManagedLink(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	project := filepath.Join(root, "project")
+	mustWrite(t, filepath.Join(library, "demo", "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
+	link := filepath.Join(project, ".pi", "skills", "demo")
+	mustLink(t, filepath.Join(library, "demo"), link)
+
+	if _, err := diagnostic.AddGitignore(project, []string{link}, func(operation.Plan) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(project, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(contents), "/.pi/skills/demo\n"; got != want {
+		t.Fatalf("ignore = %q, want %q", got, want)
+	}
+}
+
 func TestDeleteRevalidatesConcurrentReplacementAndCatalogIO(t *testing.T) {
 	root := t.TempDir()
 	lib := filepath.Join(root, "library")
@@ -167,6 +237,39 @@ func TestReconcileRelinksOrphanOnlyAfterConfirmation(t *testing.T) {
 	}
 	if got, _ := os.Readlink(link); got != filepath.Join(library, "demo") {
 		t.Fatalf("link = %q", got)
+	}
+}
+
+func TestReconcilePreviewDetailsNameReplacementSource(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "new-library")
+	project := filepath.Join(root, "project")
+	old := filepath.Join(root, "old-library", "demo")
+	newSource := filepath.Join(library, "demo")
+	mustWrite(t, filepath.Join(newSource, "SKILL.md"), "---\nname: demo\ndescription: demo\n---\n")
+	mustWrite(t, filepath.Join(old, "SKILL.md"), "---\nname: demo\ndescription: demo\n---\n")
+	link := filepath.Join(project, ".codex", "skills", "demo")
+	mustLink(t, old, link)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	after, err := journal.Capture([]string{link})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record("activate", nil, after); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Dir(old)); err != nil {
+		t.Fatal(err)
+	}
+	var preview operation.Plan
+	if _, err := diagnostic.Reconcile(library, project, journal, func(plan operation.Plan) bool {
+		preview = plan
+		return false
+	}); !errors.Is(err, operation.ErrNotConfirmed) {
+		t.Fatalf("Reconcile() = %v, want confirmation refusal", err)
+	}
+	if len(preview.Changes) != 1 || preview.Changes[0].Detail != newSource {
+		t.Fatalf("reconcile preview = %#v, want replacement source %q", preview.Changes, newSource)
 	}
 }
 
@@ -313,6 +416,56 @@ func TestReconcileDetectsLaterLinkReplacementAndRestoresPreState(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsProjectParentSwapBeforeAnchoredPublish(t *testing.T) {
+	root := t.TempDir()
+	lib := filepath.Join(root, "library")
+	project := filepath.Join(root, "project")
+	j := operation.New(filepath.Join(root, "j.json"))
+	mustWrite(t, filepath.Join(lib, "a", "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
+	old := filepath.Join(root, "old", "a")
+	mustWrite(t, filepath.Join(old, "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
+	path := filepath.Join(project, ".codex", "skills", "a")
+	mustLink(t, old, path)
+	after, _ := j.Capture([]string{path})
+	if err := j.Record("activate", nil, after); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "old")); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(root, "external", "skills")
+	if err := os.MkdirAll(external, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalTarget := filepath.Join(root, "external", "owner")
+	if err := os.MkdirAll(externalTarget, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(external, "a")
+	if err := os.Symlink(externalTarget, externalPath); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	diagnostic.BeforeReconcilePublish = func(string) error {
+		if called {
+			return nil
+		}
+		called = true
+		codexRoot := filepath.Join(project, ".codex")
+		if err := os.Rename(codexRoot, codexRoot+".real"); err != nil {
+			return err
+		}
+		return os.Symlink(filepath.Dir(external), codexRoot)
+	}
+	defer func() { diagnostic.BeforeReconcilePublish = nil }()
+	if _, err := diagnostic.Reconcile(lib, project, j, func(operation.Plan) bool { return true }); err == nil {
+		t.Fatal("Reconcile unexpectedly succeeded after parent swap")
+	}
+	if got, err := os.Readlink(externalPath); err != nil || got != externalTarget {
+		t.Fatalf("external owner changed: %q, %v", got, err)
+	}
+}
+
 func TestDeleteLibrarySkillRequiresForceConfirmation(t *testing.T) {
 	root := t.TempDir()
 	library := filepath.Join(root, "library")
@@ -338,6 +491,45 @@ func findingsText(findings []diagnostic.Finding) string {
 	}
 	return strings.Join(text, "\n")
 }
+
+func snapshotTree(t *testing.T, root string) string {
+	t.Helper()
+	var snapshot strings.Builder
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		snapshot.WriteString(rel + "|" + info.Mode().String() + "|")
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			snapshot.WriteString(target)
+		} else if info.Mode().IsRegular() {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			snapshot.Write(contents)
+		}
+		snapshot.WriteByte('\n')
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %q: %v", root, err)
+	}
+	return snapshot.String()
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {

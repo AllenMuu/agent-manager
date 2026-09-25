@@ -16,7 +16,7 @@ import (
 const operatorIdentifier = "skill-manager-operator"
 const ownershipMarker = ".skill-manager-owner"
 const ownershipValue = "skill-manager/operator/v1\n"
-const operatorSkill = "---\nname: Skill Manager Operator\ndescription: Guide safe local Skill Manager use.\n---\nUse structured `skill-manager search --json` before choosing a skill. Explain each recommendation and its rationale to the human. Obtain explicit human confirmation before any mutation, then invoke the Skill Manager CLI.\n"
+const operatorSkill = "---\nname: Agent Manager Operator\ndescription: Guide safe local Agent Manager use.\n---\nUse structured `agent-manager search --json` before choosing a skill. Explain each recommendation and its rationale to the human. Obtain explicit human confirmation before any mutation, then invoke the Agent Manager CLI.\n"
 
 // Service performs the only operation allowed to modify global agent locations.
 type Service struct {
@@ -38,7 +38,7 @@ func (s *Service) Initialize() (operation.Plan, error) {
 	if err := s.verify(); err != nil {
 		return operation.Plan{}, fmt.Errorf("verify CLI availability: %w", err)
 	}
-	plan := operation.Plan{Operation: "init"}
+	plan := operation.NewPlan("init")
 	paths := make([]string, 0, 2)
 	snapshotPaths := make([]string, 0, 4)
 	for _, a := range adapter.Supported() {
@@ -139,7 +139,7 @@ func (s *Service) Initialize() (operation.Plan, error) {
 	if err != nil {
 		return plan, errors.Join(err, s.Journal.Restore(before))
 	}
-	if err := s.Journal.Record("init", before, after); err != nil {
+	if err := s.Journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}

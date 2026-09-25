@@ -77,6 +77,11 @@ Issue #3's artifacts and evaluation harness remain follow-on work; this change o
 5. Add a single shared-Memory provider path with explicit configuration and promotion commands; do not import or duplicate existing private agent memory.
 6. Roll back by invoking the old command alias for Skill workflows and using the existing journal undo mechanism for reversible operations. New provider configuration is removable without deleting provider-owned data.
 
-## Open Questions
+## Resolved Provider Boundary
 
-- Which shared-Memory provider (TencentDB Agent Memory or Graphiti) is feasible in the target local environment without violating the no-new-network-default constraint? This selection affects only the Phase 3 adapter implementation, not the protocol or task breakdown.
+The initial implementation selects a local file-backed Memory provider. It
+requires an existing direct regular file, performs read-only discovery without
+network access, and reserves writes for explicitly confirmed promotion. Remote
+providers such as TencentDB Agent Memory and Graphiti remain unsupported and
+are deferred to a follow-on change; selecting one later must not weaken the
+provider-ownership, no-network-default, or explicit-promotion boundary.

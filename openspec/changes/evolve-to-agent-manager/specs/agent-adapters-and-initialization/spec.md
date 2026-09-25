@@ -11,6 +11,10 @@ The system SHALL provide capability-declaring adapters for Claude Code, Codex, a
 - **WHEN** the user targets an adapter that does not support the requested resource kind
 - **THEN** the system reports the target capability mismatch and makes no filesystem change
 
+#### Scenario: Pi SubAgent placement is requested
+- **WHEN** a user targets a canonical SubAgent at the Pi adapter
+- **THEN** the system reports an explicit unsupported representation because no verified native Pi SubAgent format exists, and makes no filesystem change
+
 ### Requirement: Explicit global initialization
 The system SHALL modify the global baseline only through an explicit initialization command. Initialization SHALL verify CLI availability and install or update a minimal Operator skill only for supported global agent adapters.
 

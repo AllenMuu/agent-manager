@@ -34,6 +34,17 @@ func TestInitializeRequiresConfirmationThenInstallsOnlyOperatorSkill(t *testing.
 				t.Errorf("%s lacks %q", path, phrase)
 			}
 		}
+		if !strings.Contains(string(contents), "agent-manager") {
+			t.Errorf("%s lacks primary agent-manager guidance", path)
+		}
+		if strings.Contains(string(contents), "skill-manager search") {
+			t.Errorf("%s still instructs the deprecated skill-manager command", path)
+		}
+	}
+	for _, dir := range []string{".codex", ".claude"} {
+		if _, err := os.Stat(filepath.Join(home, dir, "skills", "skill-manager-operator", ".skill-manager-owner")); err != nil {
+			t.Fatalf("compatibility ownership marker missing for %s: %v", dir, err)
+		}
 	}
 }
 
