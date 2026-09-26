@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -56,12 +57,56 @@ func newTaskCommand() *cobra.Command {
 
 func newArtifactsCommand() *cobra.Command {
 	var project string
-	command := &cobra.Command{Use: "artifacts", Short: "Inspect and validate task artifacts"}
+	command := &cobra.Command{Use: "artifacts", Short: "Save, inspect, and validate task artifacts"}
 	command.PersistentFlags().StringVar(&project, "project", ".", "project root")
 	command.AddCommand(newArtifactListCommand(&project))
+	command.AddCommand(newArtifactSaveCommand(&project))
 	command.AddCommand(newArtifactShowCommand(&project))
 	command.AddCommand(newArtifactValidateCommand(&project))
 	command.AddCommand(newArtifactRenderCommand(&project))
+	return command
+}
+
+func newArtifactSaveCommand(project *string) *cobra.Command {
+	var yes bool
+	command := &cobra.Command{Use: "save <task-id> <path>", Short: "Validate and save an artifact into a task", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+		store, err := artifact.NewStore(*project)
+		if err != nil {
+			return err
+		}
+		doc, err := artifact.Load(artifactPath(*project, args[1]))
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(store.TasksRoot(), args[0], string(doc.Kind())+".yaml")
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Artifact save plan\ntask: %s\nkind: %s\ndestination: %s\n", args[0], doc.Kind(), destination); err != nil {
+			return err
+		}
+		confirmed := yes
+		if !confirmed {
+			if _, err := fmt.Fprint(cmd.OutOrStdout(), "Confirm [y/N]: "); err != nil {
+				return err
+			}
+			scanner := bufio.NewScanner(cmd.InOrStdin())
+			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					return err
+				}
+				return nil
+			}
+			confirmed = strings.EqualFold(strings.TrimSpace(scanner.Text()), "y")
+		}
+		if !confirmed {
+			return nil
+		}
+		path, err := store.Save(args[0], doc)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "saved %s artifact for task %s: %s\n", doc.Kind(), args[0], path)
+		return err
+	}}
+	command.Flags().BoolVar(&yes, "yes", false, "confirm the displayed artifact save plan")
 	return command
 }
 

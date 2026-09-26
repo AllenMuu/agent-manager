@@ -215,6 +215,14 @@ type Provider interface {
 	Promote(scope Scope, knowledge string) error
 }
 
+// Searcher is the optional read boundary used when assembling task context.
+// It is separate from Provider so write-only integrations need not implement
+// search, and callers can keep storage concerns outside the resolver.
+type Searcher interface {
+	Status() ProviderStatus
+	Search(scope Scope, query string) ([]string, error)
+}
+
 // MapAgentAccess intersects provider capabilities with an agent's declared
 // integration capabilities and scopes. It never mutates either input and
 // returns no access when the provider is unavailable.

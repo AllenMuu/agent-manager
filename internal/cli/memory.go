@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
+	"github.com/AllenMuu/skill-manager/internal/artifact"
 	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/taskcontext"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +36,7 @@ func newMemoryCommand(rootOptions *rootOptions) *cobra.Command {
 }
 
 func newMemoryPromoteCommand(rootOptions *rootOptions) *cobra.Command {
-	var scope, knowledge string
+	var scope, knowledge, lessonsPath string
 	var yes bool
 	command := &cobra.Command{
 		Use:   "promote",
@@ -43,8 +45,18 @@ func newMemoryPromoteCommand(rootOptions *rootOptions) *cobra.Command {
 			if strings.TrimSpace(scope) == "" {
 				return fmt.Errorf("--scope is required")
 			}
-			if strings.TrimSpace(knowledge) == "" {
-				return fmt.Errorf("--knowledge must not be empty")
+			if (strings.TrimSpace(knowledge) == "") == (strings.TrimSpace(lessonsPath) == "") {
+				return fmt.Errorf("provide exactly one of --knowledge or --lessons")
+			}
+			if lessonsPath != "" {
+				doc, err := artifact.Load(lessonsPath)
+				if err != nil {
+					return err
+				}
+				knowledge, err = taskcontext.FormatLessons(doc)
+				if err != nil {
+					return err
+				}
 			}
 			loaded, err := config.Load(rootOptions.configPath)
 			if err != nil {
@@ -100,6 +112,7 @@ func newMemoryPromoteCommand(rootOptions *rootOptions) *cobra.Command {
 	}
 	command.Flags().StringVar(&scope, "scope", "", "Memory scope (user or project)")
 	command.Flags().StringVar(&knowledge, "knowledge", "", "knowledge to append; never shown in the plan")
+	command.Flags().StringVar(&lessonsPath, "lessons", "", "validated lessons artifact to promote explicitly")
 	command.Flags().BoolVar(&yes, "yes", false, "confirm the displayed promotion plan")
 	return command
 }

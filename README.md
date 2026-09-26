@@ -68,8 +68,10 @@ agent-manager subagents install <id> --project . --target claude-code --yes
 agent-manager subagents remove <id> --project . --target claude-code --yes
 agent-manager memory status         # inspect shared Memory provider availability
 agent-manager memory promote --scope user --knowledge "..." --yes
+agent-manager memory promote --scope project --lessons .agents/tasks/task-1/lessons.yaml --yes
 agent-manager task init --id task-1 --summary "..." --project .
 agent-manager artifacts list task-1 --project .
+agent-manager artifacts save task-1 ./out/plan.yaml --project . --yes
 agent-manager artifacts validate .agents/tasks/task-1/intent.yaml
 agent-manager roles --json
 agent-manager eval list
@@ -86,7 +88,7 @@ agent-manager eval run java-backend --agent codex
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
-| `memory promote` | Explicitly append confirmed knowledge to the configured provider |
+| `memory promote` | Explicitly append confirmed text or typed lessons to the configured provider |
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
 | `list` | Inventory project skills with their status |
@@ -102,6 +104,7 @@ agent-manager eval run java-backend --agent codex
 | `roles bind` | Check a role contract against a declared agent adapter |
 | `task init` | Create a task and its initial `intent` artifact |
 | `artifacts list` | List the versioned artifacts belonging to a task |
+| `artifacts save` | Validate and save a stage artifact into an existing task |
 | `artifacts show` | Inspect one artifact as YAML |
 | `artifacts validate` | Validate an artifact without executing its content |
 | `artifacts render` | Render an artifact as human-readable Markdown |
@@ -114,7 +117,7 @@ agent-manager eval run java-backend --agent codex
 | `subagents install <id>` | Render and install a SubAgent for Claude Code or Codex (guarded, confirmed, journaled) |
 | `subagents remove <id>` | Remove a managed SubAgent representation (guarded, confirmed, journaled) |
 
-Every filesystem-mutating command previews its plan, requires confirmation (`--yes` or an interactive prompt), records a reversible filesystem operation-journal entry, and leaves unmanaged directories, ordinary files, and unexpected links untouched by default. `memory promote` is the exception: it separately confirms an append to provider-owned data, does not create a filesystem operation-journal entry, and is not reversible through `undo`; recovery and retention semantics are defined by the selected provider. No Skill, SubAgent, status, inventory, or list workflow copies resource content or agent conversation data into Memory.
+Every Skill/resource filesystem-mutating command previews its plan, requires confirmation (`--yes` or an interactive prompt), records a reversible filesystem operation-journal entry, and leaves unmanaged directories, ordinary files, and unexpected links untouched by default. `artifacts save` separately confirms a validated task-artifact write; `memory promote` separately confirms an append to provider-owned data. Neither operation creates a filesystem operation-journal entry or is reversible through `undo`. No Skill, SubAgent, status, inventory, or list workflow copies resource content or agent conversation data into Memory.
 
 ## Canonical SubAgents
 
@@ -217,8 +220,9 @@ unknown future fields are retained during validation, rendering, and writes.
 The six canonical kinds are `intent`, `spec`, `plan`, `implementation`,
 `verification`, and `lessons`. Lessons have typed `decision`, `constraint`,
 `lesson`, and `known_issue` items with scope and confidence. They are never
-written to Memory automatically; `taskcontext.PromoteLessons` is an explicit,
-confirmable bridge to the existing Memory provider boundary.
+written to Memory automatically; `memory promote --lessons <path>` explicitly
+formats and confirms a lessons artifact before appending it to the configured
+provider.
 
 Role contracts are agent-neutral and declare required input artifacts, output
 artifacts, filesystem/shell/network permissions, and adapter capability gaps.
@@ -226,12 +230,20 @@ The built-in roles are planner, implementer, reviewer, and verifier. Runtime
 adapters only receive capabilities they declare; shell and network requirements
 are surfaced as warnings and network remains disabled by default.
 
+The task context resolver assembles bounded root `AGENTS.md`/`CLAUDE.md`
+guidance, requested compatible Skills, role input artifacts, and optionally
+search results from an injected read/search-capable Memory provider. It does
+not invoke an agent or write to Memory.
+
 The local eval harness stores cases under `evals/<suite>/cases/<case-id>/` and
 results under `.agent-manager/evals/` (ignored local runtime state). The first
-runner is deterministic and rule-based: an agent may supply a candidate
-response directory, while the harness captures case status, score, evidence,
-agent label, configuration version, timestamp, and duration. `eval compare`
-reports per-case regressions instead of relying on an LLM judge alone. The
+runner is deterministic and rule-based: `eval run <suite> --candidate-dir <dir>`
+scores supplied `<case-id>.md` responses; a missing response is partial rather
+than silently falling back to a fixture. Without `--candidate-dir`, checked-in
+fixture responses provide a deterministic baseline. The harness captures case
+status, score, evidence, agent label, configuration version, timestamp, and
+duration. `eval compare` reports regressions, improvements, and newly added
+cases instead of relying on an LLM judge alone. The
 planned baseline is documented in [evals/README.md](evals/README.md), with a
 small runnable `java-backend` fixture suite included.
 

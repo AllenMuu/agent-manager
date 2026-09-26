@@ -103,9 +103,14 @@ func newEvalCompareCommand(options *evalOptions) *cobra.Command {
 		if options.json {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(comparison)
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "baseline: %s\ncandidate: %s\nregressions: %d\nimprovements: %d\nunchanged: %d\n", comparison.BaselineRun, comparison.CandidateRun, len(comparison.Regressions), len(comparison.Improvements), comparison.Unchanged)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "baseline: %s\ncandidate: %s\nregressions: %d\nimprovements: %d\nadded: %d\nunchanged: %d\n", comparison.BaselineRun, comparison.CandidateRun, len(comparison.Regressions), len(comparison.Improvements), len(comparison.Added), comparison.Unchanged)
 		for _, regression := range comparison.Regressions {
 			if _, writeErr := fmt.Fprintf(cmd.OutOrStdout(), "regression: %s (%s)\n", regression.CaseID, regression.Reason); writeErr != nil {
+				return writeErr
+			}
+		}
+		for _, added := range comparison.Added {
+			if _, writeErr := fmt.Fprintf(cmd.OutOrStdout(), "added: %s (%s)\n", added.CaseID, added.Candidate); writeErr != nil {
 				return writeErr
 			}
 		}

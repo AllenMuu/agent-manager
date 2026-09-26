@@ -333,12 +333,12 @@ func NewStore(project string) (Store, error) {
 	if err != nil {
 		return Store{}, fmt.Errorf("resolve project root: %w", err)
 	}
-	info, err := os.Stat(abs)
+	info, err := os.Lstat(abs)
 	if err != nil {
 		return Store{}, fmt.Errorf("inspect project root: %w", err)
 	}
-	if !info.IsDir() {
-		return Store{}, fmt.Errorf("project root %s is not a directory", abs)
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return Store{}, fmt.Errorf("project root %s must be a real directory", abs)
 	}
 	return Store{ProjectRoot: abs}, nil
 }
@@ -368,13 +368,13 @@ func (s Store) Init(taskID string, intent Document) (string, error) {
 	if err := intent.Validate(); err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(dir); err == nil {
+	if _, err := os.Lstat(dir); err == nil {
 		return "", fmt.Errorf("task %q already exists", taskID)
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("inspect task directory: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create task directory: %w", err)
+	if _, err := s.taskDirectory(taskID, true); err != nil {
+		return "", err
 	}
 	path := filepath.Join(dir, string(Intent)+".yaml")
 	if err := writeFile(path, intent); err != nil {
@@ -386,7 +386,7 @@ func (s Store) Init(taskID string, intent Document) (string, error) {
 // Save writes an artifact into an existing task directory. It does not execute
 // any artifact content and only accepts known kinds and safe task IDs.
 func (s Store) Save(taskID string, doc Document) (string, error) {
-	dir, err := s.TaskDir(taskID)
+	dir, err := s.taskDirectory(taskID, false)
 	if err != nil {
 		return "", err
 	}
@@ -399,10 +399,14 @@ func (s Store) Save(taskID string, doc Document) (string, error) {
 	if err := doc.Validate(); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create task directory: %w", err)
-	}
 	path := filepath.Join(dir, string(doc.Kind())+".yaml")
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("artifact destination %s must be a direct regular file", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect artifact destination: %w", err)
+	}
 	if err := writeFile(path, doc); err != nil {
 		return "", err
 	}
@@ -415,7 +419,7 @@ type Entry struct {
 }
 
 func (s Store) List(taskID string) ([]Entry, error) {
-	dir, err := s.TaskDir(taskID)
+	dir, err := s.taskDirectory(taskID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +443,7 @@ func (s Store) List(taskID string) ([]Entry, error) {
 }
 
 func (s Store) Load(taskID string, kind Kind) (Document, string, error) {
-	dir, err := s.TaskDir(taskID)
+	dir, err := s.taskDirectory(taskID, false)
 	if err != nil {
 		return Document{}, "", err
 	}
@@ -447,11 +451,45 @@ func (s Store) Load(taskID string, kind Kind) (Document, string, error) {
 		return Document{}, "", fmt.Errorf("unsupported artifact kind %q", kind)
 	}
 	path := filepath.Join(dir, string(kind)+".yaml")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return Document{}, "", fmt.Errorf("inspect artifact %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return Document{}, "", fmt.Errorf("artifact %s must be a direct regular file", path)
+	}
 	doc, err := Load(path)
 	if err == nil && doc.ID() != taskID {
 		return Document{}, "", fmt.Errorf("artifact id %q does not match task id %q", doc.ID(), taskID)
 	}
 	return doc, path, err
+}
+
+func (s Store) taskDirectory(taskID string, create bool) (string, error) {
+	if err := validateID(taskID); err != nil {
+		return "", err
+	}
+	current := s.ProjectRoot
+	for _, component := range []string{".agents", "tasks", taskID} {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if !create {
+				return "", fmt.Errorf("inspect task directory %s: %w", current, err)
+			}
+			if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+				return "", fmt.Errorf("create task directory %s: %w", current, err)
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect task directory %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("task path component %s must be a real directory", current)
+		}
+	}
+	return current, nil
 }
 
 func validateID(id string) error {
