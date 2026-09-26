@@ -1,0 +1,13 @@
+version: v1
+id: java-redis-timeout-001
+category: java-backend
+input:
+  intent: intent.yaml
+expectations:
+  required_points:
+    - timeout budget
+    - fallback
+  forbidden_points:
+    - retry forever
+verifier:
+  type: rule

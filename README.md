@@ -68,6 +68,12 @@ agent-manager subagents install <id> --project . --target claude-code --yes
 agent-manager subagents remove <id> --project . --target claude-code --yes
 agent-manager memory status         # inspect shared Memory provider availability
 agent-manager memory promote --scope user --knowledge "..." --yes
+agent-manager task init --id task-1 --summary "..." --project .
+agent-manager artifacts list task-1 --project .
+agent-manager artifacts validate .agents/tasks/task-1/intent.yaml
+agent-manager roles --json
+agent-manager eval list
+agent-manager eval run java-backend --agent codex
 ```
 
 `skill-manager` remains a temporary compatibility alias and emits a migration notice. Use `agent-manager` in new automation.
@@ -92,6 +98,16 @@ agent-manager memory promote --scope user --knowledge "..." --yes
 | `undo` | Restore the pre-operation state of the latest journaled operation |
 | `delete <skill>` | Delete an eligible library skill (requires `--force`, refuses by default) |
 | `agents` | Inventory registered and unsupported local agent locations (read-only) |
+| `roles` | List agent-neutral planner/implementer/reviewer/verifier contracts |
+| `roles bind` | Check a role contract against a declared agent adapter |
+| `task init` | Create a task and its initial `intent` artifact |
+| `artifacts list` | List the versioned artifacts belonging to a task |
+| `artifacts show` | Inspect one artifact as YAML |
+| `artifacts validate` | Validate an artifact without executing its content |
+| `artifacts render` | Render an artifact as human-readable Markdown |
+| `eval list` | List local evaluation suites |
+| `eval run` | Run deterministic rule/verifier cases and persist results |
+| `eval compare` | Report regressions and improvements between two result files |
 | `subagents list` | List canonical SubAgent definitions (read-only) |
 | `subagents show <id>` | Show one canonical SubAgent definition (read-only) |
 | `subagents validate [id]` | Validate all or one canonical SubAgent definition (read-only) |
@@ -185,7 +201,41 @@ Detected technologies come from the documented marker vocabulary: `go.mod`, `pac
 
 Monorepos report each independently marked sub-project as its own scope, so unrelated services never blend into one stack. Scopes without recognized markers return `insufficient_evidence` with a pointer to catalog search; stacks with no matching skill return `no_catalog_match` with guidance to add technology tags to companion metadata.
 
-## Compatibility and Issue #3 boundary
+## Cross-agent artifacts and evaluation
+
+Agent Manager stores task artifacts under `.agents/tasks/<task-id>/`:
+
+```text
+intent.yaml -> spec.yaml -> plan.yaml -> implementation.yaml
+                                      -> verification.yaml
+                                      -> lessons.yaml
+```
+
+Every artifact uses the `v1` envelope (`version`, `kind`, `id`, `created_at`,
+project/source/links metadata). Parsing is independent of an agent adapter and
+unknown future fields are retained during validation, rendering, and writes.
+The six canonical kinds are `intent`, `spec`, `plan`, `implementation`,
+`verification`, and `lessons`. Lessons have typed `decision`, `constraint`,
+`lesson`, and `known_issue` items with scope and confidence. They are never
+written to Memory automatically; `taskcontext.PromoteLessons` is an explicit,
+confirmable bridge to the existing Memory provider boundary.
+
+Role contracts are agent-neutral and declare required input artifacts, output
+artifacts, filesystem/shell/network permissions, and adapter capability gaps.
+The built-in roles are planner, implementer, reviewer, and verifier. Runtime
+adapters only receive capabilities they declare; shell and network requirements
+are surfaced as warnings and network remains disabled by default.
+
+The local eval harness stores cases under `evals/<suite>/cases/<case-id>/` and
+results under `.agent-manager/evals/` (ignored local runtime state). The first
+runner is deterministic and rule-based: an agent may supply a candidate
+response directory, while the harness captures case status, score, evidence,
+agent label, configuration version, timestamp, and duration. `eval compare`
+reports per-case regressions instead of relying on an LLM judge alone. The
+planned baseline is documented in [evals/README.md](evals/README.md), with a
+small runnable `java-backend` fixture suite included.
+
+## Compatibility and migration boundary
 
 `skill-manager` remains a compatibility alias for existing Skill workflows and
 prints a migration notice; it is not a separate implementation. Versioned
@@ -195,18 +245,15 @@ remain machine-local and are not a portable project manifest. New SubAgent and
 Memory workflows are documented under `agent-manager` and should not be assumed
 to have legacy-script argument compatibility.
 
-This release hands Issue #3 a stable local control-plane boundary: canonical
-resources, capability-declaring adapters, guarded filesystem placement, and an
-explicit local Memory provider/status/promotion API. Issue #3's autonomous
-delegation workflow, conversation synchronization, remote/network provider
-adapters, vector-database behavior, and evaluation-harness/artifact work remain
-deferred. They must consume these boundaries without weakening confirmation,
-no-code-execution, no-network-default, journal, or provider-ownership rules.
+The artifact and eval primitives are deliberately local and do not spawn
+autonomous agents, synchronize full conversations, fetch remote data, or act as
+a distributed workflow engine. They consume the existing guarded resource and
+Memory boundaries without weakening confirmation, no-code-execution,
+no-network-default, journal, or provider-ownership rules.
 
 ## Roadmap
 
-- **Issue #3 follow-on** — autonomous delegation, conversation synchronization,
-  remote Memory adapters, and evaluation artifacts over the shipped control
-  plane (see the compatibility boundary above).
+- **Autonomous delegation** — future work can consume the versioned artifact
+  and role contracts without inventing a runtime-specific task-state format.
 - **React WebUI** — a post-CLI web interface over the same local services.
 - **Wails** — desktop packaging of the WebUI.
