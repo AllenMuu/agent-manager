@@ -1,0 +1,15 @@
+version: v2
+id: java-transaction-boundary-001
+category: java-backend
+input:
+  intent: intent.yaml
+expectations:
+  required_points:
+    - transaction boundary
+    - after-commit behavior
+  evidence_points:
+    - test the commit and rollback paths
+  forbidden_points:
+    - upgrade Spring Boot as the only fix
+verifier:
+  type: rule

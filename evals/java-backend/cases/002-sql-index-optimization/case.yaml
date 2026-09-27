@@ -1,0 +1,15 @@
+version: v2
+id: java-sql-index-optimization-001
+category: java-backend
+input:
+  intent: intent.yaml
+expectations:
+  required_points:
+    - query plan
+    - composite index
+  evidence_points:
+    - compare before and after plans
+  forbidden_points:
+    - add an index without measuring
+verifier:
+  type: rule

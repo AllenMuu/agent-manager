@@ -1,0 +1,15 @@
+version: v2
+id: java-pr-review-001
+category: java-backend
+input:
+  intent: intent.yaml
+expectations:
+  required_points:
+    - reproduction
+    - regression test
+  evidence_points:
+    - cite the changed line
+  forbidden_points:
+    - approve without evidence
+verifier:
+  type: rule
