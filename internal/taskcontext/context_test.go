@@ -1,6 +1,9 @@
 package taskcontext_test
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +16,45 @@ import (
 type fakeProvider struct {
 	status memory.ProviderStatus
 	got    string
+}
+
+func TestExplicitSkillSelectionPreservesAdvisoryMismatch(t *testing.T) {
+	project := t.TempDir()
+	store, err := artifact.NewStore(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := artifact.New(artifact.Intent, "task-1", project, time.Now())
+	intent.Set("summary", "Use selected Skill")
+	if _, err := store.Init("task-1", intent); err != nil {
+		t.Fatal(err)
+	}
+	library := t.TempDir()
+	skillDir := filepath.Join(library, "helper")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Helper\ndescription: Help with tasks\n---\nInstructions.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, ".skill-manager.yaml"), []byte("compatibility: [claude-code]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	contract := role.Contract{ID: "custom", Role: "custom", Inputs: []artifact.Kind{artifact.Intent}, Outputs: []string{"plan"}, Permissions: role.Permissions{Filesystem: role.Read, Shell: role.Denied, Network: role.Denied}}
+	withoutSelection, err := taskcontext.ResolveWithOptions(taskcontext.Options{Project: project, TaskID: "task-1", Library: library, Contract: contract, Agent: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withoutSelection.Skills) != 0 {
+		t.Fatalf("unselected Skills were included: %#v", withoutSelection.Skills)
+	}
+	bundle, err := taskcontext.ResolveWithOptions(taskcontext.Options{Project: project, TaskID: "task-1", Library: library, Contract: contract, Agent: "codex", SelectedSkills: []string{"helper"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Skills) != 1 || len(bundle.Warnings) != 1 || !strings.Contains(bundle.Warnings[0], "helper") {
+		t.Fatalf("explicit selection = %#v", bundle)
+	}
 }
 
 func (p *fakeProvider) Status() memory.ProviderStatus { return p.status }

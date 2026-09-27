@@ -71,7 +71,7 @@ type Links struct {
 // Document is a parsed artifact. Values contains both protocol-defined and
 // future fields and is therefore safe to round-trip without data loss.
 type Document struct {
-	Values map[string]any
+	Values map[string]any `json:"values"`
 }
 
 type LessonItem struct {
@@ -207,18 +207,24 @@ func (d Document) Validate() error {
 	if !hasTimestamp(d.Values["created_at"]) {
 		return errors.New("artifact created_at is required and must be an RFC3339 timestamp")
 	}
-	if project, ok := d.Values["project"]; ok {
-		if _, ok := mapValue(project); !ok {
-			return errors.New("artifact project must be a mapping")
-		}
+	project, ok := mapValue(d.Values["project"])
+	if !ok || !hasRequiredText(project["root"]) {
+		return errors.New("artifact project.root is required and must be a string")
 	}
-	if source, ok := d.Values["source"]; ok {
-		m, ok := mapValue(source)
-		if !ok {
-			return errors.New("artifact source must be a mapping")
-		}
-		if actor := stringValue(m["actor"]); actor == "" {
-			return errors.New("artifact source.actor is required")
+	source, ok := mapValue(d.Values["source"])
+	if !ok || !hasRequiredText(source["actor"]) {
+		return errors.New("artifact source.actor is required and must be a string")
+	}
+	if err := optionalString(source, "agent", "artifact source.agent"); err != nil {
+		return err
+	}
+	links, ok := mapValue(d.Values["links"])
+	if !ok || stringValue(links["task"]) != id {
+		return fmt.Errorf("artifact links.task must match id %q", id)
+	}
+	if parent := links["parent"]; parent != nil {
+		if parentID := stringValue(parent); !safeID.MatchString(parentID) || parentID == "." || parentID == ".." {
+			return errors.New("artifact links.parent must be a safe identifier or null")
 		}
 	}
 	if metadata, ok := d.Values["metadata"]; ok && metadata != nil {
@@ -230,16 +236,82 @@ func (d Document) Validate() error {
 }
 
 func validatePayload(kind Kind, values map[string]any) error {
-	if kind == Intent && stringValue(values["summary"]) == "" {
-		return errors.New("intent summary is required")
-	}
-	if kind == Verification {
+	switch kind {
+	case Intent:
+		if !hasRequiredText(values["summary"]) {
+			return errors.New("intent summary is required and must be a string")
+		}
+		for _, field := range []string{"problem", "risk_level"} {
+			if err := optionalString(values, field, "intent "+field); err != nil {
+				return err
+			}
+		}
+		for _, field := range []string{"goals", "non_goals", "constraints", "acceptance_criteria"} {
+			if err := stringListField(values, field, "intent "+field, false); err != nil {
+				return err
+			}
+		}
+	case Spec:
+		if err := objectListField(values, "decisions", "spec decisions", true, []string{"id", "decision", "rationale"}); err != nil {
+			return err
+		}
+		for _, field := range []string{"interfaces", "data_models", "compatibility", "open_questions"} {
+			if err := listField(values, field, "spec "+field, false); err != nil {
+				return err
+			}
+		}
+	case Plan:
+		if err := objectListField(values, "steps", "plan steps", true, []string{"id", "description", "verification"}); err != nil {
+			return err
+		}
+		steps, _ := listValue(values["steps"])
+		for i, raw := range steps {
+			step, _ := mapValue(raw)
+			for _, field := range []string{"dependencies", "files"} {
+				if err := stringListField(step, field, fmt.Sprintf("plan step %d %s", i, field), false); err != nil {
+					return err
+				}
+			}
+		}
+	case Implementation:
+		if !hasRequiredText(values["summary"]) {
+			return errors.New("implementation summary is required and must be a string")
+		}
+		for _, field := range []string{"agent", "base_ref", "head_ref"} {
+			if err := optionalString(values, field, "implementation "+field); err != nil {
+				return err
+			}
+		}
+		for _, field := range []string{"commits", "changed_files"} {
+			if err := stringListField(values, field, "implementation "+field, false); err != nil {
+				return err
+			}
+		}
+	case Verification:
 		status := stringValue(values["status"])
 		if status != "pass" && status != "fail" && status != "partial" {
 			return fmt.Errorf("verification status must be pass, fail, or partial; got %q", status)
 		}
-	}
-	if kind == Lessons {
+		if err := objectListField(values, "checks", "verification checks", status == "pass", []string{"name", "status"}); err != nil {
+			return err
+		}
+		checks, _ := listValue(values["checks"])
+		for i, raw := range checks {
+			check, _ := mapValue(raw)
+			checkStatus := stringValue(check["status"])
+			if checkStatus != "pass" && checkStatus != "fail" && checkStatus != "partial" {
+				return fmt.Errorf("verification check %d status must be pass, fail, or partial", i)
+			}
+			for _, field := range []string{"command", "evidence"} {
+				if err := optionalString(check, field, fmt.Sprintf("verification check %d %s", i, field)); err != nil {
+					return err
+				}
+			}
+		}
+		if err := stringListField(values, "risks", "verification risks", false); err != nil {
+			return err
+		}
+	case Lessons:
 		items, ok := listValue(values["items"])
 		if !ok {
 			return errors.New("lessons items must be a list")
@@ -250,7 +322,7 @@ func validatePayload(kind Kind, values map[string]any) error {
 				return fmt.Errorf("lessons item %d must be a mapping", i)
 			}
 			for _, field := range []string{"type", "scope", "content", "confidence"} {
-				if stringValue(item[field]) == "" {
+				if !hasRequiredText(item[field]) {
 					return fmt.Errorf("lessons item %d requires %s", i, field)
 				}
 			}
@@ -267,6 +339,76 @@ func validatePayload(kind Kind, values map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func optionalString(values map[string]any, field, label string) error {
+	if value, ok := values[field]; ok && value != nil {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s must be a string", label)
+		}
+	}
+	return nil
+}
+
+func listField(values map[string]any, field, label string, nonempty bool) error {
+	value, exists := values[field]
+	if !exists {
+		if nonempty {
+			return fmt.Errorf("%s is required and must be a nonempty list", label)
+		}
+		return nil
+	}
+	items, ok := listValue(value)
+	if !ok {
+		return fmt.Errorf("%s must be a list", label)
+	}
+	if nonempty && len(items) == 0 {
+		return fmt.Errorf("%s must be a nonempty list", label)
+	}
+	return nil
+}
+
+func stringListField(values map[string]any, field, label string, nonempty bool) error {
+	if err := listField(values, field, label, nonempty); err != nil {
+		return err
+	}
+	if _, exists := values[field]; !exists {
+		return nil
+	}
+	items, _ := listValue(values[field])
+	for i, item := range items {
+		if _, ok := item.(string); !ok {
+			return fmt.Errorf("%s item %d must be a string", label, i)
+		}
+	}
+	return nil
+}
+
+func objectListField(values map[string]any, field, label string, nonempty bool, required []string) error {
+	if err := listField(values, field, label, nonempty); err != nil {
+		return err
+	}
+	if _, exists := values[field]; !exists {
+		return nil
+	}
+	items, _ := listValue(values[field])
+	for i, item := range items {
+		object, ok := mapValue(item)
+		if !ok {
+			return fmt.Errorf("%s item %d must be a mapping", label, i)
+		}
+		for _, key := range required {
+			if !hasRequiredText(object[key]) {
+				return fmt.Errorf("%s item %d requires string %s", label, i, key)
+			}
+		}
+	}
+	return nil
+}
+
+func hasRequiredText(value any) bool {
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) != ""
 }
 
 func stringValue(value any) string {
@@ -301,6 +443,12 @@ func listValue(value any) ([]any, bool) {
 	switch items := value.(type) {
 	case []any:
 		return items, true
+	case []string:
+		converted := make([]any, len(items))
+		for i, item := range items {
+			converted[i] = item
+		}
+		return converted, true
 	case []map[string]string:
 		converted := make([]any, len(items))
 		for i, item := range items {

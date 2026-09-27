@@ -6,6 +6,7 @@ import (
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/role"
+	"github.com/AllenMuu/skill-manager/internal/taskcontext"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,41 @@ func newRolesCommand() *cobra.Command {
 		return nil
 	}
 	command.AddCommand(newRoleBindCommand())
+	command.AddCommand(newRoleContextCommand())
+	return command
+}
+
+func newRoleContextCommand() *cobra.Command {
+	var project, library, target, roleID string
+	var selectedSkills []string
+	command := &cobra.Command{Use: "context <task-id>", Short: "Assemble a role's canonical task inputs for an external agent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		contract, ok := role.For(role.ID(roleID))
+		if !ok {
+			return fmt.Errorf("unknown role %q", roleID)
+		}
+		binding, err := role.Bind(adapter.Target(target), contract)
+		if err != nil {
+			return err
+		}
+		bundle, err := taskcontext.ResolveWithOptions(taskcontext.Options{
+			Project: project, TaskID: args[0], Library: library, Contract: contract,
+			Agent: target, SelectedSkills: selectedSkills,
+		})
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+			Binding role.Binding       `json:"binding"`
+			Context taskcontext.Bundle `json:"context"`
+		}{Binding: binding, Context: bundle})
+	}}
+	command.Flags().StringVar(&project, "project", ".", "project root")
+	command.Flags().StringVar(&library, "library", "", "local Skill library")
+	command.Flags().StringVar(&target, "agent", "", "target agent for the external handoff")
+	command.Flags().StringVar(&roleID, "role", "", "canonical role id")
+	command.Flags().StringSliceVar(&selectedSkills, "skill", nil, "explicitly selected Skill identifier (repeatable)")
+	_ = command.MarkFlagRequired("agent")
+	_ = command.MarkFlagRequired("role")
 	return command
 }
 

@@ -29,11 +29,14 @@ func TestBindReportsRuntimeGapsWithoutSilentlyGrantingThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !binding.Supported || len(binding.Missing) != 0 {
+	if binding.Supported || len(binding.Missing) == 0 {
 		t.Fatalf("binding = %#v", binding)
 	}
-	if len(binding.Warnings) == 0 {
-		t.Fatal("shell capability warning missing")
+	if binding.Capabilities.FilesystemWrite || len(binding.Warnings) == 0 {
+		t.Fatalf("unverified runtime permissions were granted: %#v", binding)
+	}
+	if len(binding.Inputs) != len(contract.Inputs) || len(binding.Outputs) != 1 || binding.Outputs[0] != "implementation" {
+		t.Fatalf("binding lost the artifact contract: %#v", binding)
 	}
 	if _, err := role.Bind(adapter.Target("unknown"), contract); err == nil {
 		t.Fatal("unknown target was accepted")

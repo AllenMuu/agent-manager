@@ -17,7 +17,7 @@ type evalOptions struct {
 
 func newEvalCommand() *cobra.Command {
 	options := &evalOptions{}
-	command := &cobra.Command{Use: "eval", Short: "Run deterministic local regression evaluations"}
+	command := &cobra.Command{Use: "eval", Short: "Score supplied agent responses with deterministic local rules"}
 	command.PersistentFlags().StringVar(&options.project, "project", ".", "project root")
 	command.PersistentFlags().BoolVar(&options.json, "json", false, "write machine-readable JSON")
 	command.AddCommand(newEvalListCommand(options), newEvalRunCommand(options), newEvalCompareCommand(options))
@@ -51,8 +51,8 @@ func newEvalListCommand(options *evalOptions) *cobra.Command {
 }
 
 func newEvalRunCommand(options *evalOptions) *cobra.Command {
-	var agent, candidateDir, configVersion, output string
-	command := &cobra.Command{Use: "run <suite>", Short: "Run rule-based checks for an eval suite", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var agentLabel, candidateDir, configVersion, output string
+	command := &cobra.Command{Use: "run <suite>", Short: "Score response files produced for a specific agent configuration", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		suitePath := args[0]
 		if !filepath.IsAbs(suitePath) {
 			if _, err := os.Stat(suitePath); err != nil {
@@ -63,18 +63,26 @@ func newEvalRunCommand(options *evalOptions) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		result, err := eval.Run(suite, eval.Options{Agent: agent, ConfigVersion: configVersion, CandidateDir: candidateDir})
+		resolvedCandidates := candidateDir
+		if candidateDir != "" {
+			resolvedCandidates = artifactPath(options.project, candidateDir)
+		}
+		result, err := eval.Run(suite, eval.Options{AgentLabel: agentLabel, ConfigVersion: configVersion, CandidateDir: resolvedCandidates})
 		if err != nil {
 			return err
 		}
 		if output == "" {
-			output = filepath.Join(options.project, ".agent-manager", "evals", result.RunID+".yaml")
-		}
-		if !filepath.IsAbs(output) {
-			output = filepath.Join(options.project, output)
-		}
-		if err := eval.WriteResult(output, result); err != nil {
-			return err
+			output, err = eval.WriteProjectResult(options.project, result)
+			if err != nil {
+				return err
+			}
+		} else {
+			if !filepath.IsAbs(output) {
+				output = filepath.Join(options.project, output)
+			}
+			if err := eval.WriteResult(output, result); err != nil {
+				return err
+			}
 		}
 		if options.json {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
@@ -82,8 +90,8 @@ func newEvalRunCommand(options *evalOptions) *cobra.Command {
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "run: %s\nsuite: %s\nstatus: %s\nscore: %d\nresult: %s\n", result.RunID, result.Suite, resultStatus(result), result.Summary.Score, output)
 		return err
 	}}
-	command.Flags().StringVar(&agent, "agent", "", "agent/runtime label recorded in the result")
-	command.Flags().StringVar(&candidateDir, "candidate-dir", "", "directory containing <case-id>.md candidate responses")
+	command.Flags().StringVar(&agentLabel, "agent-label", "", "label of the external agent that produced the responses")
+	command.Flags().StringVar(&candidateDir, "candidate-dir", "", "project-relative directory containing agent-produced <case-id>.md responses (required)")
 	command.Flags().StringVar(&configVersion, "config-version", "v1", "Skill/prompt/context configuration version label")
 	command.Flags().StringVar(&output, "output", "", "result file path")
 	return command
@@ -98,6 +106,9 @@ func newEvalCompareCommand(options *evalOptions) *cobra.Command {
 		candidate, err := eval.LoadResult(artifactPath(options.project, args[1]))
 		if err != nil {
 			return err
+		}
+		if baseline.Suite != candidate.Suite {
+			return fmt.Errorf("cannot compare different eval suites %q and %q", baseline.Suite, candidate.Suite)
 		}
 		comparison := eval.Compare(baseline, candidate)
 		if options.json {

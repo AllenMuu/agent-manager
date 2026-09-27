@@ -1,4 +1,4 @@
-version: v1
+version: v2
 id: java-redis-timeout-001
 category: java-backend
 input:
@@ -7,6 +7,8 @@ expectations:
   required_points:
     - timeout budget
     - fallback
+  evidence_points:
+    - test the slow dependency path
   forbidden_points:
     - retry forever
 verifier:

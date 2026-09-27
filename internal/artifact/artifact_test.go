@@ -20,6 +20,8 @@ project:
   root: /tmp/project
 source:
   actor: human
+links:
+  task: task-1
 summary: Add durable artifacts
 future_field:
   enabled: true
@@ -60,6 +62,12 @@ version: v1
 kind: lessons
 id: task-1
 created_at: 2026-09-26T10:00:00Z
+project:
+  root: /tmp/project
+source:
+  actor: human
+links:
+  task: task-1
 items:
   - type: unknown
     scope: project
@@ -68,6 +76,48 @@ items:
 `))
 	if err == nil {
 		t.Fatal("unknown lesson type was accepted")
+	}
+}
+
+func TestValidateRejectsMalformedStagePayloadAndMissingRelationships(t *testing.T) {
+	plan := artifact.New(artifact.Plan, "task-1", "/tmp/project", time.Now())
+	plan.Set("steps", "not a list")
+	if err := plan.Validate(); err == nil || !strings.Contains(err.Error(), "plan steps") {
+		t.Fatalf("malformed plan accepted: %v", err)
+	}
+	plan.Set("steps", []map[string]any{{"id": "P1", "description": "Do work", "verification": "go test ./..."}})
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("valid plan rejected: %v", err)
+	}
+	delete(plan.Values, "links")
+	if err := plan.Validate(); err == nil || !strings.Contains(err.Error(), "links.task") {
+		t.Fatalf("missing task relationship accepted: %v", err)
+	}
+	plan.Set("links", map[string]any{"task": "task-1"})
+	spec := artifact.New(artifact.Spec, "task-1", "/tmp/project", time.Now())
+	spec.Set("decisions", []any{"not a decision"})
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "spec decisions") {
+		t.Fatalf("malformed spec accepted: %v", err)
+	}
+	verification := artifact.New(artifact.Verification, "task-1", "/tmp/project", time.Now())
+	verification.Set("status", "pass")
+	verification.Set("checks", []any{map[string]any{"name": "test", "status": "unknown"}})
+	if err := verification.Validate(); err == nil || !strings.Contains(err.Error(), "verification check") {
+		t.Fatalf("malformed check accepted: %v", err)
+	}
+}
+
+func TestEnvelopeRejectsYAMLDateInRequiredStringFields(t *testing.T) {
+	for name, field := range map[string]string{
+		"actor": "source:\n  actor: 2026-09-26\nproject:\n  root: .\n",
+		"root":  "source:\n  actor: human\nproject:\n  root: 2026-09-26\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := "version: v1\nkind: intent\nid: task-1\ncreated_at: 2026-09-26T10:00:00Z\n" + field + "links:\n  task: task-1\nsummary: Test envelope\n"
+			if _, err := artifact.Parse([]byte(data)); err == nil || !strings.Contains(err.Error(), "must be a string") {
+				t.Fatalf("non-string %s accepted: %v", name, err)
+			}
+		})
 	}
 }
 

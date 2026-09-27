@@ -34,6 +34,19 @@ type Detection struct {
 	Configured bool
 }
 
+// RuntimeCapabilities describe permissions verified for agent execution. They
+// are separate from resource placement capabilities. A directory adapter does
+// not inspect a running agent's effective tool or sandbox configuration.
+type RuntimeCapabilities struct {
+	FilesystemRead     bool
+	FilesystemWrite    bool
+	Shell              bool
+	Network            bool
+	RestrictFilesystem bool
+	RestrictShell      bool
+	RestrictNetwork    bool
+}
+
 // InspectionRequest selects one resource kind in a project location.
 type InspectionRequest struct {
 	Project string
@@ -104,6 +117,7 @@ type AgentAdapter interface {
 	Capabilities(resource.Kind) []resource.Capability
 	Supports(resource.Kind) bool
 	HasCapability(resource.Kind, resource.Capability) bool
+	RuntimeCapabilities() RuntimeCapabilities
 	InspectSubAgent(subagent.Definition, SubAgentRequest) (SubAgentInspection, error)
 	PlanSubAgent(subagent.Definition, SubAgentRequest) (SubAgentPlan, error)
 }
@@ -414,6 +428,10 @@ func (a directoryAdapter) HasCapability(kind resource.Kind, capability resource.
 		}
 	}
 	return false
+}
+
+func (a directoryAdapter) RuntimeCapabilities() RuntimeCapabilities {
+	return RuntimeCapabilities{}
 }
 
 func joinCapabilities(capabilities []resource.Capability) string {

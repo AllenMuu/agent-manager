@@ -6,7 +6,6 @@ import (
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/artifact"
-	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
 type ID string
@@ -44,12 +43,14 @@ type Contract struct {
 }
 
 type Binding struct {
-	Target       adapter.Target        `json:"target"`
-	Role         ID                    `json:"role"`
-	Supported    bool                  `json:"supported"`
-	Warnings     []string              `json:"warnings"`
-	Missing      []string              `json:"missing"`
-	Capabilities []resource.Capability `json:"capabilities"`
+	Target       adapter.Target              `json:"target"`
+	Role         ID                          `json:"role"`
+	Inputs       []artifact.Kind             `json:"inputs"`
+	Outputs      []string                    `json:"outputs"`
+	Supported    bool                        `json:"supported"`
+	Warnings     []string                    `json:"warnings"`
+	Missing      []string                    `json:"missing"`
+	Capabilities adapter.RuntimeCapabilities `json:"capabilities"`
 }
 
 // Builtins returns a stable copy of the four canonical role contracts.
@@ -57,7 +58,7 @@ func Builtins() []Contract {
 	return []Contract{
 		{ID: Planner, Role: Planner, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec}, Outputs: []string{"plan"}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
 		{ID: Implementer, Role: Implementer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan}, Outputs: []string{"implementation"}, Permissions: Permissions{Filesystem: Write, Shell: Allowed, Network: Denied}},
-		{ID: Reviewer, Role: Reviewer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []string{"review"}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
+		{ID: Reviewer, Role: Reviewer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []string{"verification"}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
 		{ID: Verifier, Role: Verifier, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []string{"verification"}, Permissions: Permissions{Filesystem: Read, Shell: Allowed, Network: Denied}},
 	}
 }
@@ -83,19 +84,19 @@ func (c Contract) Validate() error {
 			return fmt.Errorf("role %q contains an empty input artifact", c.ID)
 		}
 	}
-	for name, value := range map[string]Permission{"filesystem": c.Permissions.Filesystem, "shell": c.Permissions.Shell, "network": c.Permissions.Network} {
-		switch value {
-		case "", Denied, Read, Write, Allowed:
-		default:
+	if c.Permissions.Filesystem != Denied && c.Permissions.Filesystem != Read && c.Permissions.Filesystem != Write {
+		return fmt.Errorf("role %q has invalid filesystem permission %q", c.ID, c.Permissions.Filesystem)
+	}
+	for name, value := range map[string]Permission{"shell": c.Permissions.Shell, "network": c.Permissions.Network} {
+		if value != Denied && value != Allowed {
 			return fmt.Errorf("role %q has invalid %s permission %q", c.ID, name, value)
 		}
 	}
 	return nil
 }
 
-// Bind maps a role contract to the capabilities an adapter actually declares.
-// It never assumes that a runtime can execute shell/network operations merely
-// because the role asks for them; those capabilities are surfaced as warnings.
+// Bind compares a role contract with verified runtime capabilities. Resource
+// placement support never proves that a runtime can enforce role permissions.
 func Bind(target adapter.Target, contract Contract) (Binding, error) {
 	if err := contract.Validate(); err != nil {
 		return Binding{}, err
@@ -104,22 +105,32 @@ func Bind(target adapter.Target, contract Contract) (Binding, error) {
 	if !ok {
 		return Binding{Target: target, Role: contract.ID, Missing: []string{"adapter"}}, fmt.Errorf("unsupported agent target %q", target)
 	}
-	binding := Binding{Target: target, Role: contract.ID, Supported: true, Capabilities: a.Capabilities(resource.Skill), Warnings: []string{}, Missing: []string{}}
-	if contract.Permissions.Filesystem == Read || contract.Permissions.Filesystem == Write {
-		if !a.HasCapability(resource.Skill, resource.CapabilityFilesystemRead) {
-			binding.Supported = false
-			binding.Missing = append(binding.Missing, string(resource.CapabilityFilesystemRead))
-		}
+	caps := a.RuntimeCapabilities()
+	binding := Binding{Target: target, Role: contract.ID, Inputs: append([]artifact.Kind(nil), contract.Inputs...), Outputs: append([]string(nil), contract.Outputs...), Supported: true, Capabilities: caps, Warnings: []string{}, Missing: []string{}}
+	if (contract.Permissions.Filesystem == Read || contract.Permissions.Filesystem == Write) && !caps.FilesystemRead {
+		binding.Missing = append(binding.Missing, "runtime-filesystem-read")
 	}
-	if contract.Permissions.Filesystem == Write && !a.HasCapability(resource.Skill, resource.CapabilityFilesystemWrite) {
+	if contract.Permissions.Filesystem == Write && !caps.FilesystemWrite {
+		binding.Missing = append(binding.Missing, "runtime-filesystem-write")
+	}
+	if contract.Permissions.Filesystem == Denied && !caps.RestrictFilesystem || contract.Permissions.Filesystem == Read && !caps.RestrictFilesystem {
+		binding.Missing = append(binding.Missing, "runtime-filesystem-restriction")
+	}
+	if contract.Permissions.Shell == Allowed && !caps.Shell {
+		binding.Missing = append(binding.Missing, "runtime-shell")
+	}
+	if contract.Permissions.Shell == Denied && !caps.RestrictShell {
+		binding.Missing = append(binding.Missing, "runtime-shell-restriction")
+	}
+	if contract.Permissions.Network == Allowed && !caps.Network {
+		binding.Missing = append(binding.Missing, "runtime-network")
+	}
+	if contract.Permissions.Network == Denied && !caps.RestrictNetwork {
+		binding.Missing = append(binding.Missing, "runtime-network-restriction")
+	}
+	if len(binding.Missing) > 0 {
 		binding.Supported = false
-		binding.Missing = append(binding.Missing, string(resource.CapabilityFilesystemWrite))
-	}
-	if contract.Permissions.Shell == Allowed {
-		binding.Warnings = append(binding.Warnings, "adapter does not declare a shell capability; runtime must enforce this role permission")
-	}
-	if contract.Permissions.Network == Allowed {
-		binding.Warnings = append(binding.Warnings, "adapter does not declare a network capability; network access remains disabled by default")
+		binding.Warnings = append(binding.Warnings, "this adapter only verifies resource placement; configure and verify runtime permissions before executing the role")
 	}
 	return binding, nil
 }

@@ -17,15 +17,16 @@ import (
 )
 
 type Bundle struct {
-	ProjectRoot         string
-	TaskID              string
-	Role                role.ID
-	Artifacts           map[artifact.Kind]artifact.Document
-	Missing             []artifact.Kind
-	RepositoryKnowledge []KnowledgeFile
-	Skills              []catalog.Skill
-	Memory              []MemoryItem
-	MemoryState         memory.ProviderStatus
+	ProjectRoot         string                              `json:"projectRoot"`
+	TaskID              string                              `json:"taskId"`
+	Role                role.ID                             `json:"role"`
+	Artifacts           map[artifact.Kind]artifact.Document `json:"artifacts"`
+	Missing             []artifact.Kind                     `json:"missing"`
+	RepositoryKnowledge []KnowledgeFile                     `json:"repositoryKnowledge"`
+	Skills              []catalog.Skill                     `json:"skills"`
+	Memory              []MemoryItem                        `json:"memory"`
+	MemoryState         memory.ProviderStatus               `json:"memoryState"`
+	Warnings            []string                            `json:"warnings"`
 }
 
 type KnowledgeFile struct {
@@ -78,7 +79,7 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 	bundle := Bundle{
 		ProjectRoot: store.ProjectRoot, TaskID: options.TaskID, Role: options.Contract.ID,
 		Artifacts: map[artifact.Kind]artifact.Document{}, Missing: []artifact.Kind{},
-		RepositoryKnowledge: []KnowledgeFile{}, Skills: []catalog.Skill{}, Memory: []MemoryItem{},
+		RepositoryKnowledge: []KnowledgeFile{}, Skills: []catalog.Skill{}, Memory: []MemoryItem{}, Warnings: []string{},
 	}
 	for _, kind := range options.Contract.Inputs {
 		doc, _, loadErr := store.Load(options.TaskID, kind)
@@ -106,26 +107,19 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 		}
 		found := make(map[string]struct{}, len(options.SelectedSkills))
 		for _, skill := range skills {
-			if options.SelectedSkills != nil {
-				if _, ok := selected[skill.Identifier]; !ok {
-					continue
-				}
-				found[skill.Identifier] = struct{}{}
+			if _, ok := selected[skill.Identifier]; !ok {
+				continue
 			}
+			found[skill.Identifier] = struct{}{}
 			compatible := options.Agent == "" || len(skill.Compatibility) == 0 || contains(skill.Compatibility, options.Agent) || contains(skill.Compatibility, "all")
 			if !compatible {
-				if options.SelectedSkills != nil {
-					return Bundle{}, fmt.Errorf("selected Skill %q is not compatible with agent %q", skill.Identifier, options.Agent)
-				}
-				continue
+				bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("selected Skill %q does not declare compatibility with agent %q", skill.Identifier, options.Agent))
 			}
 			bundle.Skills = append(bundle.Skills, skill)
 		}
-		if options.SelectedSkills != nil {
-			for _, identifier := range options.SelectedSkills {
-				if _, ok := found[identifier]; !ok {
-					return Bundle{}, fmt.Errorf("selected Skill %q was not found in the library", identifier)
-				}
+		for _, identifier := range options.SelectedSkills {
+			if _, ok := found[identifier]; !ok {
+				return Bundle{}, fmt.Errorf("selected Skill %q was not found in the library", identifier)
 			}
 		}
 	} else if len(options.SelectedSkills) > 0 {

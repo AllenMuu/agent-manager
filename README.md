@@ -75,7 +75,7 @@ agent-manager artifacts save task-1 ./out/plan.yaml --project . --yes
 agent-manager artifacts validate .agents/tasks/task-1/intent.yaml
 agent-manager roles --json
 agent-manager eval list
-agent-manager eval run java-backend --agent codex
+agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-responses/codex
 ```
 
 `skill-manager` remains a temporary compatibility alias and emits a migration notice. Use `agent-manager` in new automation.
@@ -226,21 +226,30 @@ provider.
 
 Role contracts are agent-neutral and declare required input artifacts, output
 artifacts, filesystem/shell/network permissions, and adapter capability gaps.
-The built-in roles are planner, implementer, reviewer, and verifier. Runtime
-adapters only receive capabilities they declare; shell and network requirements
-are surfaced as warnings and network remains disabled by default.
+The built-in roles are planner, implementer, reviewer, and verifier. `roles
+bind` reports unsupported runtime permissions until a runtime integration can
+verify them; resource placement support does not prove execution permission.
 
 The task context resolver assembles bounded root `AGENTS.md`/`CLAUDE.md`
-guidance, requested compatible Skills, role input artifacts, and optionally
+guidance, selected Skills, role input artifacts, and optionally
 search results from an injected read/search-capable Memory provider. It does
-not invoke an agent or write to Memory.
+not invoke an agent or write to Memory. An explicitly selected Skill with an
+advisory compatibility mismatch is included with a warning. The `roles context`
+command accepts a task ID, role, and agent, then emits a JSON handoff containing the
+role's canonical input artifacts and its binding gaps. An external agent or
+human can produce the next artifact and save it with `artifacts save`.
+
+The local workflow is `intent` → `spec` → planner context → `plan` →
+implementer context → `implementation` → verifier context → `verification`.
+The CLI test exercises each handoff and save step without launching an agent.
 
 The local eval harness stores cases under `evals/<suite>/cases/<case-id>/` and
 results under `.agent-manager/evals/` (ignored local runtime state). The first
 runner is deterministic and rule-based: `eval run <suite> --candidate-dir <dir>`
-scores supplied `<case-id>.md` responses; a missing response is partial rather
-than silently falling back to a fixture. Without `--candidate-dir`, checked-in
-fixture responses provide a deterministic baseline. The harness captures case
+scores supplied `<case-id>.md` responses; a missing response is partial. The
+directory is required, and `--agent-label` and `--config-version` label externally
+generated responses rather than launching an agent. Each case provides a
+canonical intent artifact for producing those responses. The harness captures case
 status, score, evidence, agent label, configuration version, timestamp, and
 duration. `eval compare` reports regressions, improvements, and newly added
 cases instead of relying on an LLM judge alone. The

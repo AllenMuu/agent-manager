@@ -15,16 +15,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/artifact"
 	"gopkg.in/yaml.v3"
 )
 
 const Version = "v1"
+const CaseVersion = "v2"
 
 var safeCaseID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 type Expectations struct {
 	RequiredPoints  []string `yaml:"required_points,omitempty" json:"requiredPoints,omitempty"`
 	ForbiddenPoints []string `yaml:"forbidden_points,omitempty" json:"forbiddenPoints,omitempty"`
+	EvidencePoints  []string `yaml:"evidence_points,omitempty" json:"evidencePoints,omitempty"`
 }
 
 type Verifier struct {
@@ -38,11 +41,10 @@ type Case struct {
 	Input        map[string]string `yaml:"input" json:"input"`
 	Expectations Expectations      `yaml:"expectations" json:"expectations"`
 	Verifier     Verifier          `yaml:"verifier" json:"verifier"`
-	Path         string            `yaml:"-" json:"-"`
 }
 
 func (c Case) Validate() error {
-	if c.Version != "" && c.Version != Version {
+	if c.Version != Version && c.Version != CaseVersion {
 		return fmt.Errorf("case %q has unsupported version %q", c.ID, c.Version)
 	}
 	if !safeCaseID.MatchString(c.ID) || c.ID == "." || c.ID == ".." {
@@ -50,6 +52,21 @@ func (c Case) Validate() error {
 	}
 	if c.Category == "" {
 		return fmt.Errorf("eval case %q category is required", c.ID)
+	}
+	if c.Version == CaseVersion {
+		if c.Input["intent"] != "intent.yaml" {
+			return fmt.Errorf("eval case %q input.intent must name the local intent.yaml", c.ID)
+		}
+		if len(c.Expectations.RequiredPoints) == 0 || len(c.Expectations.EvidencePoints) == 0 {
+			return fmt.Errorf("eval case %q requires required_points and evidence_points", c.ID)
+		}
+	}
+	for _, points := range [][]string{c.Expectations.RequiredPoints, c.Expectations.ForbiddenPoints, c.Expectations.EvidencePoints} {
+		for _, point := range points {
+			if strings.TrimSpace(point) == "" {
+				return fmt.Errorf("eval case %q contains an empty expectation", c.ID)
+			}
+		}
 	}
 	if c.Verifier.Type == "" {
 		return fmt.Errorf("eval case %q verifier.type is required", c.ID)
@@ -121,9 +138,25 @@ func LoadSuite(root string) (Suite, error) {
 		if err := yaml.Unmarshal(data, &item); err != nil {
 			return Suite{}, fmt.Errorf("parse eval case %s: %w", casePath, err)
 		}
-		item.Path = filepath.Dir(casePath)
 		if err := item.Validate(); err != nil {
 			return Suite{}, err
+		}
+		if item.Version == CaseVersion {
+			intentPath := filepath.Join(caseDir, item.Input["intent"])
+			intentInfo, err := os.Lstat(intentPath)
+			if err != nil {
+				return Suite{}, fmt.Errorf("inspect eval input %s: %w", intentPath, err)
+			}
+			if intentInfo.Mode()&os.ModeSymlink != 0 || !intentInfo.Mode().IsRegular() {
+				return Suite{}, fmt.Errorf("eval input %s must be a direct regular file", intentPath)
+			}
+			intent, err := artifact.Load(intentPath)
+			if err != nil {
+				return Suite{}, fmt.Errorf("load eval input: %w", err)
+			}
+			if intent.Kind() != artifact.Intent || intent.ID() != item.ID {
+				return Suite{}, fmt.Errorf("eval case %q input must be an intent artifact with the same id", item.ID)
+			}
 		}
 		if suite.Category == "" {
 			suite.Category = item.Category
@@ -146,7 +179,7 @@ func LoadSuite(root string) (Suite, error) {
 }
 
 type Options struct {
-	Agent         string
+	AgentLabel    string
 	ConfigVersion string
 	CandidateDir  string
 	Now           time.Time
@@ -171,7 +204,7 @@ type Result struct {
 	Version       string       `yaml:"version" json:"version"`
 	RunID         string       `yaml:"run_id" json:"runId"`
 	Suite         string       `yaml:"suite" json:"suite"`
-	Agent         string       `yaml:"agent,omitempty" json:"agent,omitempty"`
+	AgentLabel    string       `yaml:"agent_label,omitempty" json:"agentLabel,omitempty"`
 	ConfigVersion string       `yaml:"config_version,omitempty" json:"configVersion,omitempty"`
 	StartedAt     time.Time    `yaml:"started_at" json:"startedAt"`
 	DurationMS    int64        `yaml:"duration_ms" json:"durationMs"`
@@ -183,13 +216,17 @@ func Run(suite Suite, options Options) (Result, error) {
 	if len(suite.Cases) == 0 {
 		return Result{}, fmt.Errorf("eval suite %q has no cases", suite.ID)
 	}
+	if options.CandidateDir == "" {
+		return Result{}, fmt.Errorf("eval run requires --candidate-dir with responses generated for the selected agent and configuration")
+	}
+	clockStart := time.Now()
 	if options.Now.IsZero() {
 		options.Now = time.Now().UTC()
 	}
 	started := options.Now.UTC()
 	result := Result{
 		Version: Version, RunID: "run-" + started.Format("20060102T150405.000000000Z"),
-		Suite: suite.ID, Agent: options.Agent, ConfigVersion: options.ConfigVersion, StartedAt: started,
+		Suite: suite.ID, AgentLabel: options.AgentLabel, ConfigVersion: options.ConfigVersion, StartedAt: started,
 		Cases: make([]CaseResult, 0, len(suite.Cases)),
 	}
 	for _, item := range suite.Cases {
@@ -213,7 +250,7 @@ func Run(suite Suite, options Options) (Result, error) {
 	if result.Summary.Total > 0 {
 		result.Summary.Score /= result.Summary.Total
 	}
-	result.DurationMS = time.Since(started).Milliseconds()
+	result.DurationMS = time.Since(clockStart).Milliseconds()
 	if result.DurationMS < 0 {
 		result.DurationMS = 0
 	}
@@ -247,8 +284,6 @@ func candidate(item Case, candidateDir string) (string, string, error) {
 		} else if !os.IsNotExist(nestedErr) {
 			return "", "", fmt.Errorf("inspect eval candidate case directory %s: %w", nested, nestedErr)
 		}
-	} else if item.Path != "" {
-		paths = append(paths, filepath.Join(item.Path, "response.md"), filepath.Join(item.Path, "response.txt"))
 	}
 	for _, path := range paths {
 		info, err := os.Lstat(path)
@@ -289,6 +324,15 @@ func evaluate(item Case, content, source string) CaseResult {
 			result.Evidence = append(result.Evidence, "required point missing: "+required)
 		}
 	}
+	for _, evidence := range item.Expectations.EvidencePoints {
+		checks++
+		if strings.Contains(lower, strings.ToLower(evidence)) {
+			passed++
+			result.Evidence = append(result.Evidence, "evidence point present: "+evidence)
+		} else {
+			result.Evidence = append(result.Evidence, "evidence point missing: "+evidence)
+		}
+	}
 	for _, forbidden := range item.Expectations.ForbiddenPoints {
 		checks++
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
@@ -318,6 +362,9 @@ func (r Result) Validate() error {
 	}
 	if r.RunID == "" || r.Suite == "" || r.StartedAt.IsZero() {
 		return fmt.Errorf("eval result requires run_id, suite, and started_at")
+	}
+	if !safeCaseID.MatchString(r.RunID) || r.RunID == "." || r.RunID == ".." {
+		return fmt.Errorf("eval result has unsafe run_id %q", r.RunID)
 	}
 	if len(r.Cases) != r.Summary.Total {
 		return fmt.Errorf("eval result summary total %d does not match %d cases", r.Summary.Total, len(r.Cases))
@@ -371,11 +418,75 @@ func WriteResult(path string, result Result) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create eval result directory: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write eval result: %w", err)
+	return writeResultFile(path, data)
+}
+
+// WriteProjectResult stores the default result under real project-owned path
+// components. Explicit --output paths use WriteResult instead.
+func WriteProjectResult(project string, result Result) (string, error) {
+	data, err := result.YAML()
+	if err != nil {
+		return "", err
+	}
+	store, err := artifact.NewStore(project)
+	if err != nil {
+		return "", err
+	}
+	current := store.ProjectRoot
+	for _, component := range []string{".agent-manager", "evals"} {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(current, 0o755); err != nil && !os.IsExist(err) {
+				return "", fmt.Errorf("create eval result directory %s: %w", current, err)
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect eval result directory %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("eval result directory %s must be a real directory", current)
+		}
+	}
+	path := filepath.Join(current, result.RunID+".yaml")
+	if err := writeResultFile(path, data); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func writeResultFile(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("eval result destination %s must be a direct regular file", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect eval result destination: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".eval-result-")
+	if err != nil {
+		return fmt.Errorf("create eval result temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write eval result temp file: %w", err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("publish eval result: %w", err)
 	}
 	return nil
 }
@@ -388,6 +499,15 @@ func LoadResult(path string) (Result, error) {
 	var result Result
 	if err := yaml.Unmarshal(data, &result); err != nil {
 		return Result{}, fmt.Errorf("parse eval result: %w", err)
+	}
+	if result.AgentLabel == "" {
+		var legacy struct {
+			Agent string `yaml:"agent"`
+		}
+		if err := yaml.Unmarshal(data, &legacy); err != nil {
+			return Result{}, fmt.Errorf("parse legacy eval agent label: %w", err)
+		}
+		result.AgentLabel = legacy.Agent
 	}
 	if err := result.Validate(); err != nil {
 		return Result{}, err
