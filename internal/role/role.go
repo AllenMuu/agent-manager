@@ -38,7 +38,7 @@ type Contract struct {
 	ID          ID              `yaml:"id" json:"id"`
 	Role        ID              `yaml:"role" json:"role"`
 	Inputs      []artifact.Kind `yaml:"inputs" json:"inputs"`
-	Outputs     []string        `yaml:"outputs" json:"outputs"`
+	Outputs     []artifact.Kind `yaml:"outputs" json:"outputs"`
 	Permissions Permissions     `yaml:"permissions" json:"permissions"`
 }
 
@@ -46,7 +46,7 @@ type Binding struct {
 	Target       adapter.Target              `json:"target"`
 	Role         ID                          `json:"role"`
 	Inputs       []artifact.Kind             `json:"inputs"`
-	Outputs      []string                    `json:"outputs"`
+	Outputs      []artifact.Kind             `json:"outputs"`
 	Supported    bool                        `json:"supported"`
 	Warnings     []string                    `json:"warnings"`
 	Missing      []string                    `json:"missing"`
@@ -56,10 +56,10 @@ type Binding struct {
 // Builtins returns a stable copy of the four canonical role contracts.
 func Builtins() []Contract {
 	return []Contract{
-		{ID: Planner, Role: Planner, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec}, Outputs: []string{"plan"}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
-		{ID: Implementer, Role: Implementer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan}, Outputs: []string{"implementation"}, Permissions: Permissions{Filesystem: Write, Shell: Allowed, Network: Denied}},
-		{ID: Reviewer, Role: Reviewer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []string{"verification"}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
-		{ID: Verifier, Role: Verifier, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []string{"verification"}, Permissions: Permissions{Filesystem: Read, Shell: Allowed, Network: Denied}},
+		{ID: Planner, Role: Planner, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec}, Outputs: []artifact.Kind{artifact.Plan}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
+		{ID: Implementer, Role: Implementer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan}, Outputs: []artifact.Kind{artifact.Implementation}, Permissions: Permissions{Filesystem: Write, Shell: Allowed, Network: Denied}},
+		{ID: Reviewer, Role: Reviewer, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []artifact.Kind{artifact.Verification}, Permissions: Permissions{Filesystem: Read, Shell: Denied, Network: Denied}},
+		{ID: Verifier, Role: Verifier, Inputs: []artifact.Kind{artifact.Intent, artifact.Spec, artifact.Plan, artifact.Implementation}, Outputs: []artifact.Kind{artifact.Verification}, Permissions: Permissions{Filesystem: Read, Shell: Allowed, Network: Denied}},
 	}
 }
 
@@ -80,8 +80,13 @@ func (c Contract) Validate() error {
 		return fmt.Errorf("role %q must declare an output artifact", c.ID)
 	}
 	for _, input := range c.Inputs {
-		if input == "" {
-			return fmt.Errorf("role %q contains an empty input artifact", c.ID)
+		if !input.Valid() {
+			return fmt.Errorf("role %q contains invalid input artifact %q", c.ID, input)
+		}
+	}
+	for _, output := range c.Outputs {
+		if !output.Valid() {
+			return fmt.Errorf("role %q contains invalid output artifact %q", c.ID, output)
 		}
 	}
 	if c.Permissions.Filesystem != Denied && c.Permissions.Filesystem != Read && c.Permissions.Filesystem != Write {
@@ -106,7 +111,7 @@ func Bind(target adapter.Target, contract Contract) (Binding, error) {
 		return Binding{Target: target, Role: contract.ID, Missing: []string{"adapter"}}, fmt.Errorf("unsupported agent target %q", target)
 	}
 	caps := a.RuntimeCapabilities()
-	binding := Binding{Target: target, Role: contract.ID, Inputs: append([]artifact.Kind(nil), contract.Inputs...), Outputs: append([]string(nil), contract.Outputs...), Supported: true, Capabilities: caps, Warnings: []string{}, Missing: []string{}}
+	binding := Binding{Target: target, Role: contract.ID, Inputs: append([]artifact.Kind(nil), contract.Inputs...), Outputs: append([]artifact.Kind(nil), contract.Outputs...), Supported: true, Capabilities: caps, Warnings: []string{}, Missing: []string{}}
 	if (contract.Permissions.Filesystem == Read || contract.Permissions.Filesystem == Write) && !caps.FilesystemRead {
 		binding.Missing = append(binding.Missing, "runtime-filesystem-read")
 	}

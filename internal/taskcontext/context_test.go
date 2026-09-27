@@ -40,7 +40,7 @@ func TestExplicitSkillSelectionPreservesAdvisoryMismatch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, ".skill-manager.yaml"), []byte("compatibility: [claude-code]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	contract := role.Contract{ID: "custom", Role: "custom", Inputs: []artifact.Kind{artifact.Intent}, Outputs: []string{"plan"}, Permissions: role.Permissions{Filesystem: role.Read, Shell: role.Denied, Network: role.Denied}}
+	contract := role.Contract{ID: "custom", Role: "custom", Inputs: []artifact.Kind{artifact.Intent}, Outputs: []artifact.Kind{artifact.Plan}, Permissions: role.Permissions{Filesystem: role.Read, Shell: role.Denied, Network: role.Denied}}
 	withoutSelection, err := taskcontext.ResolveWithOptions(taskcontext.Options{Project: project, TaskID: "task-1", Library: library, Contract: contract, Agent: "codex"})
 	if err != nil {
 		t.Fatal(err)

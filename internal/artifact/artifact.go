@@ -39,6 +39,9 @@ var validKinds = map[Kind]bool{
 	Verification: true, Lessons: true,
 }
 
+// Valid reports whether the kind belongs to the canonical artifact protocol.
+func (k Kind) Valid() bool { return validKinds[k] }
+
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Envelope is the common metadata carried by every artifact. Document keeps
