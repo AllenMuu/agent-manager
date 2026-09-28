@@ -221,6 +221,11 @@ func (j *Journal) previewUndo() (Plan, []Entry, error) {
 
 // UndoLatest restores the pre-operation state of the latest journal entry.
 func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
+	return j.UndoLatestWithFingerprints(confirm, nil)
+}
+
+// UndoLatestWithFingerprints also verifies reviewed pre-operation backups before restore.
+func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected map[string]string) error {
 	plan, entries, err := j.previewUndo()
 	if err != nil {
 		return err
@@ -241,6 +246,19 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 		}
 		if !matches {
 			return ErrUnexpectedState
+		}
+	}
+	for _, snapshot := range entry.Before {
+		if !snapshot.Exists || expected == nil {
+			continue
+		}
+		digest, ok := expected[snapshot.Backup]
+		if !ok {
+			return ErrUnexpectedState
+		}
+		actual, err := FingerprintPath(snapshot.Backup)
+		if err != nil || actual != digest {
+			return errors.Join(ErrUnexpectedState, err)
 		}
 	}
 	if err := j.Restore(entry.Before); err != nil {

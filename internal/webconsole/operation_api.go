@@ -35,6 +35,8 @@ type storedPlan struct {
 	kind                 string
 	fingerprint          string
 	conflictFingerprints map[string]string
+	sourceFingerprints   map[string]string
+	snapshotFingerprints map[string]string
 	createdAt            time.Time
 	expiresAt            time.Time
 	activation           *activationRequest
@@ -121,7 +123,7 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 		if !decodeJSONBody(w, r, &request) {
 			return
 		}
-		preview, fingerprint, conflictFingerprints, err := s.previewActivation(project, request)
+		preview, fingerprint, conflictFingerprints, sourceFingerprints, err := s.previewActivation(project, request)
 		if err != nil {
 			writePlanError(w, err)
 			return
@@ -134,6 +136,7 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 		copy := cloneActivationRequest(request)
 		stored.activation = &copy
 		stored.conflictFingerprints = cloneFingerprints(conflictFingerprints)
+		stored.sourceFingerprints = cloneFingerprints(sourceFingerprints)
 		s.savePlan(stored)
 		writeJSON(w, http.StatusCreated, operationPlanEnvelope{Plan: makePlanView(stored, preview)})
 	case "remove":
@@ -160,7 +163,7 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 		if !decodeJSONBody(w, r, &request) {
 			return
 		}
-		preview, fingerprint, err := s.previewUndo(project)
+		preview, fingerprint, snapshotFingerprints, err := s.previewUndo(project)
 		if err != nil {
 			writePlanError(w, err)
 			return
@@ -170,6 +173,7 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 			writeAPIError(w, http.StatusInternalServerError, "plan_creation_failed", "A secure operation plan could not be created.")
 			return
 		}
+		stored.snapshotFingerprints = cloneFingerprints(snapshotFingerprints)
 		s.savePlan(stored)
 		writeJSON(w, http.StatusCreated, operationPlanEnvelope{Plan: makePlanView(stored, preview)})
 	default:
@@ -177,19 +181,19 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 	}
 }
 
-func (s *Server) previewActivation(project *registeredProject, request activationRequest) (operation.Plan, string, map[string]string, error) {
+func (s *Server) previewActivation(project *registeredProject, request activationRequest) (operation.Plan, string, map[string]string, map[string]string, error) {
 	if len(request.SkillIdentifiers) == 0 || len(request.SkillIdentifiers) > 100 || len(request.TargetAgents) == 0 || len(request.TargetAgents) > 20 {
-		return operation.Plan{}, "", nil, errors.New("select between 1 and 100 Skills and between 1 and 20 target agents")
+		return operation.Plan{}, "", nil, nil, errors.New("select between 1 and 100 Skills and between 1 and 20 target agents")
 	}
 	if request.ConflictStrategy != "" && request.ConflictStrategy != string(lifecycle.ConflictReplace) {
-		return operation.Plan{}, "", nil, errors.New("unsupported conflict strategy")
+		return operation.Plan{}, "", nil, nil, errors.New("unsupported conflict strategy")
 	}
 	if request.ForceConfirmed != (request.ConflictStrategy == string(lifecycle.ConflictReplace)) {
-		return operation.Plan{}, "", nil, errors.New("replacement requires the explicit force confirmation")
+		return operation.Plan{}, "", nil, nil, errors.New("replacement requires the explicit force confirmation")
 	}
 	skills, _, err := catalog.Discover(s.libraryPath)
 	if err != nil {
-		return operation.Plan{}, "", nil, errors.New("the configured Skill catalog could not be read")
+		return operation.Plan{}, "", nil, nil, errors.New("the configured Skill catalog could not be read")
 	}
 	byID := make(map[string]catalog.Skill, len(skills))
 	for _, skill := range skills {
@@ -199,12 +203,12 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 	seen := make(map[string]bool, len(request.SkillIdentifiers))
 	for _, id := range request.SkillIdentifiers {
 		if id == "" || seen[id] {
-			return operation.Plan{}, "", nil, errors.New("Skill identifiers must be non-empty and unique")
+			return operation.Plan{}, "", nil, nil, errors.New("Skill identifiers must be non-empty and unique")
 		}
 		seen[id] = true
 		skill, ok := byID[id]
 		if !ok {
-			return operation.Plan{}, "", nil, fmt.Errorf("Skill %q is not eligible in the configured catalog", id)
+			return operation.Plan{}, "", nil, nil, fmt.Errorf("Skill %q is not eligible in the configured catalog", id)
 		}
 		selected = append(selected, skill)
 	}
@@ -213,11 +217,11 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 	for _, id := range request.TargetAgents {
 		target := adapter.Target(id)
 		if id == "" || seen[id] {
-			return operation.Plan{}, "", nil, errors.New("target agents must be non-empty and unique")
+			return operation.Plan{}, "", nil, nil, errors.New("target agents must be non-empty and unique")
 		}
 		seen[id] = true
 		if _, ok := adapter.For(target); !ok {
-			return operation.Plan{}, "", nil, fmt.Errorf("target agent %q is not supported", id)
+			return operation.Plan{}, "", nil, nil, fmt.Errorf("target agent %q is not supported", id)
 		}
 		targets = append(targets, target)
 	}
@@ -227,12 +231,12 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 	}
 	journal, err := s.journalForProject(project)
 	if err != nil {
-		return operation.Plan{}, "", nil, err
+		return operation.Plan{}, "", nil, nil, err
 	}
 	service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
 	plan, err := service.PreviewAddMany(project.Path, selected, targets, options)
 	if err != nil {
-		return plan, "", nil, fmt.Errorf("activation cannot be safely planned: %w", err)
+		return plan, "", nil, nil, fmt.Errorf("activation cannot be safely planned: %w", err)
 	}
 	conflictFingerprints := make(map[string]string)
 	for _, change := range plan.Changes {
@@ -241,9 +245,17 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 		}
 		digest, err := operation.FingerprintPath(change.Path)
 		if err != nil {
-			return plan, "", nil, fmt.Errorf("replacement path cannot be safely fingerprinted: %w", err)
+			return plan, "", nil, nil, fmt.Errorf("replacement path cannot be safely fingerprinted: %w", err)
 		}
 		conflictFingerprints[change.Path] = digest
+	}
+	sourceFingerprints := make(map[string]string, len(selected))
+	for _, skill := range selected {
+		digest, err := operation.FingerprintPath(skill.SourcePath)
+		if err != nil {
+			return plan, "", nil, nil, fmt.Errorf("Skill source cannot be safely fingerprinted: %w", err)
+		}
+		sourceFingerprints[skill.SourcePath] = digest
 	}
 	fingerprint, err := fingerprint(struct {
 		Plan                 operation.Plan
@@ -251,8 +263,9 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 		Targets              []adapter.Target
 		Options              lifecycle.Options
 		ConflictFingerprints map[string]string
-	}{plan, selected, targets, options, conflictFingerprints})
-	return plan, fingerprint, conflictFingerprints, err
+		SourceFingerprints   map[string]string
+	}{plan, selected, targets, options, conflictFingerprints, sourceFingerprints})
+	return plan, fingerprint, conflictFingerprints, sourceFingerprints, err
 }
 
 func (s *Server) previewRemoval(project *registeredProject, request removalRequest) (operation.Plan, string, error) {
@@ -279,40 +292,52 @@ func (s *Server) previewRemoval(project *registeredProject, request removalReque
 	return plan, fingerprint, err
 }
 
-func (s *Server) previewUndo(project *registeredProject) (operation.Plan, string, error) {
+func (s *Server) previewUndo(project *registeredProject) (operation.Plan, string, map[string]string, error) {
 	journal, err := s.journalForProject(project)
 	if err != nil {
-		return operation.Plan{}, "", err
+		return operation.Plan{}, "", nil, err
 	}
 	entry, ok, err := journal.Latest()
 	if err != nil {
-		return operation.Plan{}, "", errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be read safely"))
+		return operation.Plan{}, "", nil, errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be read safely"))
 	}
 	if !ok {
-		return operation.Plan{}, "", errors.New("there is no operation available to undo")
+		return operation.Plan{}, "", nil, errors.New("there is no operation available to undo")
 	}
 	if err := validateConsoleUndoEntry(project, s.libraryPath, entry); err != nil {
-		return operation.Plan{}, "", err
+		return operation.Plan{}, "", nil, err
 	}
 	available, err := journal.UndoAvailable()
 	if err != nil {
-		return operation.Plan{}, "", errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be inspected safely"))
+		return operation.Plan{}, "", nil, errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be inspected safely"))
 	}
 	if !available {
-		return operation.Plan{}, "", errors.New("there is no current operation available to undo")
+		return operation.Plan{}, "", nil, errors.New("there is no current operation available to undo")
 	}
 	plan, err := journal.PreviewUndo()
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrUnsafePath) {
-			return operation.Plan{}, "", errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be inspected safely"))
+			return operation.Plan{}, "", nil, errors.Join(lifecycle.ErrUnsafePath, errors.New("operation journal could not be inspected safely"))
 		}
-		return operation.Plan{}, "", err
+		return operation.Plan{}, "", nil, err
+	}
+	snapshotFingerprints := make(map[string]string)
+	for _, snapshot := range entry.Before {
+		if !snapshot.Exists {
+			continue
+		}
+		digest, err := operation.FingerprintPath(snapshot.Backup)
+		if err != nil {
+			return operation.Plan{}, "", nil, errors.Join(lifecycle.ErrUnsafePath, err)
+		}
+		snapshotFingerprints[snapshot.Backup] = digest
 	}
 	fingerprint, err := fingerprint(struct {
-		Entry operation.Entry
-		Plan  operation.Plan
-	}{entry, plan})
-	return plan, fingerprint, err
+		Entry                operation.Entry
+		Plan                 operation.Plan
+		SnapshotFingerprints map[string]string
+	}{entry, plan, snapshotFingerprints})
+	return plan, fingerprint, snapshotFingerprints, err
 }
 
 func (s *Server) newStoredPlan(projectID, kind, fingerprint string) (*storedPlan, error) {
@@ -398,11 +423,11 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 	var err error
 	switch plan.kind {
 	case "activate":
-		preview, currentFingerprint, _, err = s.previewActivation(project, *plan.activation)
+		preview, currentFingerprint, _, _, err = s.previewActivation(project, *plan.activation)
 	case "remove":
 		preview, currentFingerprint, err = s.previewRemoval(project, *plan.removal)
 	case "undo":
-		preview, currentFingerprint, err = s.previewUndo(project)
+		preview, currentFingerprint, _, err = s.previewUndo(project)
 	default:
 		err = errors.New("unknown operation plan kind")
 	}
@@ -431,7 +456,7 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 		for _, id := range plan.activation.TargetAgents {
 			targets = append(targets, adapter.Target(id))
 		}
-		options := lifecycle.Options{ExpectedConflictFingerprints: cloneFingerprints(plan.conflictFingerprints)}
+		options := lifecycle.Options{ExpectedConflictFingerprints: cloneFingerprints(plan.conflictFingerprints), ExpectedSourceFingerprints: cloneFingerprints(plan.sourceFingerprints)}
 		if plan.activation.ConflictStrategy == string(lifecycle.ConflictReplace) && plan.activation.ForceConfirmed {
 			options.Conflict = lifecycle.ConflictReplace
 			options.Force = true
@@ -442,7 +467,21 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			break
 		}
 		service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
-		service.BeforeFinalPublish = func() error { return validateProjectJournalLayout(project) }
+		service.BeforeFinalPublish = func() error {
+			if err := validateProjectJournalLayout(project); err != nil {
+				return err
+			}
+			for path, expected := range plan.sourceFingerprints {
+				actual, err := operation.FingerprintPath(path)
+				if err != nil {
+					return errors.Join(lifecycle.ErrUnsafePath, err)
+				}
+				if actual != expected {
+					return lifecycle.ErrUnsafePath
+				}
+			}
+			return nil
+		}
 		_, err = service.AddMany(project.Path, selected, targets, options)
 	case "remove":
 		journal, journalErr := s.journalForProject(project)
@@ -460,7 +499,7 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			break
 		}
 		journal.BeforeRestorePublish = func(string) error { return validateProjectJournalLayout(project) }
-		err = journal.UndoLatest(func(operation.Plan) bool { return true })
+		err = journal.UndoLatestWithFingerprints(func(operation.Plan) bool { return true }, cloneFingerprints(plan.snapshotFingerprints))
 	}
 	if err != nil {
 		s.finishPlan(plan, storedPlanCompleted)

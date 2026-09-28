@@ -203,6 +203,36 @@ func TestAddManyRejectsConflictChangedDuringConfirmation(t *testing.T) {
 	assertCapturedOriginal(t, journal, "original.txt", "original unmanaged")
 }
 
+func TestAddManyRejectsSourceEditedDuringConfirmation(t *testing.T) {
+	root, project, skill := fixture(t)
+	script := filepath.Join(skill.SourcePath, "script.sh")
+	if err := os.WriteFile(script, []byte("reviewed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := operation.FingerprintPath(skill.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
+		if err := os.WriteFile(script, []byte("changed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	_, err = svc.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}, lifecycle.Options{ExpectedSourceFingerprints: map[string]string{skill.SourcePath: digest}})
+	if !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("AddMany error = %v", err)
+	}
+	a, _ := adapter.For(adapter.Codex)
+	if _, err := os.Lstat(a.ProjectSkillPath(project, skill.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("destination changed: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("journal changed: %v %v", ok, err)
+	}
+}
+
 func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")

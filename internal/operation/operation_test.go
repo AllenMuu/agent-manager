@@ -73,6 +73,52 @@ func TestUndoLatestRestoresLegacyJournalEntry(t *testing.T) {
 	}
 }
 
+func TestUndoLatestWithFingerprintsRejectsChangedBackupBeforeRestore(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "owner.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	before, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/library/skill", path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record("activate", before, after); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := operation.FingerprintPath(before[0].Backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(before[0].Backup, "owner.txt"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = journal.UndoLatestWithFingerprints(func(operation.Plan) bool { return true }, map[string]string{before[0].Backup: digest})
+	if !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("UndoLatestWithFingerprints error = %v", err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("project changed: %v %v", info, err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || !ok {
+		t.Fatalf("journal changed: %v %v", ok, err)
+	}
+}
+
 func TestPreviewUndoDoesNotModifyJournalOrProject(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "skill")

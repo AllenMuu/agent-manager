@@ -44,6 +44,8 @@ type Options struct {
 	// ExpectedConflictFingerprints binds force replacement to the exact paths
 	// and content that were shown in the reviewed plan.
 	ExpectedConflictFingerprints map[string]string
+	// ExpectedSourceFingerprints binds activation to reviewed Skill directory trees.
+	ExpectedSourceFingerprints map[string]string
 }
 
 func optionsOf(opts []Options) Options {
@@ -241,6 +243,9 @@ func (s *Service) Activate(project string, skill catalog.Skill, targets []adapte
 // AddMany activates an explicit selection as one confirmed, journaled transaction.
 func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
 	options := optionsOf(opts)
+	if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
+		return operation.Plan{}, err
+	}
 	preview, err := s.buildAddManyPreview(project, skills, targets, options)
 	if err != nil {
 		return preview.plan, err
@@ -281,6 +286,9 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 	}
 	defer cleanup()
 	return plan, s.mutateWithBefore(plan, paths, beforeConfirmation, func() error {
+		if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
+			return err
+		}
 		for i := range requests {
 			if err := adapter.ValidateProjectPlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], requests[i].Resource.ID); err != nil {
 				return err
@@ -296,6 +304,9 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		return nil
 	}, func() error {
 		for i, path := range paths {
+			if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
+				return err
+			}
 			var initialSnapshot *operation.Snapshot
 			if i < len(beforeConfirmation) {
 				initialSnapshot = &beforeConfirmation[i]
@@ -311,6 +322,26 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		}
 		return nil
 	})
+}
+
+func verifySourceFingerprints(skills []catalog.Skill, expected map[string]string) error {
+	if expected == nil {
+		return nil
+	}
+	for _, skill := range skills {
+		digest, ok := expected[skill.SourcePath]
+		if !ok {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("Skill source %q has no reviewed fingerprint", skill.SourcePath))
+		}
+		actual, err := operation.FingerprintPath(skill.SourcePath)
+		if err != nil {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("fingerprint Skill source %q: %w", skill.SourcePath, err))
+		}
+		if actual != digest {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("Skill source %q changed after review", skill.SourcePath))
+		}
+	}
+	return nil
 }
 
 type addManyPreview struct {

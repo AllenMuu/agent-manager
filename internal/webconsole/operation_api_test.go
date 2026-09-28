@@ -53,6 +53,84 @@ func TestActivationPlanRequiresReviewAndExecutesOnce(t *testing.T) {
 	}
 }
 
+func TestActivationPlanRejectsEditedSkillSource(t *testing.T) {
+	server, project, library, skillID := operationFixture(t)
+	script := filepath.Join(library, skillID, "script.sh")
+	if err := os.WriteFile(script, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preview := request(t, server, http.MethodPost, "/api/v1/projects/"+server.project.ID+"/plans/activate", `{"skillIdentifiers":["`+skillID+`"],"targetAgents":["codex"]}`)
+	var envelope operationPlanEnvelope
+	if err := json.Unmarshal(preview.Body.Bytes(), &envelope); err != nil || preview.Code != http.StatusCreated {
+		t.Fatalf("preview = %d %s: %v", preview.Code, preview.Body.String(), err)
+	}
+	if err := os.WriteFile(script, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := request(t, server, http.MethodPost, "/api/v1/plans/"+envelope.Plan.ID+"/execute", `{}`)
+	if result.Code != http.StatusConflict || !strings.Contains(result.Body.String(), "stale_plan") {
+		t.Fatalf("execute = %d %s", result.Code, result.Body.String())
+	}
+	target, _ := adapter.For(adapter.Codex)
+	if _, err := os.Lstat(target.ProjectSkillPath(project, skillID)); !os.IsNotExist(err) {
+		t.Fatalf("destination changed: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".skill-manager", "journal.json")); !os.IsNotExist(err) {
+		t.Fatalf("journal changed: %v", err)
+	}
+}
+
+func TestUndoPlanRejectsEditedBackup(t *testing.T) {
+	server, project, _, skillID := operationFixture(t)
+	target, _ := adapter.For(adapter.Codex)
+	destination := target.ProjectSkillPath(project, skillID)
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "owner.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preview := request(t, server, http.MethodPost, "/api/v1/projects/"+server.project.ID+"/plans/activate", `{"skillIdentifiers":["`+skillID+`"],"targetAgents":["codex"],"conflictStrategy":"replace","forceConfirmed":true}`)
+	var activation operationPlanEnvelope
+	if err := json.Unmarshal(preview.Body.Bytes(), &activation); err != nil || preview.Code != http.StatusCreated {
+		t.Fatalf("activation preview = %d %s: %v", preview.Code, preview.Body.String(), err)
+	}
+	if result := request(t, server, http.MethodPost, "/api/v1/plans/"+activation.Plan.ID+"/execute", `{}`); result.Code != http.StatusOK {
+		t.Fatalf("activation = %d %s", result.Code, result.Body.String())
+	}
+	undo := request(t, server, http.MethodPost, "/api/v1/projects/"+server.project.ID+"/plans/undo", `{}`)
+	var envelope operationPlanEnvelope
+	if err := json.Unmarshal(undo.Body.Bytes(), &envelope); err != nil || undo.Code != http.StatusCreated {
+		t.Fatalf("undo preview = %d %s: %v", undo.Code, undo.Body.String(), err)
+	}
+	journal, err := server.journalForProject(server.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok, err := journal.Latest()
+	if err != nil || !ok || len(entry.Before) != 1 || !entry.Before[0].Exists {
+		t.Fatalf("entry = %#v, %v", entry, err)
+	}
+	journalBefore, err := os.ReadFile(journal.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry.Before[0].Backup, "owner.txt"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := request(t, server, http.MethodPost, "/api/v1/plans/"+envelope.Plan.ID+"/execute", `{}`)
+	if result.Code != http.StatusConflict || !strings.Contains(result.Body.String(), "stale_plan") {
+		t.Fatalf("undo = %d %s", result.Code, result.Body.String())
+	}
+	if info, err := os.Lstat(destination); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("destination changed: %v %v", info, err)
+	}
+	journalAfter, err := os.ReadFile(journal.Path)
+	if err != nil || string(journalAfter) != string(journalBefore) {
+		t.Fatalf("journal changed: %v", err)
+	}
+}
+
 func TestConcurrentExecutionAllowsOnlyOneLifecycleCall(t *testing.T) {
 	server, _, _, skillID := operationFixture(t)
 	projectID := server.project.ID
