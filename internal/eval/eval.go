@@ -544,9 +544,12 @@ func Compare(baseline, candidate Result) Comparison {
 			comparison.Added = append(comparison.Added, Regression{CaseID: item.CaseID, Candidate: item.Status, Reason: "new case"})
 			continue
 		}
-		if statusRank(item.Status) < statusRank(before.Status) || item.Score < before.Score {
+		becameMissing := missingCandidate(item) && !missingCandidate(before)
+		statusRegressed := statusRank(item.Status) < statusRank(before.Status)
+		statusImproved := statusRank(item.Status) > statusRank(before.Status)
+		if becameMissing || statusRegressed || item.Score < before.Score {
 			comparison.Regressions = append(comparison.Regressions, Regression{CaseID: item.CaseID, Baseline: before.Status, Candidate: item.Status, Reason: fmt.Sprintf("score %d -> %d", before.Score, item.Score)})
-		} else if statusRank(item.Status) > statusRank(before.Status) || item.Score > before.Score {
+		} else if !missingCandidate(item) && (statusImproved || item.Score > before.Score) {
 			comparison.Improvements = append(comparison.Improvements, Regression{CaseID: item.CaseID, Baseline: before.Status, Candidate: item.Status, Reason: fmt.Sprintf("score %d -> %d", before.Score, item.Score)})
 		} else {
 			comparison.Unchanged++
@@ -565,6 +568,15 @@ func Compare(baseline, candidate Result) Comparison {
 	sort.Slice(comparison.Improvements, func(i, j int) bool { return comparison.Improvements[i].CaseID < comparison.Improvements[j].CaseID })
 	sort.Slice(comparison.Added, func(i, j int) bool { return comparison.Added[i].CaseID < comparison.Added[j].CaseID })
 	return comparison
+}
+
+func missingCandidate(item CaseResult) bool {
+	for _, evidence := range item.Evidence {
+		if evidence == "candidate response was not provided" {
+			return true
+		}
+	}
+	return false
 }
 
 func statusRank(status string) int {
