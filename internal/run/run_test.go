@@ -43,6 +43,22 @@ func testCapabilities() map[policy.Control]bool {
 	return map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}
 }
 
+func approvalRequest(t *testing.T, manager *run.Manager, record run.Record, now time.Time) run.Approval {
+	t.Helper()
+	event := policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write"}
+	decision, _, audit, err := manager.EvaluateAndRecord(record.ID, event, policy.BudgetState{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Outcome != policy.RequireApproval {
+		t.Fatalf("approval action decision = %#v, want REQUIRE_APPROVAL", decision)
+	}
+	return run.Approval{
+		RunID: record.ID, RequestAuditID: audit.ID, Category: event.Category,
+		Tool: event.Tool, ActionType: event.ActionType, ReasonCode: decision.ReasonCode,
+	}
+}
+
 func TestStoreSharesRunsAcrossProjectsAndPreservesPolicySnapshot(t *testing.T) {
 	store, err := run.NewStore(filepath.Join(t.TempDir(), "user-state", "runs"))
 	if err != nil {
@@ -158,20 +174,21 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{
 		policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true,
-	}, confirmPause: true}
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	}, confirmPause: true, confirmResolve: true}
+	now := time.Now().UTC()
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
 	action := policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write"}
-	decision, _, decisionAudit, err := manager.EvaluateAndRecord(record.ID, action, policy.BudgetState{}, time.Now())
+	decision, _, decisionAudit, err := manager.EvaluateAndRecord(record.ID, action, policy.BudgetState{}, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decision.Outcome != policy.RequireApproval || decision.ReasonCode != policy.ReasonApprovalRequired {
 		t.Fatalf("decision = %#v", decision)
 	}
-	approval, err := manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, Tool: action.Tool, ActionType: action.ActionType, ReasonCode: decision.ReasonCode}, time.Now())
+	approval, err := manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, RequestAuditID: decisionAudit.ID, Tool: action.Tool, ActionType: action.ActionType, ReasonCode: decision.ReasonCode}, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +201,16 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 	}
 	if len(events) != 3 || events[1].ID != decisionAudit.ID || events[1].Decision != policy.RequireApproval || events[2].Decision != policy.RequireApproval {
 		t.Fatalf("governance decision/approval audit chain = %#v", events)
+	}
+	if _, err := manager.DecideApproval(context.Background(), approval.ID, run.ApprovalApproved, "operator approved", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	completionDecision, evaluation, completionAudit, err := manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallCompleted, Tool: action.Tool, ActionType: action.ActionType, RequestAuditID: decisionAudit.ID}, policy.BudgetState{}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completionDecision.Outcome != policy.Allow || len(evaluation.Violations) != 0 || completionAudit.RequestAuditID != decisionAudit.ID {
+		t.Fatalf("approved completion decision=%#v evaluation=%#v audit=%#v", completionDecision, evaluation, completionAudit)
 	}
 }
 
@@ -273,7 +300,9 @@ func TestApprovalRoundTripsAndTerminalTransitionsAreRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manager.RequestApproval(context.Background(), run.Approval{ID: "approval-test", RunID: runRecord.ID, ActionType: "destructive_write", Tool: "github.update_file", ReasonCode: policy.ReasonApprovalRequired}, now)
+	approval := approvalRequest(t, manager, runRecord, now)
+	approval.ID = "approval-test"
+	request, err := manager.RequestApproval(context.Background(), approval, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +327,7 @@ func TestApprovalRoundTripsAndTerminalTransitionsAreRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 {
+	if len(events) != 4 {
 		t.Fatalf("events = %#v", events)
 	}
 	again, err := store.Events(runRecord.ID)
@@ -320,7 +349,7 @@ func TestApprovalCanExpireOnlyWhilePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, Tool: "github.update_file", ActionType: "destructive_write", ReasonCode: policy.ReasonApprovalRequired}, time.Now())
+	request, err := manager.RequestApproval(context.Background(), approvalRequest(t, manager, record, time.Now()), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,11 +405,12 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}, confirmPause: true, confirmResolve: true}
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	now := time.Now().UTC()
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, ActionType: "destructive_write", Tool: "github.update_file", ReasonCode: policy.ReasonApprovalRequired}, time.Now())
+	request, err := manager.RequestApproval(context.Background(), approvalRequest(t, manager, record, now), now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +424,7 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	if paused.Status != run.Paused {
 		t.Fatalf("run status = %s", paused.Status)
 	}
-	decided, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "operator approved", time.Now())
+	decided, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "operator approved", now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +442,7 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[1].Decision != policy.RequireApproval || events[2].Decision != policy.Allow {
+	if len(events) != 4 || events[2].Decision != policy.RequireApproval || events[3].Decision != policy.Allow {
 		t.Fatalf("approval audit = %#v", events)
 	}
 }
@@ -425,12 +455,63 @@ func TestApprovalRequestMustMatchPolicyAndRuntimeCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, ActionType: "destructive_write", Tool: "github.update_file", ReasonCode: policy.ReasonToolDenied}, time.Now())
+	invalidRequest := approvalRequest(t, manager, record, time.Now())
+	invalidRequest.ReasonCode = policy.ReasonToolDenied
+	_, err = manager.RequestApproval(context.Background(), invalidRequest, time.Now().Add(time.Second))
 	if err == nil {
 		t.Fatal("mismatched reason code produced an approval")
 	}
 	if controller.paused {
 		t.Fatal("runtime paused for a request that did not match a policy approval")
+	}
+}
+
+func TestBudgetDeniedRequestCannotCreateApproval(t *testing.T) {
+	configured, err := policy.Load(strings.NewReader("version: v1\nkind: agent-policy\nid: approval-budget\nname: Approval Budget\ntools:\n  allow: [github.update_file]\napproval:\n  required_for: [destructive_write]\nbudget:\n  max_tool_calls: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := policy.Resolve(configured, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
+	manager, _ := run.NewManager(store)
+	controller := &mockController{capabilities: map[policy.Control]bool{
+		policy.ControlToolInterception:    true,
+		policy.ControlRuntimeEvents:       true,
+		policy.ControlApprovalPauseResume: true,
+		policy.ControlToolCallBudget:      true,
+	}, confirmPause: true}
+	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), time.Now(), controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, _, audit, err := manager.EvaluateAndRecord(record.ID, policy.Event{
+		Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write",
+	}, policy.BudgetState{ToolCalls: 1}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Outcome != policy.Deny {
+		t.Fatalf("exhausted-budget decision = %#v, want DENY", decision)
+	}
+	_, err = manager.RequestApproval(context.Background(), run.Approval{
+		RunID: record.ID, RequestAuditID: audit.ID, Category: policy.ToolCallRequested,
+		Tool: "github.update_file", ActionType: "destructive_write", ReasonCode: decision.ReasonCode,
+	}, time.Now())
+	if err == nil {
+		t.Fatal("budget-denied request produced an approval")
+	}
+	if controller.pauseCalls != 0 {
+		t.Fatalf("runtime paused for a denied request (%d calls)", controller.pauseCalls)
+	}
+	approvals, err := store.ListApprovals(record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %#v, want none", approvals)
 	}
 }
 
@@ -451,7 +532,7 @@ func TestApprovalResolutionCanRetryAfterRuntimeDoesNotConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := manager.RequestApproval(context.Background(), run.Approval{RunID: record.ID, ActionType: "destructive_write", Tool: "github.update_file", ReasonCode: policy.ReasonApprovalRequired}, time.Now())
+	request, err := manager.RequestApproval(context.Background(), approvalRequest(t, manager, record, time.Now()), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}

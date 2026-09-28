@@ -67,9 +67,11 @@ const (
 type Approval struct {
 	ID             string               `json:"id"`
 	RunID          string               `json:"run_id"`
+	RequestAuditID string               `json:"request_audit_id,omitempty"`
 	Category       policy.EventCategory `json:"category"`
 	ActionType     string               `json:"action_type"`
 	Tool           string               `json:"tool,omitempty"`
+	Domain         string               `json:"domain,omitempty"`
 	ReasonCode     policy.ReasonCode    `json:"reason_code"`
 	Status         ApprovalStatus       `json:"status"`
 	RequestedAt    time.Time            `json:"requested_at"`
@@ -279,6 +281,9 @@ func (s *Store) Events(runID string) ([]AuditRecord, error) {
 }
 
 func (s *Store) CreateApproval(request Approval, now time.Time) (Approval, error) {
+	if request.RequestAuditID == "" {
+		return Approval{}, errors.New("approval request must reference its persisted REQUIRE_APPROVAL audit")
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -308,15 +313,19 @@ func (s *Store) CreateApproval(request Approval, now time.Time) (Approval, error
 		if run.Status != Paused {
 			return fmt.Errorf("run %q must be paused before an approval request is persisted", run.ID)
 		}
-		expected := (policy.Engine{}).EvaluateBefore(run.Policy, policy.Event{Category: request.Category, Tool: request.Tool, ActionType: request.ActionType}, policy.BudgetState{})
-		if expected.Outcome != policy.RequireApproval || expected.ReasonCode != request.ReasonCode {
-			return errors.New("approval request does not match a REQUIRE_APPROVAL policy decision")
+		if _, err := validateApprovalRequestAudit(*db, request); err != nil {
+			return err
 		}
 		if _, exists := db.Approvals[request.ID]; exists {
 			return fmt.Errorf("approval %q already exists", request.ID)
 		}
+		for _, existing := range db.Approvals {
+			if existing.RunID == request.RunID && existing.RequestAuditID == request.RequestAuditID {
+				return fmt.Errorf("request audit %q already has an approval", request.RequestAuditID)
+			}
+		}
 		db.Approvals[request.ID] = request
-		event := policy.Event{Category: request.Category, RunID: run.ID, Tool: request.Tool, ActionType: request.ActionType, Timestamp: now.UTC()}
+		event := policy.Event{Category: request.Category, RunID: run.ID, Tool: request.Tool, Domain: request.Domain, ActionType: request.ActionType, Timestamp: now.UTC()}
 		audit, err := auditFor(run, event, policy.Decision{Outcome: policy.RequireApproval, ReasonCode: request.ReasonCode}, "")
 		if err != nil {
 			return err
@@ -362,6 +371,33 @@ func (s *Store) ListApprovals(runID string) ([]Approval, error) {
 	return result, nil
 }
 
+func (s *Store) requestAuditForApproval(request Approval) (AuditRecord, error) {
+	db, err := s.read()
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	return validateApprovalRequestAudit(db, request)
+}
+
+func (s *Store) approvalForRequest(runID, requestAuditID string) (Approval, bool, error) {
+	db, err := s.read()
+	if err != nil {
+		return Approval{}, false, err
+	}
+	var result Approval
+	found := false
+	for _, request := range db.Approvals {
+		if request.RunID != runID || request.RequestAuditID != requestAuditID {
+			continue
+		}
+		if found {
+			return Approval{}, false, fmt.Errorf("request audit %q has multiple approvals", requestAuditID)
+		}
+		result, found = request, true
+	}
+	return result, found, nil
+}
+
 func (s *Store) DecideApproval(id string, status ApprovalStatus, reason string, now time.Time) (Approval, error) {
 	if status != ApprovalApproved && status != ApprovalRejected && status != ApprovalExpired {
 		return Approval{}, fmt.Errorf("invalid terminal approval status %q", status)
@@ -385,7 +421,7 @@ func (s *Store) DecideApproval(id string, status ApprovalStatus, reason string, 
 		if status == ApprovalExpired {
 			category = policy.EventPolicyViolation
 		}
-		event := policy.Event{Category: category, RunID: run.ID, Tool: request.Tool, ActionType: request.ActionType, Timestamp: now.UTC()}
+		event := policy.Event{Category: category, RunID: run.ID, Tool: request.Tool, Domain: request.Domain, ActionType: request.ActionType, Timestamp: now.UTC()}
 		audit, err := auditFor(run, event, policy.Decision{Outcome: outcomeFor(status), ReasonCode: request.ReasonCode}, "approval_"+string(status))
 		if err != nil {
 			return err
@@ -540,6 +576,15 @@ func (m *Manager) EvaluateAndRecord(runID string, event policy.Event, state poli
 			return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 		}
 		event.ObservedDecision, event.ReasonCode = requestAudit.Decision, requestAudit.ReasonCode
+		if requestAudit.Decision == policy.RequireApproval {
+			approval, found, err := m.Store.approvalForRequest(runID, requestAudit.ID)
+			if err != nil {
+				return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
+			}
+			if found && approval.Status == ApprovalApproved {
+				event.ObservedDecision, event.ReasonCode = policy.Allow, ""
+			}
+		}
 	}
 	evaluation := engine.EvaluateAfter(runRecord.Policy, event, state)
 	decision := engine.EvaluateBefore(runRecord.Policy, decisionEvent, state)
@@ -598,13 +643,21 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 			request.Category = policy.EventPolicyViolation
 		}
 	}
-	requestEvent := policy.Event{Category: request.Category, Tool: request.Tool, ActionType: request.ActionType}
+	requestEvent := policy.Event{Category: request.Category, Tool: request.Tool, Domain: request.Domain, ActionType: request.ActionType}
 	if err := requestEvent.Validate(); err != nil {
 		return Approval{}, err
 	}
-	expected := (policy.Engine{}).EvaluateBefore(run.Policy, requestEvent, policy.BudgetState{})
-	if expected.Outcome != policy.RequireApproval || expected.ReasonCode != request.ReasonCode {
-		return Approval{}, errors.New("approval request does not match a REQUIRE_APPROVAL policy decision")
+	requestAudit, err := m.Store.requestAuditForApproval(request)
+	if err != nil {
+		return Approval{}, err
+	}
+	if requestAudit.PolicyHash != run.Policy.Hash || requestAudit.PolicyID != run.Policy.PolicyID {
+		return Approval{}, errors.New("approval request references an audit from a different policy snapshot")
+	}
+	if _, found, err := m.Store.approvalForRequest(run.ID, request.RequestAuditID); err != nil {
+		return Approval{}, err
+	} else if found {
+		return Approval{}, fmt.Errorf("request audit %q already has an approval", request.RequestAuditID)
 	}
 	if request.ID == "" {
 		generated, err := newID("approval")
@@ -732,12 +785,21 @@ func (s *Store) read() (database, error) {
 	return decodeDatabase(file)
 }
 
-func (s *Store) update(change func(*database) error) error {
+func (s *Store) update(change func(*database) error) (returnErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureRoot(true); err != nil {
 		return err
 	}
+	release, err := acquireStoreLock(s.root)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := release(); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("release run state lock: %w", err)
+		}
+	}()
 	db, err := s.readUnlocked()
 	if err != nil {
 		return err
@@ -869,6 +931,11 @@ func validateDatabase(db database) error {
 		if _, ok := db.Runs[approval.RunID]; !ok {
 			return fmt.Errorf("approval %q references missing run", id)
 		}
+		if approval.RequestAuditID != "" {
+			if _, err := validateApprovalRequestAudit(db, approval); err != nil {
+				return fmt.Errorf("approval %q has invalid request audit: %w", id, err)
+			}
+		}
 	}
 	for _, event := range db.Events {
 		if err := validateAudit(event, db.Runs); err != nil {
@@ -915,6 +982,11 @@ func validateApproval(approval Approval) error {
 	if err := validateID("run", approval.RunID); err != nil {
 		return err
 	}
+	if approval.RequestAuditID != "" {
+		if err := validateID("audit", approval.RequestAuditID); err != nil {
+			return err
+		}
+	}
 	if !safeLabel.MatchString(approval.ActionType) {
 		return fmt.Errorf("approval %q has invalid action type", approval.ID)
 	}
@@ -924,7 +996,7 @@ func validateApproval(approval Approval) error {
 	if approval.ReasonCode == "" || approval.RequestedAt.IsZero() {
 		return fmt.Errorf("approval %q is missing reason or request time", approval.ID)
 	}
-	if err := (policy.Event{Category: approval.Category, Tool: approval.Tool, ActionType: approval.ActionType}).Validate(); err != nil {
+	if err := (policy.Event{Category: approval.Category, Tool: approval.Tool, Domain: approval.Domain, ActionType: approval.ActionType}).Validate(); err != nil {
 		return fmt.Errorf("approval %q has an invalid action: %w", approval.ID, err)
 	}
 	if approval.Status != ApprovalPending && approval.Status != ApprovalApproved && approval.Status != ApprovalRejected && approval.Status != ApprovalExpired {
@@ -934,6 +1006,40 @@ func validateApproval(approval Approval) error {
 		return fmt.Errorf("terminal approval %q is missing decision time", approval.ID)
 	}
 	return nil
+}
+
+func validateApprovalRequestAudit(db database, request Approval) (AuditRecord, error) {
+	if request.RequestAuditID == "" {
+		return AuditRecord{}, errors.New("approval request must reference its persisted REQUIRE_APPROVAL audit")
+	}
+	runRecord, ok := db.Runs[request.RunID]
+	if !ok {
+		return AuditRecord{}, fmt.Errorf("run %q not found", request.RunID)
+	}
+	var audit AuditRecord
+	found := false
+	for _, event := range db.Events {
+		if event.ID == request.RequestAuditID {
+			audit, found = event, true
+			break
+		}
+	}
+	if !found {
+		return AuditRecord{}, fmt.Errorf("request audit %q was not found for run %q", request.RequestAuditID, request.RunID)
+	}
+	if audit.RunID != request.RunID || audit.Category != request.Category || audit.Tool != request.Tool || !sameAuditDomain(audit.Domain, request.Domain) || audit.ActionType != request.ActionType {
+		return AuditRecord{}, errors.New("approval request audit does not match its action")
+	}
+	if audit.PolicyID != runRecord.Policy.PolicyID || audit.PolicyHash != runRecord.Policy.Hash {
+		return AuditRecord{}, errors.New("approval request audit does not match the run policy snapshot")
+	}
+	if audit.Decision != policy.RequireApproval {
+		return AuditRecord{}, fmt.Errorf("approval request must reference a REQUIRE_APPROVAL audit; request recorded %s", audit.Decision)
+	}
+	if audit.ReasonCode != request.ReasonCode {
+		return AuditRecord{}, fmt.Errorf("approval reason %s does not match request audit reason %s", request.ReasonCode, audit.ReasonCode)
+	}
+	return audit, nil
 }
 
 func validateAudit(event AuditRecord, runs map[string]Record) error {

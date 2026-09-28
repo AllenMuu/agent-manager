@@ -65,7 +65,7 @@ Task artifacts SHALL be able to carry an optional stable reference to the AgentR
 - **THEN** it remains valid and renders as before
 
 ### Requirement: Canonical approval lifecycle
-`REQUIRE_APPROVAL` SHALL produce a serializable approval request linked to an AgentRun and the requested action. An approval SHALL transition from pending to approved, rejected, or expired; a rejected or expired action SHALL NOT proceed. An adapter with native pause/resume support MAY map that behavior to the canonical request. A runtime without that support SHALL fail safely and report a capability mismatch. Approval creation and transitions SHALL be auditable.
+`REQUIRE_APPROVAL` SHALL produce a serializable approval request linked to an AgentRun, the requested action, and the persisted request audit that recorded the decision. Approval creation SHALL verify that the referenced audit records `REQUIRE_APPROVAL`, preserving any budget evaluation made with the original request. An approval SHALL transition from pending to approved, rejected, or expired; only a matching approved request permits a completion event, while rejected, expired, pending, or absent approval SHALL be treated as a violation. An adapter with native pause/resume support MAY map that behavior to the canonical request. A runtime without that support SHALL fail safely and report a capability mismatch. Approval creation and transitions SHALL be auditable.
 
 #### Scenario: Require approval for a sensitive action
 - **WHEN** a policy requires approval for an action
@@ -74,6 +74,10 @@ Task artifacts SHALL be able to carry an optional stable reference to the AgentR
 #### Scenario: Resolve a pending approval
 - **WHEN** an operator approves, rejects, or expires a pending request
 - **THEN** the request records the terminal status and decision time, and only an approved request may continue
+
+#### Scenario: Preserve the original budget decision during approval
+- **WHEN** an approval request references an audit that denied the action because a configured budget was exhausted
+- **THEN** Agent Manager rejects the approval request without pausing the runtime or creating an approval
 
 #### Scenario: Runtime cannot suspend for approval
 - **WHEN** approval is mandatory and the selected runtime cannot pause and resume
@@ -106,7 +110,7 @@ The policy engine SHALL evaluate elapsed duration, accumulated cost, tool-call c
 - **THEN** the engine rejects the request and records the corresponding governance event
 
 ### Requirement: Local run inventory and confirmed termination
-Agent Manager SHALL provide one run inventory abstraction with list and inspect operations. Run records, policy snapshots, approvals, and audit events SHALL be persisted locally in a user-level state directory shared across projects. Termination SHALL be capability-aware: unsupported termination SHALL fail explicitly, and Agent Manager SHALL report a run as terminated only after the underlying runtime confirms termination. A confirmed termination reason SHALL be persisted and audited.
+Agent Manager SHALL provide one run inventory abstraction with list and inspect operations. Run records, policy snapshots, approvals, and audit events SHALL be persisted locally in a user-level state directory shared across projects. Updates to that shared state SHALL serialize the complete read-modify-write transaction across processes so concurrent CLI processes or Store instances cannot lose records. Termination SHALL be capability-aware: unsupported termination SHALL fail explicitly, and Agent Manager SHALL report a run as terminated only after the underlying runtime confirms termination. A confirmed termination reason SHALL be persisted and audited.
 
 #### Scenario: List and inspect runs across projects
 - **WHEN** an operator lists or inspects runs from any project

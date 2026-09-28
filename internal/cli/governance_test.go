@@ -81,7 +81,11 @@ func TestGovernanceCLIPoliciesRunsApprovalsAndEvalEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	approval, err := manager.RequestApproval(t.Context(), run.Approval{RunID: record.ID, Tool: "github.update_file", ActionType: "destructive_write", ReasonCode: policy.ReasonApprovalRequired}, time.Now().UTC())
+	_, _, approvalAudit, err := manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write"}, policy.BudgetState{}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := manager.RequestApproval(t.Context(), run.Approval{RunID: record.ID, RequestAuditID: approvalAudit.ID, Tool: "github.update_file", ActionType: "destructive_write", ReasonCode: policy.ReasonApprovalRequired}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -544,10 +544,14 @@ func evaluateGovernance(item Case, evidence GovernanceEvidence) CaseResult {
 	if assertion.CapabilitiesReady != nil || len(assertion.MissingCapabilities) > 0 {
 		checks++
 		report := evidence.CapabilityReport
+		expectedReady := "not asserted"
+		if assertion.CapabilitiesReady != nil {
+			expectedReady = fmt.Sprint(*assertion.CapabilitiesReady)
+		}
 		if report == nil {
 			result.Evidence = append(result.Evidence, "capability report was not provided")
 		} else if (assertion.CapabilitiesReady != nil && *assertion.CapabilitiesReady != report.Ready) || !sameControls(assertion.MissingCapabilities, report.Missing) {
-			result.Evidence = append(result.Evidence, fmt.Sprintf("capability report ready=%t missing=%v did not match expected ready=%t missing=%v", report.Ready, report.Missing, *assertion.CapabilitiesReady, assertion.MissingCapabilities))
+			result.Evidence = append(result.Evidence, fmt.Sprintf("capability report ready=%t missing=%v did not match expected ready=%s missing=%v", report.Ready, report.Missing, expectedReady, assertion.MissingCapabilities))
 		} else {
 			passed++
 			result.Evidence = append(result.Evidence, fmt.Sprintf("capability report matched ready=%t missing=%v", report.Ready, report.Missing))

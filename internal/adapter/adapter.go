@@ -61,6 +61,7 @@ type RuntimeEvent struct {
 	Resource         string
 	ActionType       string
 	Timestamp        time.Time
+	RequestAuditID   string
 	ObservedDecision policy.Outcome
 	ReasonCode       policy.ReasonCode
 }
@@ -76,7 +77,7 @@ func NormalizeGovernanceEvent(target Target, native RuntimeEvent) (policy.Event,
 		Category: native.Category, Actor: native.Actor, Runtime: string(target),
 		Tool: native.Tool, Domain: native.Domain, CredentialScope: native.CredentialScope,
 		Resource: native.Resource, ActionType: native.ActionType,
-		Timestamp: native.Timestamp.UTC(), ObservedDecision: native.ObservedDecision,
+		Timestamp: native.Timestamp.UTC(), RequestAuditID: native.RequestAuditID, ObservedDecision: native.ObservedDecision,
 		ReasonCode: native.ReasonCode,
 	}
 	if err := event.Validate(); err != nil {

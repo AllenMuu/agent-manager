@@ -119,6 +119,24 @@ func TestGovernanceEventsNormalizeIdenticallyAcrossAdapters(t *testing.T) {
 	}
 }
 
+func TestGovernanceCompletionEventsRetainRequestAuditID(t *testing.T) {
+	cases := []adapter.RuntimeEvent{
+		{Category: policy.ToolCallCompleted, Tool: "read_file", RequestAuditID: "evt-request", Timestamp: time.Now().UTC()},
+		{Category: policy.NetworkAccessCompleted, Domain: "example.com", RequestAuditID: "evt-request", Timestamp: time.Now().UTC()},
+	}
+	for _, native := range cases {
+		for _, target := range []adapter.Target{adapter.ClaudeCode, adapter.Codex, adapter.Pi} {
+			got, err := adapter.NormalizeGovernanceEvent(target, native)
+			if err != nil {
+				t.Fatalf("NormalizeGovernanceEvent(%s, %s) error = %v", target, native.Category, err)
+			}
+			if got.RequestAuditID != native.RequestAuditID {
+				t.Errorf("normalized %s completion request audit id = %q, want %q", target, got.RequestAuditID, native.RequestAuditID)
+			}
+		}
+	}
+}
+
 func TestUnsupportedAgentRootsRequireRealDirectorySkillsLocations(t *testing.T) {
 	project := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(project, ".unsupported", "skills"), 0o755); err != nil {

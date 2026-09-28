@@ -43,7 +43,7 @@ Run state is stored in `os.UserConfigDir()/agent-manager/runs/state.json`, share
 
 The Go API accepts a `RuntimeController` explicitly. The controller must confirm pause/resume and termination operations before persisted run state changes. The current directory adapters do not implement that control interface. `agent-manager runs kill` therefore reports an unsupported capability for those adapters. There is intentionally no `runs start` command that could imply an agent was launched.
 
-`agent-manager runs list`, `runs show <run-id>`, and `runs events <run-id>` inspect the shared local inventory. `agent-manager approvals list|show|approve|reject|expire` records human decisions and linked audit events. A CLI decision records the operator's choice only; it does not execute an action or resume a runtime.
+`agent-manager runs list`, `runs show <run-id>`, and `runs events <run-id>` inspect the shared local inventory. `agent-manager approvals list|show|approve|reject|expire` records human decisions and linked audit events. Approval creation must cite the persisted `REQUIRE_APPROVAL` request audit; its recorded decision preserves the original budget evaluation. A completion linked to that request is allowed only after its matching approval is approved. A CLI decision records the operator's choice only; it does not execute an action or resume a runtime.
 
 Audit records contain the run and policy snapshot identity, event category, safe action labels, decision, and stable reason code. Raw event metadata, credential scopes, decision details, and untrusted actor text are not copied into the audit trail.
 
