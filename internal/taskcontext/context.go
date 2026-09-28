@@ -3,6 +3,7 @@
 package taskcontext
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,7 +51,14 @@ type Options struct {
 	MemoryScopes   []memory.Scope
 }
 
-const maxKnowledgeFileSize = 64 * 1024
+const (
+	maxKnowledgeFileSize  = 64 * 1024
+	maxSkillContextBytes  = 256 * 1024
+	maxMemoryItems        = 10
+	maxMemoryItemBytes    = 32 * 1024
+	maxMemoryContextBytes = 128 * 1024
+	maxTotalContextBytes  = 1024 * 1024
+)
 
 // Resolve builds an adapter-ready task context from repository guidance,
 // artifacts, and compatible local Skills. It never invokes an agent runtime or
@@ -101,26 +109,30 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 		if discoverErr != nil {
 			return Bundle{}, fmt.Errorf("discover compatible Skills: %w", discoverErr)
 		}
-		selected := make(map[string]struct{}, len(options.SelectedSkills))
-		for _, identifier := range options.SelectedSkills {
-			selected[identifier] = struct{}{}
-		}
-		found := make(map[string]struct{}, len(options.SelectedSkills))
+		byID := make(map[string]catalog.Skill, len(skills))
 		for _, skill := range skills {
-			if _, ok := selected[skill.Identifier]; !ok {
-				continue
+			byID[skill.Identifier] = skill
+		}
+		skillBytes := 0
+		for _, identifier := range options.SelectedSkills {
+			skill, ok := byID[identifier]
+			if !ok {
+				return Bundle{}, fmt.Errorf("selected Skill %q was not found in the library", identifier)
 			}
-			found[skill.Identifier] = struct{}{}
 			compatible := options.Agent == "" || len(skill.Compatibility) == 0 || contains(skill.Compatibility, options.Agent) || contains(skill.Compatibility, "all")
 			if !compatible {
 				bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("selected Skill %q does not declare compatibility with agent %q", skill.Identifier, options.Agent))
 			}
-			bundle.Skills = append(bundle.Skills, skill)
-		}
-		for _, identifier := range options.SelectedSkills {
-			if _, ok := found[identifier]; !ok {
-				return Bundle{}, fmt.Errorf("selected Skill %q was not found in the library", identifier)
+			encoded, err := json.Marshal(skill)
+			if err != nil {
+				return Bundle{}, fmt.Errorf("measure selected Skill %q: %w", identifier, err)
 			}
+			if len(encoded) > maxSkillContextBytes-skillBytes {
+				bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("selected Skill %q omitted: Skill context exceeded %d bytes", identifier, maxSkillContextBytes))
+				continue
+			}
+			skillBytes += len(encoded)
+			bundle.Skills = append(bundle.Skills, skill)
 		}
 	} else if len(options.SelectedSkills) > 0 {
 		return Bundle{}, errors.New("a Skill library is required when selecting Skills")
@@ -137,6 +149,7 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 			}
 			query := memoryQuery(bundle.Artifacts)
 			if query != "" {
+				memoryBytes, omitted := 0, 0
 				for _, scope := range scopes {
 					if !hasScope(bundle.MemoryState.Scopes, scope) {
 						return Bundle{}, fmt.Errorf("Memory provider does not support scope %q for context assembly", scope)
@@ -146,13 +159,29 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 						return Bundle{}, fmt.Errorf("search %s Memory context: %w", scope, searchErr)
 					}
 					for _, result := range results {
-						if strings.TrimSpace(result) != "" {
-							bundle.Memory = append(bundle.Memory, MemoryItem{Scope: scope, Content: result})
+						if strings.TrimSpace(result) == "" {
+							continue
 						}
+						if len(bundle.Memory) >= maxMemoryItems || len(result) > maxMemoryItemBytes || len(result) > maxMemoryContextBytes-memoryBytes {
+							omitted++
+							continue
+						}
+						memoryBytes += len(result)
+						bundle.Memory = append(bundle.Memory, MemoryItem{Scope: scope, Content: result})
 					}
+				}
+				if omitted > 0 {
+					bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("memory context omitted %d results (limits: %d items, %d bytes per item, %d bytes total)", omitted, maxMemoryItems, maxMemoryItemBytes, maxMemoryContextBytes))
 				}
 			}
 		}
+	}
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("measure task context: %w", err)
+	}
+	if len(encoded) > maxTotalContextBytes {
+		return Bundle{}, fmt.Errorf("task context exceeds %d bytes", maxTotalContextBytes)
 	}
 	return bundle, nil
 }

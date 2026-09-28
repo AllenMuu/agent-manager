@@ -152,6 +152,15 @@ func (d Document) Render() (string, error) {
 func (d Document) Kind() Kind { return Kind(stringValue(d.Values["kind"])) }
 func (d Document) ID() string { return stringValue(d.Values["id"]) }
 
+// ProjectRoot returns the declared project root without interpreting other fields.
+func (d Document) ProjectRoot() string {
+	project, ok := mapValue(d.Values["project"])
+	if !ok {
+		return ""
+	}
+	return stringValue(project["root"])
+}
+
 // Get returns a protocol or extension field.
 func (d Document) Get(name string) (any, bool) {
 	value, ok := d.Values[name]
@@ -519,6 +528,9 @@ func (s Store) Init(taskID string, intent Document) (string, error) {
 	if err := intent.Validate(); err != nil {
 		return "", err
 	}
+	if err := s.validateProjectRoot(intent); err != nil {
+		return "", err
+	}
 	if _, err := os.Lstat(dir); err == nil {
 		return "", fmt.Errorf("task %q already exists", taskID)
 	} else if !os.IsNotExist(err) {
@@ -548,6 +560,9 @@ func (s Store) Save(taskID string, doc Document) (string, error) {
 		return "", fmt.Errorf("artifact id %q does not match task id %q", doc.ID(), taskID)
 	}
 	if err := doc.Validate(); err != nil {
+		return "", err
+	}
+	if err := s.validateProjectRoot(doc); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, string(doc.Kind())+".yaml")
@@ -613,7 +628,39 @@ func (s Store) Load(taskID string, kind Kind) (Document, string, error) {
 	if err == nil && doc.ID() != taskID {
 		return Document{}, "", fmt.Errorf("artifact id %q does not match task id %q", doc.ID(), taskID)
 	}
+	if err == nil {
+		err = s.validateProjectRoot(doc)
+	}
 	return doc, path, err
+}
+
+func (s Store) validateProjectRoot(doc Document) error {
+	if doc.ProjectRoot() == "" {
+		return errors.New("artifact project.root is empty")
+	}
+	declared, err := filepath.Abs(doc.ProjectRoot())
+	if err != nil {
+		return fmt.Errorf("resolve artifact project.root: %w", err)
+	}
+	declared, err = filepath.EvalSymlinks(declared)
+	if err != nil {
+		return fmt.Errorf("resolve artifact project.root: %w", err)
+	}
+	if s.ProjectRoot == "" {
+		return errors.New("store project root is empty")
+	}
+	storeRoot, err := filepath.Abs(s.ProjectRoot)
+	if err != nil {
+		return fmt.Errorf("resolve store project root: %w", err)
+	}
+	storeRoot, err = filepath.EvalSymlinks(storeRoot)
+	if err != nil {
+		return fmt.Errorf("resolve store project root: %w", err)
+	}
+	if filepath.Clean(declared) != filepath.Clean(storeRoot) {
+		return fmt.Errorf("artifact project.root %q does not match store project root %q", doc.ProjectRoot(), s.ProjectRoot)
+	}
+	return nil
 }
 
 func (s Store) taskDirectory(taskID string, create bool) (string, error) {

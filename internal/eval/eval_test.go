@@ -118,6 +118,29 @@ func TestRunMarksMissingCandidatePartial(t *testing.T) {
 	}
 }
 
+func TestCompareDoesNotRewardMissingCandidate(t *testing.T) {
+	baseline := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "fail", Score: 0, Evidence: []string{"required point missing"}}}}
+	missing := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "partial", Score: 0, Evidence: []string{"candidate response was not provided"}}}}
+	comparison := eval.Compare(baseline, missing)
+	if len(comparison.Improvements) != 0 || len(comparison.Regressions) != 1 {
+		t.Fatalf("missing candidate comparison = %#v", comparison)
+	}
+	pass := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "pass", Score: 100}}}
+	if got := eval.Compare(pass, missing); len(got.Regressions) != 1 {
+		t.Fatalf("pass to missing = %#v", got)
+	}
+	if got := eval.Compare(baseline, pass); len(got.Improvements) != 1 {
+		t.Fatalf("fail to pass = %#v", got)
+	}
+	partial := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "partial", Score: 50}}}
+	if got := eval.Compare(pass, partial); len(got.Regressions) != 1 {
+		t.Fatalf("pass to partial = %#v", got)
+	}
+	if got := eval.Compare(baseline, partial); len(got.Improvements) != 1 {
+		t.Fatalf("fail to partial = %#v", got)
+	}
+}
+
 func TestLegacyV1CaseWithoutIntentFileRemainsRunnable(t *testing.T) {
 	root := t.TempDir()
 	caseDir := filepath.Join(root, "cases", "legacy")

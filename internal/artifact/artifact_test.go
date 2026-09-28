@@ -149,6 +149,42 @@ func TestStoreUsesDeterministicTaskLayoutAndRejectsOverwrite(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsCrossProjectArtifactOnInitSaveAndLoad(t *testing.T) {
+	projectA, projectB := t.TempDir(), t.TempDir()
+	store, err := artifact.NewStore(projectA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := artifact.New(artifact.Intent, "task-1", projectB, time.Now())
+	wrong.Set("summary", "wrong project")
+	if _, err := store.Init("task-1", wrong); err == nil {
+		t.Fatal("cross-project Init succeeded")
+	}
+	valid := artifact.New(artifact.Intent, "task-1", filepath.Join(projectA, "."), time.Now())
+	valid.Set("summary", "valid project")
+	path, err := store.Init("task-1", valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Save("task-1", wrong); err == nil {
+		t.Fatal("cross-project Save succeeded")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "valid project") {
+		t.Fatalf("artifact overwritten: %v", err)
+	}
+	data, err = wrong.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Load("task-1", artifact.Intent); err == nil {
+		t.Fatal("cross-project Load succeeded")
+	}
+}
+
 func TestLessonsExposeTypedItemsForExplicitPromotion(t *testing.T) {
 	doc := artifact.New(artifact.Lessons, "task-1", "/tmp/project", time.Now())
 	doc.Set("items", []map[string]string{{"type": "lesson", "scope": "project", "content": "keep tests deterministic", "confidence": "high"}})
