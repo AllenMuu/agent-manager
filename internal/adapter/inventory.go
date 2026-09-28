@@ -161,7 +161,9 @@ func UnsupportedAgentRoots(root string) ([]string, error) {
 	locations := make([]string, 0)
 	for _, entry := range entries {
 		name := entry.Name()
-		if len(name) < 2 || name[0] != '.' || known[name] {
+		// Cc Switch stores its own skill references under this directory, but it
+		// is a tool/configuration manager rather than an agent runtime.
+		if len(name) < 2 || name[0] != '.' || known[name] || name == ".cc-switch" {
 			continue
 		}
 		location := filepath.Join(root, name)

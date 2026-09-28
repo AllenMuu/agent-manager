@@ -2,8 +2,10 @@ package lifecycle_test
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
@@ -201,6 +203,36 @@ func TestAddManyRejectsConflictChangedDuringConfirmation(t *testing.T) {
 	assertCapturedOriginal(t, journal, "original.txt", "original unmanaged")
 }
 
+func TestAddManyRejectsSourceEditedDuringConfirmation(t *testing.T) {
+	root, project, skill := fixture(t)
+	script := filepath.Join(skill.SourcePath, "script.sh")
+	if err := os.WriteFile(script, []byte("reviewed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := operation.FingerprintPath(skill.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
+		if err := os.WriteFile(script, []byte("changed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	_, err = svc.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}, lifecycle.Options{ExpectedSourceFingerprints: map[string]string{skill.SourcePath: digest}})
+	if !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("AddMany error = %v", err)
+	}
+	a, _ := adapter.For(adapter.Codex)
+	if _, err := os.Lstat(a.ProjectSkillPath(project, skill.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("destination changed: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("journal changed: %v %v", ok, err)
+	}
+}
+
 func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
@@ -361,6 +393,83 @@ func TestAddManyAggregatesCompatibilityWarningsBeforeConfirmation(t *testing.T) 
 	if len(plan.Warnings) != 2 {
 		t.Fatalf("warnings=%#v", plan.Warnings)
 	}
+}
+
+func TestPreviewAddManyDoesNotModifyFilesystemOrJournal(t *testing.T) {
+	root, project, skill := fixture(t)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	before := filesystemState(t, root)
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, nil)
+
+	plan, err := svc.PreviewAddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Changes) != 1 {
+		t.Fatalf("preview changes = %#v, want one change", plan.Changes)
+	}
+	if after := filesystemState(t, root); after != before {
+		t.Fatalf("activation preview changed filesystem\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestPreviewRemoveDoesNotModifyFilesystemOrJournal(t *testing.T) {
+	root, project, skill := fixture(t)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	if _, err := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true }).Add(project, skill, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	before := filesystemState(t, root)
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, nil)
+
+	plan, err := svc.PreviewRemove(project, adapter.Codex, skill.Identifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Changes) != 1 {
+		t.Fatalf("preview changes = %#v, want one change", plan.Changes)
+	}
+	if after := filesystemState(t, root); after != before {
+		t.Fatalf("remove preview changed filesystem\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func filesystemState(t *testing.T, root string) string {
+	t.Helper()
+	var state strings.Builder
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&state, "%s|%s", relative, info.Mode())
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&state, "|link=%s", target)
+		} else if info.Mode().IsRegular() {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&state, "|bytes=%x", contents)
+		}
+		state.WriteByte('\n')
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.String()
 }
 
 func TestListRemoveAndUndoKeepLibrary(t *testing.T) {
@@ -1154,6 +1263,37 @@ func TestAddManyReplaceForceReplacesConflictingLinks(t *testing.T) {
 	restored, err := os.ReadFile(path)
 	if err != nil || string(restored) != "plain file" {
 		t.Fatalf("undo restored %q, %v; want original file content", restored, err)
+	}
+}
+
+func TestAddManyReplacementKeepsContentEditedAfterPlanReview(t *testing.T) {
+	root, project, skill := fixture(t)
+	target, _ := adapter.For(adapter.Codex)
+	destination := target.ProjectSkillPath(project, skill.Identifier)
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ownerPath := filepath.Join(destination, "owner.txt")
+	if err := os.WriteFile(ownerPath, []byte("reviewed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := operation.FingerprintPath(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerPath, []byte("edited after review"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	options := lifecycle.Options{
+		Conflict: lifecycle.ConflictReplace, Force: true,
+		ExpectedConflictFingerprints: map[string]string{destination: approved},
+	}
+	if _, err := service.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}, options); !errors.Is(err, lifecycle.ErrUnsafePath) {
+		t.Fatalf("AddMany edited conflict error = %v, want stale conflict", err)
+	}
+	if got, err := os.ReadFile(ownerPath); err != nil || string(got) != "edited after review" {
+		t.Fatalf("edited conflict content = %q, %v; it must remain intact", got, err)
 	}
 }
 

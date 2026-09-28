@@ -48,6 +48,14 @@ type RecordMetadata struct {
 // Journal persists reversible operation entries at Path.
 type Journal struct {
 	Path string
+	// ValidateEntry rejects entries that violate the caller's journal trust
+	// boundary. It runs whenever entries are read, before any operation uses
+	// their snapshots.
+	ValidateEntry func(Entry) error
+	// ValidateUndoEntry applies an additional caller-specific policy before an
+	// entry can be restored. It runs before confirmation and again immediately
+	// before snapshot validation and restore.
+	ValidateUndoEntry func(Entry) error
 	// BeforeRestorePublish is an optional fault-injection seam for restore tests.
 	BeforeRestorePublish func(path string) error
 	// BeforeJournalDirectorySync is an optional fault-injection seam that runs
@@ -161,22 +169,75 @@ func (j *Journal) RecordedLinkTarget(path string) (string, bool, error) {
 	return "", false, nil
 }
 
-// UndoLatest restores the pre-operation state of the latest journal entry.
-func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
+// PreviewUndo returns the restoration plan for the latest confirmed operation
+// without changing paths or journal state.
+func (j *Journal) PreviewUndo() (Plan, error) {
+	plan, _, err := j.previewUndo()
+	return plan, err
+}
+
+// UndoAvailable reports whether the latest journal entry still owns every
+// recorded post-operation path. It never changes the journal or project tree.
+func (j *Journal) UndoAvailable() (bool, error) {
 	entries, err := j.entries()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(entries) == 0 {
-		return fmt.Errorf("operation journal is empty")
+		return false, nil
+	}
+	for _, snapshot := range entries[len(entries)-1].After {
+		matches, err := matchesSnapshot(snapshot)
+		if err != nil {
+			return false, err
+		}
+		if !matches {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (j *Journal) previewUndo() (Plan, []Entry, error) {
+	entries, err := j.entries()
+	if err != nil {
+		return Plan{}, nil, err
+	}
+	if len(entries) == 0 {
+		return Plan{}, nil, fmt.Errorf("operation journal is empty")
 	}
 	entry := entries[len(entries)-1]
+	if j.ValidateUndoEntry != nil {
+		if err := j.ValidateUndoEntry(entry); err != nil {
+			return Plan{}, nil, err
+		}
+	}
 	plan := Plan{Version: entry.Version, ResourceKind: entry.ResourceKind, Operation: "undo " + entry.Operation}
 	for _, snapshot := range entry.Before {
 		plan.Changes = append(plan.Changes, Change{Path: snapshot.Path, Action: "restore pre-operation state"})
 	}
+	return plan, entries, nil
+}
+
+// UndoLatest restores the pre-operation state of the latest journal entry.
+func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
+	return j.UndoLatestWithFingerprints(confirm, nil)
+}
+
+// UndoLatestWithFingerprints also verifies reviewed pre-operation backups before restore.
+func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected map[string]string) error {
+	plan, entries, err := j.previewUndo()
+	if err != nil {
+		return err
+	}
+	entry := entries[len(entries)-1]
 	if confirm == nil || !confirm(plan) {
 		return ErrNotConfirmed
+	}
+	if j.ValidateUndoEntry != nil {
+		if err := j.ValidateUndoEntry(entry); err != nil {
+			return err
+		}
 	}
 	for _, snapshot := range entry.After {
 		matches, err := matchesSnapshot(snapshot)
@@ -185,6 +246,19 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 		}
 		if !matches {
 			return ErrUnexpectedState
+		}
+	}
+	for _, snapshot := range entry.Before {
+		if !snapshot.Exists || expected == nil {
+			continue
+		}
+		digest, ok := expected[snapshot.Backup]
+		if !ok {
+			return ErrUnexpectedState
+		}
+		actual, err := FingerprintPath(snapshot.Backup)
+		if err != nil || actual != digest {
+			return errors.Join(ErrUnexpectedState, err)
 		}
 	}
 	if err := j.Restore(entry.Before); err != nil {
@@ -456,6 +530,11 @@ func (j *Journal) entries() ([]Entry, error) {
 		}
 		if err := validateMetadata(entries[i].Version, entries[i].ResourceKind); err != nil {
 			return nil, err
+		}
+		if j.ValidateEntry != nil {
+			if err := j.ValidateEntry(entries[i]); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return entries, nil

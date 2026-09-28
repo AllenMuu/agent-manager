@@ -41,6 +41,11 @@ type Options struct {
 	Conflict ConflictStrategy
 	// Force supplies the explicit force confirmation a conflict strategy needs.
 	Force bool
+	// ExpectedConflictFingerprints binds force replacement to the exact paths
+	// and content that were shown in the reviewed plan.
+	ExpectedConflictFingerprints map[string]string
+	// ExpectedSourceFingerprints binds activation to reviewed Skill directory trees.
+	ExpectedSourceFingerprints map[string]string
 }
 
 func optionsOf(opts []Options) Options {
@@ -178,6 +183,21 @@ func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Tar
 			return plan, err
 		}
 	}
+	for _, snapshot := range beforeConfirmation {
+		expected, ok := options.ExpectedConflictFingerprints[snapshot.Path]
+		if !ok {
+			continue
+		}
+		if !snapshot.Exists {
+			removeSnapshots(beforeConfirmation)
+			return plan, ErrUnsafePath
+		}
+		actual, fingerprintErr := operation.FingerprintPath(snapshot.Backup)
+		if fingerprintErr != nil || actual != expected {
+			removeSnapshots(beforeConfirmation)
+			return plan, errors.Join(ErrUnsafePath, fingerprintErr)
+		}
+	}
 	if !s.confirmed(plan) {
 		removeSnapshots(beforeConfirmation)
 		return plan, ErrNotConfirmed
@@ -223,52 +243,14 @@ func (s *Service) Activate(project string, skill catalog.Skill, targets []adapte
 // AddMany activates an explicit selection as one confirmed, journaled transaction.
 func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
 	options := optionsOf(opts)
-	project, err := filepath.Abs(project)
-	if err != nil {
+	if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
 		return operation.Plan{}, err
 	}
-	plan := operation.NewPlan("activate selected skills")
-	var paths []string
-	var requests []resource.SkillLifecycleRequest
-	seen := map[string]bool{}
-	for _, skill := range skills {
-		base, err := s.planSkill(resource.SkillLifecycleRequest{
-			Action:       resource.LifecycleActivate,
-			LibraryPath:  s.LibraryPath,
-			CatalogEntry: &skill,
-		})
-		if err != nil {
-			return plan, err
-		}
-		for _, target := range targets {
-			placement, err := s.resourcePlacement(project, target, base.Resource)
-			if err != nil {
-				return plan, err
-			}
-			path := placement.Destination
-			if seen[path] {
-				return plan, ErrUnsafePath
-			}
-			seen[path] = true
-			request := resource.SkillLifecycleRequest{
-				Action:        resource.LifecycleActivate,
-				LibraryPath:   s.LibraryPath,
-				ProjectPath:   project,
-				Resource:      base.Resource,
-				PlacementPath: path,
-				Target:        string(target),
-				Conflict:      skillConflict(options.Conflict),
-				Force:         options.Force,
-			}
-			planned, err := s.planSkill(request)
-			if err != nil {
-				return plan, err
-			}
-			paths = append(paths, path)
-			requests = append(requests, request)
-			appendSkillPlan(&plan, planned)
-		}
+	preview, err := s.buildAddManyPreview(project, skills, targets, options)
+	if err != nil {
+		return preview.plan, err
 	}
+	plan, paths, requests := preview.plan, preview.paths, preview.requests
 	if len(paths) == 0 {
 		return plan, nil
 	}
@@ -277,6 +259,21 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		beforeConfirmation, err = s.Journal.Capture(paths)
 		if err != nil {
 			return plan, err
+		}
+	}
+	for _, snapshot := range beforeConfirmation {
+		expected, ok := options.ExpectedConflictFingerprints[snapshot.Path]
+		if !ok {
+			continue
+		}
+		if !snapshot.Exists {
+			removeSnapshots(beforeConfirmation)
+			return plan, ErrUnsafePath
+		}
+		actual, fingerprintErr := operation.FingerprintPath(snapshot.Backup)
+		if fingerprintErr != nil || actual != expected {
+			removeSnapshots(beforeConfirmation)
+			return plan, errors.Join(ErrUnsafePath, fingerprintErr)
 		}
 	}
 	if !s.confirmed(plan) {
@@ -289,6 +286,9 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 	}
 	defer cleanup()
 	return plan, s.mutateWithBefore(plan, paths, beforeConfirmation, func() error {
+		if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
+			return err
+		}
 		for i := range requests {
 			if err := adapter.ValidateProjectPlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], requests[i].Resource.ID); err != nil {
 				return err
@@ -304,6 +304,9 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		return nil
 	}, func() error {
 		for i, path := range paths {
+			if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
+				return err
+			}
 			var initialSnapshot *operation.Snapshot
 			if i < len(beforeConfirmation) {
 				initialSnapshot = &beforeConfirmation[i]
@@ -319,6 +322,87 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		}
 		return nil
 	})
+}
+
+func verifySourceFingerprints(skills []catalog.Skill, expected map[string]string) error {
+	if expected == nil {
+		return nil
+	}
+	for _, skill := range skills {
+		digest, ok := expected[skill.SourcePath]
+		if !ok {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("Skill source %q has no reviewed fingerprint", skill.SourcePath))
+		}
+		actual, err := operation.FingerprintPath(skill.SourcePath)
+		if err != nil {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("fingerprint Skill source %q: %w", skill.SourcePath, err))
+		}
+		if actual != digest {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("Skill source %q changed after review", skill.SourcePath))
+		}
+	}
+	return nil
+}
+
+type addManyPreview struct {
+	plan     operation.Plan
+	paths    []string
+	requests []resource.SkillLifecycleRequest
+}
+
+// PreviewAddMany builds the exact guarded activation plan without staging
+// snapshots or changing the project, library, or journal.
+func (s *Service) PreviewAddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
+	preview, err := s.buildAddManyPreview(project, skills, targets, optionsOf(opts))
+	return preview.plan, err
+}
+
+func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, targets []adapter.Target, options Options) (addManyPreview, error) {
+	preview := addManyPreview{plan: operation.NewPlan("activate selected skills")}
+	project, err := filepath.Abs(project)
+	if err != nil {
+		return preview, err
+	}
+	seen := map[string]bool{}
+	for _, skill := range skills {
+		base, err := s.planSkill(resource.SkillLifecycleRequest{
+			Action:       resource.LifecycleActivate,
+			LibraryPath:  s.LibraryPath,
+			CatalogEntry: &skill,
+		})
+		if err != nil {
+			return preview, err
+		}
+		for _, target := range targets {
+			placement, err := s.resourcePlacement(project, target, base.Resource)
+			if err != nil {
+				return preview, err
+			}
+			path := placement.Destination
+			if seen[path] {
+				return preview, ErrUnsafePath
+			}
+			seen[path] = true
+			request := resource.SkillLifecycleRequest{
+				Action:        resource.LifecycleActivate,
+				LibraryPath:   s.LibraryPath,
+				ProjectPath:   project,
+				Resource:      base.Resource,
+				PlacementPath: path,
+				Target:        string(target),
+				Conflict:      skillConflict(options.Conflict),
+				Force:         options.Force,
+			}
+			planned, err := s.planSkill(request)
+			if err != nil {
+				return preview, err
+			}
+			preview.paths = append(preview.paths, path)
+			preview.requests = append(preview.requests, request)
+			appendSkillPlan(&preview.plan, planned)
+		}
+	}
+	return preview, nil
 }
 
 // List inventories supported project skill locations without changing them.
@@ -405,27 +489,10 @@ func unsupportedProjectSkills(project string) ([]Item, error) {
 
 // Remove removes only a managed project-side soft link.
 func (s *Service) Remove(project string, target adapter.Target, identifier string) (operation.Plan, error) {
-	project, err := filepath.Abs(project)
+	plan, project, placement, request, planned, err := s.buildRemovePreview(project, target, identifier)
 	if err != nil {
-		return operation.Plan{}, err
+		return plan, err
 	}
-	baseRequest := resource.SkillLifecycleRequest{Action: resource.LifecycleRemove, LibraryPath: s.LibraryPath, ProjectPath: project, Identifier: identifier}
-	base, err := s.planSkill(baseRequest)
-	if err != nil {
-		return operation.Plan{}, err
-	}
-	placement, err := s.resourcePlacement(project, target, base.Resource)
-	if err != nil {
-		return operation.Plan{}, err
-	}
-	request := baseRequest
-	request.PlacementPath = placement.Destination
-	planned, err := s.planSkill(request)
-	if err != nil {
-		return operation.Plan{}, err
-	}
-	plan := operation.NewPlan("remove")
-	appendSkillPlan(&plan, planned)
 	if !s.confirmed(plan) {
 		return plan, ErrNotConfirmed
 	}
@@ -459,6 +526,38 @@ func (s *Service) Remove(project string, target adapter.Target, identifier strin
 		}
 		return adapter.RemoveManagedLink(project, placement.Destination, planned.CurrentSource)
 	})
+}
+
+// PreviewRemove builds the exact guarded removal plan without changing the
+// project or journal.
+func (s *Service) PreviewRemove(project string, target adapter.Target, identifier string) (operation.Plan, error) {
+	plan, _, _, _, _, err := s.buildRemovePreview(project, target, identifier)
+	return plan, err
+}
+
+func (s *Service) buildRemovePreview(project string, target adapter.Target, identifier string) (operation.Plan, string, adapter.Placement, resource.SkillLifecycleRequest, resource.SkillLifecyclePlan, error) {
+	plan := operation.NewPlan("remove")
+	project, err := filepath.Abs(project)
+	if err != nil {
+		return plan, "", adapter.Placement{}, resource.SkillLifecycleRequest{}, resource.SkillLifecyclePlan{}, err
+	}
+	baseRequest := resource.SkillLifecycleRequest{Action: resource.LifecycleRemove, LibraryPath: s.LibraryPath, ProjectPath: project, Identifier: identifier}
+	base, err := s.planSkill(baseRequest)
+	if err != nil {
+		return plan, project, adapter.Placement{}, baseRequest, resource.SkillLifecyclePlan{}, err
+	}
+	placement, err := s.resourcePlacement(project, target, base.Resource)
+	if err != nil {
+		return plan, project, adapter.Placement{}, baseRequest, resource.SkillLifecyclePlan{}, err
+	}
+	request := baseRequest
+	request.PlacementPath = placement.Destination
+	planned, err := s.planSkill(request)
+	if err != nil {
+		return plan, project, placement, request, resource.SkillLifecyclePlan{}, err
+	}
+	appendSkillPlan(&plan, planned)
+	return plan, project, placement, request, planned, nil
 }
 
 // Adopt moves an eligible unmanaged project directory into the library and links it back.

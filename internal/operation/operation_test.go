@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -70,6 +71,119 @@ func TestUndoLatestRestoresLegacyJournalEntry(t *testing.T) {
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatalf("restored legacy path = %v, want absent", err)
 	}
+}
+
+func TestUndoLatestWithFingerprintsRejectsChangedBackupBeforeRestore(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "owner.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	before, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/library/skill", path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record("activate", before, after); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := operation.FingerprintPath(before[0].Backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(before[0].Backup, "owner.txt"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = journal.UndoLatestWithFingerprints(func(operation.Plan) bool { return true }, map[string]string{before[0].Backup: digest})
+	if !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("UndoLatestWithFingerprints error = %v", err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("project changed: %v %v", info, err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || !ok {
+		t.Fatalf("journal changed: %v %v", ok, err)
+	}
+}
+
+func TestPreviewUndoDoesNotModifyJournalOrProject(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	journalPath := filepath.Join(root, "journal.json")
+	journal := operation.New(journalPath)
+	before, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/library/demo", path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordPlan(operation.Plan{Operation: "activate"}, before, after); err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathsBefore := directoryState(t, root)
+
+	plan, err := journal.PreviewUndo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Operation != "undo activate" || len(plan.Changes) != 1 || plan.Changes[0].Path != path {
+		t.Fatalf("PreviewUndo() = %#v, want undo plan for %s", plan, path)
+	}
+	journalAfter, err := os.ReadFile(journalPath)
+	if err != nil || string(journalAfter) != string(journalBefore) {
+		t.Fatalf("Undo preview changed journal: %q, %v", journalAfter, err)
+	}
+	if pathsAfter := directoryState(t, root); !reflect.DeepEqual(pathsAfter, pathsBefore) {
+		t.Fatalf("Undo preview changed directory entries\nbefore: %#v\nafter: %#v", pathsBefore, pathsAfter)
+	}
+	if target, err := os.Readlink(path); err != nil || target != "/library/demo" {
+		t.Fatalf("Undo preview changed project link: %q, %v", target, err)
+	}
+}
+
+func directoryState(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, relative)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
 }
 
 func TestPlanRendersChangesAndWarnings(t *testing.T) {

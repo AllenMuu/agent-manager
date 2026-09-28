@@ -1,2 +1,3 @@
 .worktrees/
 .agent-manager/evals/
+web/node_modules/
