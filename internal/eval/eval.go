@@ -544,12 +544,11 @@ func Compare(baseline, candidate Result) Comparison {
 			comparison.Added = append(comparison.Added, Regression{CaseID: item.CaseID, Candidate: item.Status, Reason: "new case"})
 			continue
 		}
-		becameMissing := missingCandidate(item) && !missingCandidate(before)
-		statusRegressed := statusRank(item.Status) < statusRank(before.Status)
-		statusImproved := statusRank(item.Status) > statusRank(before.Status)
-		if becameMissing || statusRegressed || item.Score < before.Score {
+		candidateRank := comparisonRank(item)
+		baselineRank := comparisonRank(before)
+		if candidateRank < baselineRank || item.Score < before.Score {
 			comparison.Regressions = append(comparison.Regressions, Regression{CaseID: item.CaseID, Baseline: before.Status, Candidate: item.Status, Reason: fmt.Sprintf("score %d -> %d", before.Score, item.Score)})
-		} else if !missingCandidate(item) && (statusImproved || item.Score > before.Score) {
+		} else if candidateRank > baselineRank || item.Score > before.Score {
 			comparison.Improvements = append(comparison.Improvements, Regression{CaseID: item.CaseID, Baseline: before.Status, Candidate: item.Status, Reason: fmt.Sprintf("score %d -> %d", before.Score, item.Score)})
 		} else {
 			comparison.Unchanged++
@@ -579,13 +578,18 @@ func missingCandidate(item CaseResult) bool {
 	return false
 }
 
-func statusRank(status string) int {
-	switch status {
+func comparisonRank(item CaseResult) int {
+	if missingCandidate(item) {
+		return -1
+	}
+	switch item.Status {
 	case "pass":
 		return 2
 	case "partial":
 		return 1
-	default:
+	case "fail":
 		return 0
+	default:
+		return -1
 	}
 }

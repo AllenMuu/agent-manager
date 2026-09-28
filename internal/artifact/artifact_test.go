@@ -160,7 +160,7 @@ func TestStoreRejectsCrossProjectArtifactOnInitSaveAndLoad(t *testing.T) {
 	if _, err := store.Init("task-1", wrong); err == nil {
 		t.Fatal("cross-project Init succeeded")
 	}
-	valid := artifact.New(artifact.Intent, "task-1", filepath.Join(projectA, "."), time.Now())
+	valid := artifact.New(artifact.Intent, "task-1", ".", time.Now())
 	valid.Set("summary", "valid project")
 	path, err := store.Init("task-1", valid)
 	if err != nil {
@@ -173,6 +173,9 @@ func TestStoreRejectsCrossProjectArtifactOnInitSaveAndLoad(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "valid project") {
 		t.Fatalf("artifact overwritten: %v", err)
 	}
+	if !strings.Contains(string(data), "root: .") {
+		t.Fatalf("stored project root is not portable: %s", data)
+	}
 	data, err = wrong.YAML()
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +185,37 @@ func TestStoreRejectsCrossProjectArtifactOnInitSaveAndLoad(t *testing.T) {
 	}
 	if _, _, err := store.Load("task-1", artifact.Intent); err == nil {
 		t.Fatal("cross-project Load succeeded")
+	}
+}
+
+func TestStoreLoadsRelocatedArtifactWithLegacyAbsoluteRoot(t *testing.T) {
+	project := t.TempDir()
+	store, err := artifact.NewStore(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(t.TempDir(), "previous-checkout")
+	legacy := artifact.New(artifact.Intent, "task-1", oldRoot, time.Now())
+	legacy.Set("summary", "portable task")
+	data, err := legacy.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskDir := filepath.Join(project, ".agents", "tasks", "task-1")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(taskDir, "intent.yaml")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _, err := store.Load("task-1", artifact.Intent)
+	if err != nil {
+		t.Fatalf("Load() rejected relocated legacy artifact: %v", err)
+	}
+	if loaded.ProjectRoot() != "." {
+		t.Fatalf("relocated project.root = %q, want .", loaded.ProjectRoot())
 	}
 }
 

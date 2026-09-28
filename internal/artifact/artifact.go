@@ -528,7 +528,7 @@ func (s Store) Init(taskID string, intent Document) (string, error) {
 	if err := intent.Validate(); err != nil {
 		return "", err
 	}
-	if err := s.validateProjectRoot(intent); err != nil {
+	if err := s.validateProjectRoot(intent, false); err != nil {
 		return "", err
 	}
 	if _, err := os.Lstat(dir); err == nil {
@@ -562,7 +562,7 @@ func (s Store) Save(taskID string, doc Document) (string, error) {
 	if err := doc.Validate(); err != nil {
 		return "", err
 	}
-	if err := s.validateProjectRoot(doc); err != nil {
+	if err := s.validateProjectRoot(doc, false); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, string(doc.Kind())+".yaml")
@@ -629,38 +629,70 @@ func (s Store) Load(taskID string, kind Kind) (Document, string, error) {
 		return Document{}, "", fmt.Errorf("artifact id %q does not match task id %q", doc.ID(), taskID)
 	}
 	if err == nil {
-		err = s.validateProjectRoot(doc)
+		err = s.validateLoadedProjectRoot(&doc)
 	}
 	return doc, path, err
 }
 
-func (s Store) validateProjectRoot(doc Document) error {
-	if doc.ProjectRoot() == "" {
+func (s Store) validateLoadedProjectRoot(doc *Document) error {
+	if err := s.validateProjectRoot(*doc, true); err != nil {
+		return err
+	}
+	root := doc.ProjectRoot()
+	if filepath.IsAbs(root) {
+		if _, err := canonicalProjectRoot(root); os.IsNotExist(err) {
+			doc.setProjectRoot(".")
+		}
+	}
+	return nil
+}
+
+func (s Store) validateProjectRoot(doc Document, allowRelocatedAbsolute bool) error {
+	projectRoot := doc.ProjectRoot()
+	if projectRoot == "" {
 		return errors.New("artifact project.root is empty")
-	}
-	declared, err := filepath.Abs(doc.ProjectRoot())
-	if err != nil {
-		return fmt.Errorf("resolve artifact project.root: %w", err)
-	}
-	declared, err = filepath.EvalSymlinks(declared)
-	if err != nil {
-		return fmt.Errorf("resolve artifact project.root: %w", err)
 	}
 	if s.ProjectRoot == "" {
 		return errors.New("store project root is empty")
 	}
-	storeRoot, err := filepath.Abs(s.ProjectRoot)
-	if err != nil {
-		return fmt.Errorf("resolve store project root: %w", err)
+	declaredPath := projectRoot
+	if !filepath.IsAbs(declaredPath) {
+		declaredPath = filepath.Join(s.ProjectRoot, declaredPath)
 	}
-	storeRoot, err = filepath.EvalSymlinks(storeRoot)
+	declared, err := canonicalProjectRoot(declaredPath)
+	if err != nil {
+		if allowRelocatedAbsolute && filepath.IsAbs(projectRoot) && os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("resolve artifact project.root: %w", err)
+	}
+	storeRoot, err := canonicalProjectRoot(s.ProjectRoot)
 	if err != nil {
 		return fmt.Errorf("resolve store project root: %w", err)
 	}
 	if filepath.Clean(declared) != filepath.Clean(storeRoot) {
-		return fmt.Errorf("artifact project.root %q does not match store project root %q", doc.ProjectRoot(), s.ProjectRoot)
+		return fmt.Errorf("artifact project.root %q does not match store project root %q", projectRoot, s.ProjectRoot)
 	}
 	return nil
+}
+
+func canonicalProjectRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func (d *Document) setProjectRoot(root string) {
+	project, ok := mapValue(d.Values["project"])
+	if ok {
+		project["root"] = root
+	}
 }
 
 func (s Store) taskDirectory(taskID string, create bool) (string, error) {
@@ -698,6 +730,7 @@ func validateID(id string) error {
 }
 
 func writeFile(path string, doc Document) error {
+	doc = doc.withProjectRoot(".")
 	data, err := doc.YAML()
 	if err != nil {
 		return err
@@ -723,4 +756,23 @@ func writeFile(path string, doc Document) error {
 		return fmt.Errorf("publish artifact: %w", err)
 	}
 	return nil
+}
+
+func (d Document) withProjectRoot(root string) Document {
+	values := make(map[string]any, len(d.Values))
+	for key, value := range d.Values {
+		values[key] = value
+	}
+	project, ok := mapValue(values["project"])
+	if !ok {
+		project = map[string]any{}
+	}
+	projectCopy := make(map[string]any, len(project))
+	for key, value := range project {
+		projectCopy[key] = value
+	}
+	projectCopy["root"] = root
+	values["project"] = projectCopy
+	d.Values = values
+	return d
 }
