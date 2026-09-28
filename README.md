@@ -1,5 +1,7 @@
 # Agent Manager
 
+**English** · [简体中文](README.zh-CN.md)
+
 Agent Manager governs local agent resources across a shared Skill library, agent-wide locations, and individual repositories. Its first managed resource domain is Skills: it discovers Skills from a configurable local library, activates them per project through machine-local soft links, and keeps filesystem mutations guarded, journaled, and reversible.
 
 Agent Manager never executes managed-resource code and never installs dependencies.
@@ -75,11 +77,11 @@ unsupported even when the local provider is available.
 ## Getting started
 
 ```text
-agent-manager init                 # verify CLI and install the global Operator skill
+agent-manager init --yes            # verify CLI and install the global Operator skill
 agent-manager web --project .      # open the local Web console for this repository
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
-agent-manager add <skill> --project . --target codex
+agent-manager add <skill> --project . --target codex --yes
 agent-manager list --project .      # show managed/unmanaged/orphaned Skills
 agent-manager agents --project . --json # inspect registered agent adapters
 agent-manager subagents list        # list canonical SubAgent definitions
@@ -131,6 +133,9 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `eval list` | List local evaluation suites |
 | `eval run` | Run deterministic rule/verifier cases and persist results |
 | `eval compare` | Report regressions and improvements between two result files |
+| `policies validate/list/show` | Validate and inspect local versioned AgentPolicy files |
+| `runs list/show/events/kill` | Inspect local AgentRuns, snapshots, approvals, and audit events; request supported termination |
+| `approvals list/show/approve/reject/expire` | Inspect approval requests and record human decisions |
 | `subagents list` | List canonical SubAgent definitions (read-only) |
 | `subagents show <id>` | Show one canonical SubAgent definition (read-only) |
 | `subagents validate [id]` | Validate all or one canonical SubAgent definition (read-only) |
@@ -201,10 +206,10 @@ rewritten into target-native files during inspection.
 
 ## Conflict handling
 
-When activation would replace an existing unmanaged path, Skill Manager refuses by default. To replace it, select the conflict strategy and supply force confirmation:
+When activation would replace an existing unmanaged path, Agent Manager refuses by default. To replace it, select the conflict strategy and supply force confirmation:
 
 ```text
-agent-manager add <skill> --project . --target codex --conflict replace --force
+agent-manager add <skill> --project . --target codex --conflict replace --force --yes
 ```
 
 The replacement is journaled like any other operation, so `undo` restores the previous content.
@@ -222,20 +227,20 @@ Installing for an undeclared target produces a warning in the plan preview. A wa
 
 ## Git guidance
 
-Managed links are machine-local. Committing them would make activation portable, which conflicts with the local-only model, so Skill Manager reports their Git tracking state:
+Managed links are machine-local. Committing them would make activation portable, which conflicts with the local-only model, so Agent Manager reports their Git tracking state:
 
 ```text
 agent-manager doctor --project .                    # show tracked/ignored/would-be-tracked links
-agent-manager doctor --project . --update-gitignore  # offer exact scoped ignores after confirmation
+agent-manager doctor --project . --update-gitignore --yes  # add exact scoped ignores
 ```
 
 `doctor` only ever appends the exact paths of managed links it owns; it never rewrites unrelated tracking rules.
 
 ## Recovery
 
-- `agent-manager undo` — revert the latest journaled operation.
+- `agent-manager undo --project . --yes` — revert the latest journaled project operation.
 - `agent-manager doctor` — diagnose invalid library entries, orphaned links, and unsupported agents.
-- `agent-manager reconcile` — relink orphaned managed links after the library moved (uses journal ownership, confirmed, rolled back on failure).
+- `agent-manager reconcile --project . --yes` — relink orphaned managed links after the library moved (uses journal ownership and rolls back on failure).
 
 ## Recommend
 
@@ -302,6 +307,28 @@ duration. `eval compare` reports regressions, improvements, and newly added
 cases instead of relying on an LLM judge alone. The
 planned baseline is documented in [evals/README.md](evals/README.md), with a
 small runnable `java-backend` fixture suite included.
+
+## Runtime Policy and Governance
+
+Versioned `AgentPolicy` files describe tool rules, network and credential
+scopes, SubAgent limits, budgets, approval requirements, and termination
+conditions. Validate a policy with:
+
+```sh
+agent-manager policies validate ./policy.yaml
+```
+
+User-level policies for `list` and `show` live under
+`os.UserConfigDir()/agent-manager/policies/`.
+
+`agent-manager runs` inspects local run snapshots and audit events, while
+`agent-manager approvals` records manual approval decisions. Current directory
+adapters do not enforce runtime policies or implement runtime control, so
+unsupported requirements and termination requests are reported explicitly.
+Approval commands record the operator's decision; they do not execute an action
+or resume an agent. Agent Manager does not launch agents. See
+[Runtime Policy and Governance](docs/runtime-policy-governance.md) for the
+policy and audit contract.
 
 ## Compatibility and migration boundary
 
