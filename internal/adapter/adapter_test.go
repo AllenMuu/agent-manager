@@ -83,6 +83,9 @@ func TestUnsupportedAgentRootsRequireRealDirectorySkillsLocations(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(project, ".unsupported", "skills"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(project, ".cc-switch", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(project, ".symlink"), 0o755); err != nil {
 		t.Fatal(err)
 	}

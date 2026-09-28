@@ -15,7 +15,25 @@ Agent Manager never executes managed-resource code and never installs dependenci
 
 ```text
 go build ./cmd/agent-manager
+go test ./...
+go vet ./...
+openspec validate add-local-web-console --strict
+openspec doctor
 ```
+
+The Web console assets are checked in under `internal/webconsole/ui` so a Go
+binary does not need Node.js or network access at runtime. To change the React
+console, use the pinned dependencies and rebuild those embedded assets:
+
+```text
+cd web
+npm ci
+npm test
+npm run build
+```
+
+The frontend toolchain follows the pinned Vite/Vitest engine range: Node.js
+22.12+ on the 22.x line, 24.x, or 26+.
 
 ## Configuration
 
@@ -58,6 +76,7 @@ unsupported even when the local provider is available.
 
 ```text
 agent-manager init                 # verify CLI and install the global Operator skill
+agent-manager web --project .      # open the local Web console for this repository
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
 agent-manager add <skill> --project . --target codex
@@ -85,6 +104,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | Command | Purpose |
 |---|---|
 | `init` | Verify the CLI and install or update the minimal global Operator skill (guarded, confirmed) |
+| `web` | Start the authenticated local Web console on `127.0.0.1` |
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
@@ -116,6 +136,33 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `subagents validate [id]` | Validate all or one canonical SubAgent definition (read-only) |
 | `subagents install <id>` | Render and install a SubAgent for Claude Code or Codex (guarded, confirmed, journaled) |
 | `subagents remove <id>` | Remove a managed SubAgent representation (guarded, confirmed, journaled) |
+
+## Local Web Console
+
+Start a one-project local session with:
+
+```text
+agent-manager web --project . --port 0
+```
+
+`--project` is optional; without it, register a project from the console. The
+default port `0` asks the operating system for an available port. The command
+always binds to IPv4 loopback (`127.0.0.1`) and prints an entry URL whose
+`#session=` fragment contains a random, process-lifetime token. The browser
+moves that token into tab-scoped `sessionStorage` and removes it from the
+address bar. API requests send it as a bearer token, require the exact current
+host and same origin for mutations, reject cross-site fetches, and grant no
+CORS access. Stop the command to discard the session and its pending plans.
+
+The console registers one canonical project per process and exposes only the
+supported inventory, catalog, diagnostic, and operation APIs; it has no
+caller-selected file-read endpoint. Activation, removal, and available Undo
+actions each show a server-owned plan that expires after ten minutes. Undo is
+limited to console-managed project locations; an operation that targets the
+shared Skill library or another unmanaged path remains visible without an Undo
+action. The operator must confirm execution separately, and replacement
+requires an additional explicit force confirmation. All successful mutations
+use the existing lifecycle or journal service.
 
 Every Skill/resource filesystem-mutating command previews its plan, requires confirmation (`--yes` or an interactive prompt), records a reversible filesystem operation-journal entry, and leaves unmanaged directories, ordinary files, and unexpected links untouched by default. `artifacts save` separately confirms a validated task-artifact write; `memory promote` separately confirms an append to provider-owned data. Neither operation creates a filesystem operation-journal entry or is reversible through `undo`. No Skill, SubAgent, status, inventory, or list workflow copies resource content or agent conversation data into Memory.
 
