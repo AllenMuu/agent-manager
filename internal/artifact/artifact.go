@@ -43,6 +43,7 @@ var validKinds = map[Kind]bool{
 func (k Kind) Valid() bool { return validKinds[k] }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var safePolicyHash = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // Envelope is the common metadata carried by every artifact. Document keeps
 // the same fields in its Values map so unknown fields can round-trip.
@@ -69,6 +70,16 @@ type Source struct {
 type Links struct {
 	Parent string `yaml:"parent,omitempty" json:"parent,omitempty"`
 	Task   string `yaml:"task,omitempty" json:"task,omitempty"`
+}
+
+// PolicySnapshotReference links an artifact to the immutable effective policy
+// attached to an AgentRun without embedding or duplicating the policy body.
+type PolicySnapshotReference struct {
+	RunID      string    `yaml:"run_id" json:"runId"`
+	PolicyID   string    `yaml:"policy_id" json:"policyId"`
+	Version    string    `yaml:"version" json:"version"`
+	Hash       string    `yaml:"hash" json:"hash"`
+	ResolvedAt time.Time `yaml:"resolved_at" json:"resolvedAt"`
 }
 
 // Document is a parsed artifact. Values contains both protocol-defined and
@@ -166,6 +177,56 @@ func (d *Document) Set(name string, value any) {
 	d.Values[name] = value
 }
 
+// SetPolicySnapshot stores the effective policy reference on any task artifact.
+func (d *Document) SetPolicySnapshot(reference PolicySnapshotReference) error {
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	d.Set("policy_snapshot", reference)
+	return nil
+}
+
+// PolicySnapshot returns the optional effective-policy reference.
+func (d Document) PolicySnapshot() (PolicySnapshotReference, bool, error) {
+	value, ok := d.Values["policy_snapshot"]
+	if !ok || value == nil {
+		return PolicySnapshotReference{}, false, nil
+	}
+	encoded, err := yaml.Marshal(value)
+	if err != nil {
+		return PolicySnapshotReference{}, true, fmt.Errorf("encode artifact policy snapshot: %w", err)
+	}
+	var reference PolicySnapshotReference
+	decoder := yaml.NewDecoder(bytes.NewReader(encoded))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&reference); err != nil {
+		return PolicySnapshotReference{}, true, fmt.Errorf("decode artifact policy snapshot: %w", err)
+	}
+	if err := reference.Validate(); err != nil {
+		return PolicySnapshotReference{}, true, err
+	}
+	return reference, true, nil
+}
+
+func (r PolicySnapshotReference) Validate() error {
+	if !safeID.MatchString(r.RunID) || r.RunID == "." || r.RunID == ".." {
+		return fmt.Errorf("invalid policy snapshot run id %q", r.RunID)
+	}
+	if !safeID.MatchString(r.PolicyID) || r.PolicyID == "." || r.PolicyID == ".." {
+		return fmt.Errorf("invalid policy snapshot id %q", r.PolicyID)
+	}
+	if r.Version != "v1" {
+		return fmt.Errorf("unsupported policy snapshot version %q", r.Version)
+	}
+	if !safePolicyHash.MatchString(r.Hash) {
+		return fmt.Errorf("invalid policy snapshot hash %q", r.Hash)
+	}
+	if r.ResolvedAt.IsZero() {
+		return fmt.Errorf("policy snapshot resolved_at is required")
+	}
+	return nil
+}
+
 // LessonItems decodes the typed lessons payload for explicit promotion into a
 // Memory provider. It does not perform that promotion itself.
 func (d Document) LessonItems() ([]LessonItem, error) {
@@ -233,6 +294,11 @@ func (d Document) Validate() error {
 	if metadata, ok := d.Values["metadata"]; ok && metadata != nil {
 		if _, ok := mapValue(metadata); !ok {
 			return errors.New("artifact metadata must be a mapping")
+		}
+	}
+	if _, ok := d.Values["policy_snapshot"]; ok {
+		if _, _, err := d.PolicySnapshot(); err != nil {
+			return err
 		}
 	}
 	return validatePayload(kind, d.Values)

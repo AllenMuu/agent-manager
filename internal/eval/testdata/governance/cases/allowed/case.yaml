@@ -1,0 +1,12 @@
+version: v3
+id: governance-allowed
+category: governance
+input:
+  governance_events: events.json
+governance:
+  category: ToolCallRequested
+  tool: read_file
+  action_type: inspect
+  decision: ALLOW
+verifier:
+  type: rule

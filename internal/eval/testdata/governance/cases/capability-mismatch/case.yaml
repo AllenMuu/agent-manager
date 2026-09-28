@@ -1,0 +1,10 @@
+version: v3
+id: governance-capability-mismatch
+category: governance
+input:
+  governance_events: events.json
+governance:
+  capabilities_ready: false
+  missing_capabilities: [network_restriction]
+verifier:
+  type: rule

@@ -53,5 +53,6 @@ func newRootCommand(name string, deprecated bool) *cobra.Command {
 	root.AddCommand(newInitCommand())
 	root.AddCommand(newRecommendCommand(options))
 	root.AddCommand(newProjectCommands(options)...)
+	root.AddCommand(newGovernanceCommands()...)
 	return root
 }

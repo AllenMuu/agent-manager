@@ -7,7 +7,10 @@
 package eval
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,11 +19,14 @@ import (
 	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/artifact"
+	"github.com/AllenMuu/skill-manager/internal/policy"
+	"github.com/AllenMuu/skill-manager/internal/run"
 	"gopkg.in/yaml.v3"
 )
 
 const Version = "v1"
 const CaseVersion = "v2"
+const GovernanceCaseVersion = "v3"
 
 var safeCaseID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
@@ -35,16 +41,34 @@ type Verifier struct {
 }
 
 type Case struct {
-	Version      string            `yaml:"version" json:"version"`
-	ID           string            `yaml:"id" json:"id"`
-	Category     string            `yaml:"category" json:"category"`
-	Input        map[string]string `yaml:"input" json:"input"`
-	Expectations Expectations      `yaml:"expectations" json:"expectations"`
-	Verifier     Verifier          `yaml:"verifier" json:"verifier"`
+	Version            string               `yaml:"version" json:"version"`
+	ID                 string               `yaml:"id" json:"id"`
+	Category           string               `yaml:"category" json:"category"`
+	Input              map[string]string    `yaml:"input" json:"input"`
+	Expectations       Expectations         `yaml:"expectations" json:"expectations"`
+	Verifier           Verifier             `yaml:"verifier" json:"verifier"`
+	Governance         *GovernanceAssertion `yaml:"governance,omitempty" json:"governance,omitempty"`
+	governanceEvidence *GovernanceEvidence  `yaml:"-" json:"-"`
+}
+
+type GovernanceAssertion struct {
+	Category            policy.EventCategory `yaml:"category,omitempty" json:"category,omitempty"`
+	Tool                string               `yaml:"tool,omitempty" json:"tool,omitempty"`
+	ActionType          string               `yaml:"action_type,omitempty" json:"action_type,omitempty"`
+	Decision            policy.Outcome       `yaml:"decision,omitempty" json:"decision,omitempty"`
+	ReasonCode          policy.ReasonCode    `yaml:"reason_code,omitempty" json:"reason_code,omitempty"`
+	CapabilitiesReady   *bool                `yaml:"capabilities_ready,omitempty" json:"capabilities_ready,omitempty"`
+	MissingCapabilities []policy.Control     `yaml:"missing_capabilities,omitempty" json:"missing_capabilities,omitempty"`
+}
+
+type GovernanceEvidence struct {
+	Version          string                   `json:"version"`
+	Events           []run.AuditRecord        `json:"events,omitempty"`
+	CapabilityReport *policy.CapabilityReport `json:"capability_report,omitempty"`
 }
 
 func (c Case) Validate() error {
-	if c.Version != Version && c.Version != CaseVersion {
+	if c.Version != Version && c.Version != CaseVersion && c.Version != GovernanceCaseVersion {
 		return fmt.Errorf("case %q has unsupported version %q", c.ID, c.Version)
 	}
 	if !safeCaseID.MatchString(c.ID) || c.ID == "." || c.ID == ".." {
@@ -59,6 +83,33 @@ func (c Case) Validate() error {
 		}
 		if len(c.Expectations.RequiredPoints) == 0 || len(c.Expectations.EvidencePoints) == 0 {
 			return fmt.Errorf("eval case %q requires required_points and evidence_points", c.ID)
+		}
+	}
+	if c.Version == GovernanceCaseVersion {
+		if c.Input["governance_events"] != "events.json" {
+			return fmt.Errorf("governance eval case %q input.governance_events must name local events.json", c.ID)
+		}
+		if c.Governance == nil {
+			return fmt.Errorf("governance eval case %q requires governance assertions", c.ID)
+		}
+		assertion := c.Governance
+		hasEventAssertion := assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.Decision != "" || assertion.ReasonCode != ""
+		hasCapabilityAssertion := assertion.CapabilitiesReady != nil || len(assertion.MissingCapabilities) > 0
+		if !hasEventAssertion && !hasCapabilityAssertion {
+			return fmt.Errorf("governance eval case %q has no assertions", c.ID)
+		}
+		if hasEventAssertion {
+			if !policy.IsKnownEventCategory(assertion.Category) || !policy.IsKnownOutcome(assertion.Decision) {
+				return fmt.Errorf("governance eval case %q requires a supported event category and decision", c.ID)
+			}
+			if (assertion.Decision == policy.Deny || assertion.Decision == policy.RequireApproval) && !policy.IsKnownReasonCode(assertion.ReasonCode) {
+				return fmt.Errorf("governance eval case %q requires a known reason code", c.ID)
+			}
+		}
+		for _, control := range assertion.MissingCapabilities {
+			if !policy.IsKnownControl(control) {
+				return fmt.Errorf("governance eval case %q references unknown capability %q", c.ID, control)
+			}
 		}
 	}
 	for _, points := range [][]string{c.Expectations.RequiredPoints, c.Expectations.ForbiddenPoints, c.Expectations.EvidencePoints} {
@@ -78,11 +129,12 @@ func (c Case) Validate() error {
 }
 
 type Suite struct {
-	Version  string
-	ID       string
-	Category string
-	Root     string
-	Cases    []Case
+	Version        string
+	ID             string
+	Category       string
+	Root           string
+	Cases          []Case
+	GovernanceOnly bool
 }
 
 func LoadSuite(root string) (Suite, error) {
@@ -97,7 +149,7 @@ func LoadSuite(root string) (Suite, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return Suite{}, fmt.Errorf("eval suite %s is not a directory", abs)
 	}
-	suite := Suite{Version: Version, ID: filepath.Base(abs), Root: abs}
+	suite := Suite{Version: Version, ID: filepath.Base(abs), Root: abs, GovernanceOnly: true}
 	casesRoot := filepath.Join(abs, "cases")
 	casesInfo, err := os.Lstat(casesRoot)
 	if err != nil {
@@ -135,11 +187,63 @@ func LoadSuite(root string) (Suite, error) {
 			return Suite{}, fmt.Errorf("read eval case %s: %w", casePath, err)
 		}
 		var item Case
-		if err := yaml.Unmarshal(data, &item); err != nil {
+		caseDecoder := yaml.NewDecoder(bytes.NewReader(data))
+		caseDecoder.KnownFields(true)
+		if err := caseDecoder.Decode(&item); err != nil {
 			return Suite{}, fmt.Errorf("parse eval case %s: %w", casePath, err)
+		}
+		var trailing any
+		if err := caseDecoder.Decode(&trailing); err != io.EOF {
+			return Suite{}, fmt.Errorf("eval case %s must contain exactly one YAML document", casePath)
 		}
 		if err := item.Validate(); err != nil {
 			return Suite{}, err
+		}
+		if item.Version == GovernanceCaseVersion {
+			evidencePath := filepath.Join(caseDir, item.Input["governance_events"])
+			evidenceInfo, err := os.Lstat(evidencePath)
+			if err != nil {
+				return Suite{}, fmt.Errorf("inspect governance evidence %s: %w", evidencePath, err)
+			}
+			if evidenceInfo.Mode()&os.ModeSymlink != 0 || !evidenceInfo.Mode().IsRegular() {
+				return Suite{}, fmt.Errorf("governance evidence %s must be a direct regular file", evidencePath)
+			}
+			data, err := os.ReadFile(evidencePath)
+			if err != nil {
+				return Suite{}, fmt.Errorf("read governance evidence %s: %w", evidencePath, err)
+			}
+			if len(data) > 4<<20 {
+				return Suite{}, fmt.Errorf("governance evidence %s exceeds maximum size", evidencePath)
+			}
+			var evidence GovernanceEvidence
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&evidence); err != nil {
+				return Suite{}, fmt.Errorf("parse governance evidence %s: %w", evidencePath, err)
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); err != io.EOF {
+				return Suite{}, fmt.Errorf("governance evidence %s must contain one JSON object", evidencePath)
+			}
+			if evidence.Version != Version {
+				return Suite{}, fmt.Errorf("governance evidence %s has unsupported version %q", evidencePath, evidence.Version)
+			}
+			for _, event := range evidence.Events {
+				if err := event.Validate(); err != nil {
+					return Suite{}, fmt.Errorf("invalid governance evidence event: %w", err)
+				}
+			}
+			if evidence.CapabilityReport != nil {
+				if err := validateCapabilityReport(*evidence.CapabilityReport); err != nil {
+					return Suite{}, err
+				}
+			}
+			if len(evidence.Events) == 0 && evidence.CapabilityReport == nil {
+				return Suite{}, fmt.Errorf("governance evidence %s is empty", evidencePath)
+			}
+			item.governanceEvidence = &evidence
+		} else {
+			suite.GovernanceOnly = false
 		}
 		if item.Version == CaseVersion {
 			intentPath := filepath.Join(caseDir, item.Input["intent"])
@@ -179,17 +283,20 @@ func LoadSuite(root string) (Suite, error) {
 }
 
 type Options struct {
-	AgentLabel    string
-	ConfigVersion string
-	CandidateDir  string
-	Now           time.Time
+	AgentLabel      string
+	ConfigVersion   string
+	CandidateDir    string
+	GovernanceRunID string
+	RunStoreRoot    string
+	Now             time.Time
 }
 
 type CaseResult struct {
-	CaseID   string   `yaml:"case_id" json:"caseId"`
-	Status   string   `yaml:"status" json:"status"`
-	Score    int      `yaml:"score" json:"score"`
-	Evidence []string `yaml:"evidence" json:"evidence"`
+	CaseID          string                             `yaml:"case_id" json:"caseId"`
+	Status          string                             `yaml:"status" json:"status"`
+	Score           int                                `yaml:"score" json:"score"`
+	Evidence        []string                           `yaml:"evidence" json:"evidence"`
+	PolicySnapshots []artifact.PolicySnapshotReference `yaml:"policy_snapshots,omitempty" json:"policySnapshots,omitempty"`
 }
 
 type Summary struct {
@@ -201,23 +308,50 @@ type Summary struct {
 }
 
 type Result struct {
-	Version       string       `yaml:"version" json:"version"`
-	RunID         string       `yaml:"run_id" json:"runId"`
-	Suite         string       `yaml:"suite" json:"suite"`
-	AgentLabel    string       `yaml:"agent_label,omitempty" json:"agentLabel,omitempty"`
-	ConfigVersion string       `yaml:"config_version,omitempty" json:"configVersion,omitempty"`
-	StartedAt     time.Time    `yaml:"started_at" json:"startedAt"`
-	DurationMS    int64        `yaml:"duration_ms" json:"durationMs"`
-	Cases         []CaseResult `yaml:"cases" json:"cases"`
-	Summary       Summary      `yaml:"summary" json:"summary"`
+	Version         string                             `yaml:"version" json:"version"`
+	RunID           string                             `yaml:"run_id" json:"runId"`
+	Suite           string                             `yaml:"suite" json:"suite"`
+	AgentLabel      string                             `yaml:"agent_label,omitempty" json:"agentLabel,omitempty"`
+	ConfigVersion   string                             `yaml:"config_version,omitempty" json:"configVersion,omitempty"`
+	StartedAt       time.Time                          `yaml:"started_at" json:"startedAt"`
+	DurationMS      int64                              `yaml:"duration_ms" json:"durationMs"`
+	Cases           []CaseResult                       `yaml:"cases" json:"cases"`
+	PolicySnapshots []artifact.PolicySnapshotReference `yaml:"policy_snapshots,omitempty" json:"policySnapshots,omitempty"`
+	Summary         Summary                            `yaml:"summary" json:"summary"`
 }
 
 func Run(suite Suite, options Options) (Result, error) {
 	if len(suite.Cases) == 0 {
 		return Result{}, fmt.Errorf("eval suite %q has no cases", suite.ID)
 	}
-	if options.CandidateDir == "" {
+	needsCandidate := false
+	for _, item := range suite.Cases {
+		if item.Version != GovernanceCaseVersion {
+			needsCandidate = true
+		}
+	}
+	if options.CandidateDir == "" && needsCandidate {
 		return Result{}, fmt.Errorf("eval run requires --candidate-dir with responses generated for the selected agent and configuration")
+	}
+	var externalEvents []run.AuditRecord
+	if options.GovernanceRunID != "" {
+		var store *run.Store
+		var err error
+		if options.RunStoreRoot == "" {
+			store, err = run.DefaultStore()
+		} else {
+			store, err = run.NewStore(options.RunStoreRoot)
+		}
+		if err != nil {
+			return Result{}, err
+		}
+		externalEvents, err = store.Events(options.GovernanceRunID)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(externalEvents) == 0 {
+			return Result{}, fmt.Errorf("run %q has no governance audit events", options.GovernanceRunID)
+		}
 	}
 	clockStart := time.Now()
 	if options.Now.IsZero() {
@@ -230,12 +364,27 @@ func Run(suite Suite, options Options) (Result, error) {
 		Cases: make([]CaseResult, 0, len(suite.Cases)),
 	}
 	for _, item := range suite.Cases {
-		content, source, err := candidate(item, options.CandidateDir)
-		if err != nil {
-			return Result{}, err
+		var caseResult CaseResult
+		if item.Version == GovernanceCaseVersion {
+			evidence := GovernanceEvidence{}
+			if item.governanceEvidence != nil {
+				evidence = *item.governanceEvidence
+			}
+			if options.GovernanceRunID != "" {
+				evidence.Events = externalEvents
+			}
+			caseResult = evaluateGovernance(item, evidence)
+		} else {
+			content, source, err := candidate(item, options.CandidateDir)
+			if err != nil {
+				return Result{}, err
+			}
+			caseResult = evaluate(item, content, source)
 		}
-		caseResult := evaluate(item, content, source)
 		result.Cases = append(result.Cases, caseResult)
+		for _, reference := range caseResult.PolicySnapshots {
+			result.PolicySnapshots = appendSnapshotReference(result.PolicySnapshots, reference)
+		}
 		result.Summary.Total++
 		result.Summary.Score += caseResult.Score
 		switch caseResult.Status {
@@ -250,6 +399,12 @@ func Run(suite Suite, options Options) (Result, error) {
 	if result.Summary.Total > 0 {
 		result.Summary.Score /= result.Summary.Total
 	}
+	sort.Slice(result.PolicySnapshots, func(i, j int) bool {
+		if result.PolicySnapshots[i].PolicyID == result.PolicySnapshots[j].PolicyID {
+			return result.PolicySnapshots[i].Hash < result.PolicySnapshots[j].Hash
+		}
+		return result.PolicySnapshots[i].PolicyID < result.PolicySnapshots[j].PolicyID
+	})
 	result.DurationMS = time.Since(clockStart).Milliseconds()
 	if result.DurationMS < 0 {
 		result.DurationMS = 0
@@ -356,6 +511,119 @@ func evaluate(item Case, content, source string) CaseResult {
 	return result
 }
 
+func evaluateGovernance(item Case, evidence GovernanceEvidence) CaseResult {
+	result := CaseResult{CaseID: item.ID, Status: "pass", Score: 100, Evidence: []string{}}
+	checks, passed := 0, 0
+	assertion := item.Governance
+	if assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.Decision != "" || assertion.ReasonCode != "" {
+		checks++
+		matches := make([]run.AuditRecord, 0)
+		for _, event := range evidence.Events {
+			if event.Category == assertion.Category && (assertion.Tool == "" || event.Tool == assertion.Tool) && (assertion.ActionType == "" || event.ActionType == assertion.ActionType) {
+				matches = append(matches, event)
+			}
+		}
+		if len(matches) == 0 {
+			result.Evidence = append(result.Evidence, "no audit event matched the expected category, tool, and action")
+		} else {
+			matchPasses := true
+			for _, event := range matches {
+				result.PolicySnapshots = appendSnapshotReference(result.PolicySnapshots, artifact.PolicySnapshotReference{RunID: event.RunID, PolicyID: event.PolicyID, Version: event.PolicyVersion, Hash: event.PolicyHash, ResolvedAt: event.PolicyResolvedAt})
+				if event.Decision != assertion.Decision || (assertion.ReasonCode != "" && event.ReasonCode != assertion.ReasonCode) {
+					matchPasses = false
+				}
+			}
+			if matchPasses {
+				passed++
+				result.Evidence = append(result.Evidence, fmt.Sprintf("%d matching audit event(s) recorded %s with the expected reason", len(matches), assertion.Decision))
+			} else {
+				result.Evidence = append(result.Evidence, fmt.Sprintf("matching audit events did not all record %s with reason %s", assertion.Decision, assertion.ReasonCode))
+			}
+		}
+	}
+	if assertion.CapabilitiesReady != nil || len(assertion.MissingCapabilities) > 0 {
+		checks++
+		report := evidence.CapabilityReport
+		if report == nil {
+			result.Evidence = append(result.Evidence, "capability report was not provided")
+		} else if (assertion.CapabilitiesReady != nil && *assertion.CapabilitiesReady != report.Ready) || !sameControls(assertion.MissingCapabilities, report.Missing) {
+			result.Evidence = append(result.Evidence, fmt.Sprintf("capability report ready=%t missing=%v did not match expected ready=%t missing=%v", report.Ready, report.Missing, *assertion.CapabilitiesReady, assertion.MissingCapabilities))
+		} else {
+			passed++
+			result.Evidence = append(result.Evidence, fmt.Sprintf("capability report matched ready=%t missing=%v", report.Ready, report.Missing))
+		}
+	}
+	if checks == 0 {
+		result.Status, result.Score = "fail", 0
+		result.Evidence = append(result.Evidence, "governance case contains no assertions")
+	} else {
+		result.Score = passed * 100 / checks
+		if passed != checks {
+			result.Status = "fail"
+		}
+	}
+	return result
+}
+
+func validateCapabilityReport(report policy.CapabilityReport) error {
+	if report.Ready != (len(report.Missing) == 0) {
+		return fmt.Errorf("capability report ready flag does not match missing controls")
+	}
+	required := make(map[policy.Control]bool, len(report.Required))
+	for _, control := range report.Required {
+		required[control] = true
+	}
+	missing := make(map[policy.Control]bool, len(report.Missing))
+	for _, control := range report.Missing {
+		if !required[control] {
+			return fmt.Errorf("missing capability %q was not declared required", control)
+		}
+		missing[control] = true
+	}
+	for _, control := range report.Warnings {
+		if required[control] || missing[control] {
+			return fmt.Errorf("optional capability warning %q conflicts with required controls", control)
+		}
+	}
+	for _, list := range [][]policy.Control{report.Required, report.Missing, report.Warnings} {
+		seen := map[policy.Control]bool{}
+		for _, control := range list {
+			if !policy.IsKnownControl(control) || seen[control] {
+				return fmt.Errorf("capability report contains unknown or duplicate control %q", control)
+			}
+			seen[control] = true
+		}
+	}
+	return nil
+}
+
+func sameControls(expected, actual []policy.Control) bool {
+	left, right := append([]policy.Control(nil), expected...), append([]policy.Control(nil), actual...)
+	sort.Slice(left, func(i, j int) bool { return left[i] < left[j] })
+	sort.Slice(right, func(i, j int) bool { return right[i] < right[j] })
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func appendSnapshotReference(references []artifact.PolicySnapshotReference, reference artifact.PolicySnapshotReference) []artifact.PolicySnapshotReference {
+	if reference.Validate() != nil {
+		return references
+	}
+	for _, existing := range references {
+		if existing == reference {
+			return references
+		}
+	}
+	return append(references, reference)
+}
+
 func (r Result) Validate() error {
 	if r.Version != Version {
 		return fmt.Errorf("unsupported eval result version %q", r.Version)
@@ -370,6 +638,7 @@ func (r Result) Validate() error {
 		return fmt.Errorf("eval result summary total %d does not match %d cases", r.Summary.Total, len(r.Cases))
 	}
 	seen := make(map[string]struct{}, len(r.Cases))
+	allReferences := make([]artifact.PolicySnapshotReference, 0)
 	passed, failed, partial, score := 0, 0, 0, 0
 	for _, item := range r.Cases {
 		if !safeCaseID.MatchString(item.CaseID) {
@@ -379,6 +648,12 @@ func (r Result) Validate() error {
 			return fmt.Errorf("eval result contains duplicate case id %q", item.CaseID)
 		}
 		seen[item.CaseID] = struct{}{}
+		for _, reference := range item.PolicySnapshots {
+			if err := reference.Validate(); err != nil {
+				return fmt.Errorf("eval result case %q has invalid policy snapshot: %w", item.CaseID, err)
+			}
+			allReferences = appendSnapshotReference(allReferences, reference)
+		}
 		if item.Score < 0 || item.Score > 100 {
 			return fmt.Errorf("eval result case %q has out-of-range score %d", item.CaseID, item.Score)
 		}
@@ -402,6 +677,24 @@ func (r Result) Validate() error {
 	}
 	if r.Summary.Score != score {
 		return fmt.Errorf("eval result summary score %d does not match case average %d", r.Summary.Score, score)
+	}
+	if len(allReferences) != len(r.PolicySnapshots) {
+		return fmt.Errorf("eval result policy snapshot summary does not match case references")
+	}
+	resultReferences := make(map[artifact.PolicySnapshotReference]struct{}, len(r.PolicySnapshots))
+	for _, reference := range r.PolicySnapshots {
+		if err := reference.Validate(); err != nil {
+			return fmt.Errorf("eval result has invalid policy snapshot: %w", err)
+		}
+		if _, duplicate := resultReferences[reference]; duplicate {
+			return fmt.Errorf("eval result repeats a policy snapshot reference")
+		}
+		resultReferences[reference] = struct{}{}
+	}
+	for _, reference := range allReferences {
+		if _, ok := resultReferences[reference]; !ok {
+			return fmt.Errorf("eval result omits a case policy snapshot reference")
+		}
 	}
 	return nil
 }
