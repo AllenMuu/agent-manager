@@ -1,0 +1,13 @@
+version: v3
+id: governance-denied
+category: governance
+input:
+  governance_events: events.json
+governance:
+  category: ToolCallRequested
+  tool: run_shell
+  action_type: inspect
+  decision: DENY
+  reason_code: TOOL_NOT_ALLOWLISTED
+verifier:
+  type: rule

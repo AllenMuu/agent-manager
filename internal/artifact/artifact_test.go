@@ -79,6 +79,45 @@ items:
 	}
 }
 
+func TestArtifactPolicySnapshotReferenceRoundTripsAndRejectsUnknownFields(t *testing.T) {
+	doc, err := artifact.Parse([]byte(`version: v1
+kind: verification
+id: task-1
+created_at: 2026-09-26T10:00:00Z
+project: {root: /tmp/project}
+source: {actor: human}
+links: {task: task-1}
+status: pass
+checks: [{name: tests, status: pass}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := artifact.PolicySnapshotReference{RunID: "run-1", PolicyID: "safe-policy", Version: "v1", Hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ResolvedAt: time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)}
+	if err := doc.SetPolicySnapshot(want); err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := doc.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := artifact.Parse(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := loaded.PolicySnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got != want {
+		t.Fatalf("policy snapshot = %#v, present %t, want %#v", got, ok, want)
+	}
+	loaded.Set("policy_snapshot", map[string]any{"policy_id": "safe-policy", "version": "v1", "hash": want.Hash, "resolved_at": want.ResolvedAt, "future_control": "must-not-drop"})
+	if _, err := loaded.YAML(); err == nil {
+		t.Fatal("artifact validation silently accepted an unknown policy snapshot field")
+	}
+}
+
 func TestValidateRejectsMalformedStagePayloadAndMissingRelationships(t *testing.T) {
 	plan := artifact.New(artifact.Plan, "task-1", "/tmp/project", time.Now())
 	plan.Set("steps", "not a list")

@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/resource"
 	"github.com/AllenMuu/skill-manager/internal/subagent"
 )
@@ -45,6 +47,43 @@ type RuntimeCapabilities struct {
 	RestrictFilesystem bool
 	RestrictShell      bool
 	RestrictNetwork    bool
+}
+
+// RuntimeEvent is the adapter boundary record used to normalize a native
+// runtime notification before it reaches the provider-neutral policy engine.
+// Concrete directory adapters do not currently receive runtime notifications.
+type RuntimeEvent struct {
+	Category         policy.EventCategory
+	Actor            string
+	Tool             string
+	Domain           string
+	CredentialScope  string
+	Resource         string
+	ActionType       string
+	Timestamp        time.Time
+	RequestAuditID   string
+	ObservedDecision policy.Outcome
+	ReasonCode       policy.ReasonCode
+}
+
+// NormalizeGovernanceEvent converts an adapter's mapped notification into
+// the canonical event contract. Runtime-specific parsing belongs before this
+// boundary; the returned value contains no vendor event type.
+func NormalizeGovernanceEvent(target Target, native RuntimeEvent) (policy.Event, error) {
+	if target != ClaudeCode && target != Codex && target != Pi {
+		return policy.Event{}, fmt.Errorf("unsupported runtime target %q", target)
+	}
+	event := policy.Event{
+		Category: native.Category, Actor: native.Actor, Runtime: string(target),
+		Tool: native.Tool, Domain: native.Domain, CredentialScope: native.CredentialScope,
+		Resource: native.Resource, ActionType: native.ActionType,
+		Timestamp: native.Timestamp.UTC(), RequestAuditID: native.RequestAuditID, ObservedDecision: native.ObservedDecision,
+		ReasonCode: native.ReasonCode,
+	}
+	if err := event.Validate(); err != nil {
+		return policy.Event{}, fmt.Errorf("normalize %s governance event: %w", target, err)
+	}
+	return event, nil
 }
 
 // InspectionRequest selects one resource kind in a project location.
@@ -118,6 +157,7 @@ type AgentAdapter interface {
 	Supports(resource.Kind) bool
 	HasCapability(resource.Kind, resource.Capability) bool
 	RuntimeCapabilities() RuntimeCapabilities
+	GovernanceCapabilities() map[policy.Control]bool
 	InspectSubAgent(subagent.Definition, SubAgentRequest) (SubAgentInspection, error)
 	PlanSubAgent(subagent.Definition, SubAgentRequest) (SubAgentPlan, error)
 }
@@ -432,6 +472,21 @@ func (a directoryAdapter) HasCapability(kind resource.Kind, capability resource.
 
 func (a directoryAdapter) RuntimeCapabilities() RuntimeCapabilities {
 	return RuntimeCapabilities{}
+}
+
+func (a directoryAdapter) GovernanceCapabilities() map[policy.Control]bool {
+	return map[policy.Control]bool{
+		policy.ControlToolInterception:    false,
+		policy.ControlApprovalPauseResume: false,
+		policy.ControlDurationBudget:      false,
+		policy.ControlCostBudget:          false,
+		policy.ControlToolCallBudget:      false,
+		policy.ControlSubagentLimits:      false,
+		policy.ControlNetworkRestriction:  false,
+		policy.ControlCredentialScope:     false,
+		policy.ControlRunTermination:      false,
+		policy.ControlRuntimeEvents:       false,
+	}
 }
 
 func joinCapabilities(capabilities []resource.Capability) string {

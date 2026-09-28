@@ -1,0 +1,13 @@
+version: v3
+id: governance-approval
+category: governance
+input:
+  governance_events: events.json
+governance:
+  category: ToolCallRequested
+  tool: github.update_file
+  action_type: destructive_write
+  decision: REQUIRE_APPROVAL
+  reason_code: ACTION_APPROVAL_REQUIRED
+verifier:
+  type: rule

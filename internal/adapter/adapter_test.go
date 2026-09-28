@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
@@ -75,6 +77,63 @@ func TestSupportedTargetAdaptersOwnSkillPlacements(t *testing.T) {
 				t.Fatalf("PlanPlacement() = %#v, want target %q destination %q", placement, target, want[target])
 			}
 		})
+	}
+}
+
+func TestDirectoryAdaptersExplicitlyLackGovernanceRuntimeCapabilities(t *testing.T) {
+	controls := []policy.Control{
+		policy.ControlToolInterception, policy.ControlApprovalPauseResume,
+		policy.ControlDurationBudget, policy.ControlCostBudget, policy.ControlToolCallBudget,
+		policy.ControlSubagentLimits, policy.ControlNetworkRestriction,
+		policy.ControlCredentialScope, policy.ControlRunTermination, policy.ControlRuntimeEvents,
+	}
+	for _, target := range []adapter.Target{adapter.ClaudeCode, adapter.Codex, adapter.Pi} {
+		a, ok := adapter.ForAgent(target)
+		if !ok {
+			t.Fatalf("adapter.ForAgent(%q) was not registered", target)
+		}
+		capabilities := a.GovernanceCapabilities()
+		for _, control := range controls {
+			if supported, declared := capabilities[control]; !declared || supported {
+				t.Errorf("%s capability %s = %t (declared %t), want explicit unsupported", target, control, supported, declared)
+			}
+		}
+	}
+}
+
+func TestGovernanceEventsNormalizeIdenticallyAcrossAdapters(t *testing.T) {
+	native := adapter.RuntimeEvent{Category: policy.ToolCallRequested, Actor: "agent", Tool: "read_file", ActionType: "inspect", Timestamp: time.Date(2026, 9, 27, 1, 0, 0, 0, time.FixedZone("test", 8*60*60))}
+	var first policy.Event
+	for i, target := range []adapter.Target{adapter.ClaudeCode, adapter.Codex, adapter.Pi} {
+		got, err := adapter.NormalizeGovernanceEvent(target, native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got.Category != first.Category || got.Actor != first.Actor || got.Tool != first.Tool || got.ActionType != first.ActionType || !got.Timestamp.Equal(first.Timestamp) {
+			t.Fatalf("normalized %s event = %#v, want canonical event %#v", target, got, first)
+		}
+	}
+}
+
+func TestGovernanceCompletionEventsRetainRequestAuditID(t *testing.T) {
+	cases := []adapter.RuntimeEvent{
+		{Category: policy.ToolCallCompleted, Tool: "read_file", RequestAuditID: "evt-request", Timestamp: time.Now().UTC()},
+		{Category: policy.NetworkAccessCompleted, Domain: "example.com", RequestAuditID: "evt-request", Timestamp: time.Now().UTC()},
+	}
+	for _, native := range cases {
+		for _, target := range []adapter.Target{adapter.ClaudeCode, adapter.Codex, adapter.Pi} {
+			got, err := adapter.NormalizeGovernanceEvent(target, native)
+			if err != nil {
+				t.Fatalf("NormalizeGovernanceEvent(%s, %s) error = %v", target, native.Category, err)
+			}
+			if got.RequestAuditID != native.RequestAuditID {
+				t.Errorf("normalized %s completion request audit id = %q, want %q", target, got.RequestAuditID, native.RequestAuditID)
+			}
+		}
 	}
 }
 

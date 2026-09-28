@@ -6,7 +6,14 @@ This repository is currently specification-first. `openspec/changes/` contains a
 
 ## Build, Test, and Development Commands
 
-There is no application build or test command yet. Use OpenSpec to inspect and validate the design:
+The application is implemented in Go. Run the standard checks from the repository root:
+
+```bash
+go test ./...                 # Run all package tests
+go build ./cmd/agent-manager  # Build the Agent Manager CLI
+```
+
+Use OpenSpec to inspect and validate specification changes:
 
 ```bash
 openspec list                 # List active changes

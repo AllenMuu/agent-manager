@@ -11,8 +11,9 @@ import (
 )
 
 type evalOptions struct {
-	project string
-	json    bool
+	project         string
+	json            bool
+	governanceRunID string
 }
 
 func newEvalCommand() *cobra.Command {
@@ -20,6 +21,7 @@ func newEvalCommand() *cobra.Command {
 	command := &cobra.Command{Use: "eval", Short: "Score supplied agent responses with deterministic local rules"}
 	command.PersistentFlags().StringVar(&options.project, "project", ".", "project root")
 	command.PersistentFlags().BoolVar(&options.json, "json", false, "write machine-readable JSON")
+	command.PersistentFlags().StringVar(&options.governanceRunID, "governance-run-id", "", "read local governance audit events from an AgentRun")
 	command.AddCommand(newEvalListCommand(options), newEvalRunCommand(options), newEvalCompareCommand(options))
 	return command
 }
@@ -67,7 +69,7 @@ func newEvalRunCommand(options *evalOptions) *cobra.Command {
 		if candidateDir != "" {
 			resolvedCandidates = artifactPath(options.project, candidateDir)
 		}
-		result, err := eval.Run(suite, eval.Options{AgentLabel: agentLabel, ConfigVersion: configVersion, CandidateDir: resolvedCandidates})
+		result, err := eval.Run(suite, eval.Options{AgentLabel: agentLabel, ConfigVersion: configVersion, CandidateDir: resolvedCandidates, GovernanceRunID: options.governanceRunID})
 		if err != nil {
 			return err
 		}
@@ -91,7 +93,7 @@ func newEvalRunCommand(options *evalOptions) *cobra.Command {
 		return err
 	}}
 	command.Flags().StringVar(&agentLabel, "agent-label", "", "label of the external agent that produced the responses")
-	command.Flags().StringVar(&candidateDir, "candidate-dir", "", "project-relative directory containing agent-produced <case-id>.md responses (required)")
+	command.Flags().StringVar(&candidateDir, "candidate-dir", "", "project-relative directory containing agent-produced <case-id>.md responses (required for response-based suites)")
 	command.Flags().StringVar(&configVersion, "config-version", "v1", "Skill/prompt/context configuration version label")
 	command.Flags().StringVar(&output, "output", "", "result file path")
 	return command

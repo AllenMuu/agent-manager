@@ -1,0 +1,9 @@
+{
+  "version": "v1",
+  "capability_report": {
+    "ready": false,
+    "required": ["tool_interception", "network_restriction"],
+    "missing": ["network_restriction"],
+    "warnings": []
+  }
+}

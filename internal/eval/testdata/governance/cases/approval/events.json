@@ -1,0 +1,20 @@
+{
+  "version": "v1",
+  "events": [{
+    "version": "v1",
+    "id": "evt-approval-1",
+    "run_id": "run-fixture-3",
+    "timestamp": "2026-09-27T01:02:00Z",
+    "category": "ToolCallRequested",
+    "actor": "agent",
+    "runtime": "mock",
+    "tool": "github.update_file",
+    "action_type": "destructive_write",
+    "policy_id": "approval-policy",
+    "policy_version": "v1",
+    "policy_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "policy_resolved_at": "2026-09-27T00:00:00Z",
+    "decision": "REQUIRE_APPROVAL",
+    "reason_code": "ACTION_APPROVAL_REQUIRED"
+  }]
+}
