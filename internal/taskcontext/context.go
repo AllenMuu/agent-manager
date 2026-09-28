@@ -114,7 +114,12 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 			byID[skill.Identifier] = skill
 		}
 		skillBytes := 0
+		seenSkills := make(map[string]struct{}, len(options.SelectedSkills))
 		for _, identifier := range options.SelectedSkills {
+			if _, seen := seenSkills[identifier]; seen {
+				continue
+			}
+			seenSkills[identifier] = struct{}{}
 			skill, ok := byID[identifier]
 			if !ok {
 				return Bundle{}, fmt.Errorf("selected Skill %q was not found in the library", identifier)

@@ -139,6 +139,11 @@ func TestCompareDoesNotRewardMissingCandidate(t *testing.T) {
 	if got := eval.Compare(baseline, partial); len(got.Improvements) != 1 {
 		t.Fatalf("fail to partial = %#v", got)
 	}
+	missingBaseline := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "partial", Score: 0, Evidence: []string{"candidate response was not provided"}}}}
+	respondedFail := eval.Result{Cases: []eval.CaseResult{{CaseID: "a", Status: "fail", Score: 30, Evidence: []string{"required point missing"}}}}
+	if got := eval.Compare(missingBaseline, respondedFail); len(got.Improvements) != 1 || len(got.Regressions) != 0 {
+		t.Fatalf("missing to fail = %#v", got)
+	}
 }
 
 func TestLegacyV1CaseWithoutIntentFileRemainsRunnable(t *testing.T) {

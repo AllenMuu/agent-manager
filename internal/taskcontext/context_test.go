@@ -124,6 +124,43 @@ func TestExplicitSkillSelectionPreservesAdvisoryMismatch(t *testing.T) {
 	}
 }
 
+func TestContextDeduplicatesSelectedSkillsBeforeApplyingBudget(t *testing.T) {
+	project, library := t.TempDir(), t.TempDir()
+	store, err := artifact.NewStore(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := artifact.New(artifact.Intent, "task-1", ".", time.Now())
+	intent.Set("summary", "deduplicate selected Skills")
+	if _, err := store.Init("task-1", intent); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"first", "second"} {
+		skillDir := filepath.Join(library, name)
+		if err := os.Mkdir(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + name + "\ndescription: test\n---\n" + strings.Repeat("x", 120000)
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	contract := role.Contract{ID: "custom", Role: "custom", Inputs: []artifact.Kind{artifact.Intent}, Outputs: []artifact.Kind{artifact.Plan}, Permissions: role.Permissions{Filesystem: role.Read, Shell: role.Denied, Network: role.Denied}}
+	bundle, err := taskcontext.ResolveWithOptions(taskcontext.Options{
+		Project: project, TaskID: "task-1", Library: library, Contract: contract,
+		SelectedSkills: []string{"first", "first", "second"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Skills) != 2 || bundle.Skills[0].Identifier != "first" || bundle.Skills[1].Identifier != "second" {
+		t.Fatalf("selected Skills = %#v, want unique Skills in requested order", bundle.Skills)
+	}
+	if len(bundle.Warnings) != 0 {
+		t.Fatalf("deduplicated Skills unexpectedly exceeded budget: %v", bundle.Warnings)
+	}
+}
+
 func (p *fakeProvider) Status() memory.ProviderStatus { return p.status }
 func (p *fakeProvider) Promote(_ memory.Scope, knowledge string) error {
 	p.got = knowledge
