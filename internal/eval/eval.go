@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/artifact"
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/run"
 	"gopkg.in/yaml.v3"
@@ -55,6 +56,12 @@ type GovernanceAssertion struct {
 	Category            policy.EventCategory `yaml:"category,omitempty" json:"category,omitempty"`
 	Tool                string               `yaml:"tool,omitempty" json:"tool,omitempty"`
 	ActionType          string               `yaml:"action_type,omitempty" json:"action_type,omitempty"`
+	ActionID            string               `yaml:"action_id,omitempty" json:"action_id,omitempty"`
+	ActorID             string               `yaml:"actor_id,omitempty" json:"actor_id,omitempty"`
+	DelegationID        string               `yaml:"delegation_id,omitempty" json:"delegation_id,omitempty"`
+	ApprovalID          string               `yaml:"approval_id,omitempty" json:"approval_id,omitempty"`
+	ApproverID          string               `yaml:"approver_id,omitempty" json:"approver_id,omitempty"`
+	TraceID             string               `yaml:"trace_id,omitempty" json:"trace_id,omitempty"`
 	Decision            policy.Outcome       `yaml:"decision,omitempty" json:"decision,omitempty"`
 	ReasonCode          policy.ReasonCode    `yaml:"reason_code,omitempty" json:"reason_code,omitempty"`
 	CapabilitiesReady   *bool                `yaml:"capabilities_ready,omitempty" json:"capabilities_ready,omitempty"`
@@ -93,7 +100,7 @@ func (c Case) Validate() error {
 			return fmt.Errorf("governance eval case %q requires governance assertions", c.ID)
 		}
 		assertion := c.Governance
-		hasEventAssertion := assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.Decision != "" || assertion.ReasonCode != ""
+		hasEventAssertion := assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.ActionID != "" || assertion.ActorID != "" || assertion.DelegationID != "" || assertion.ApprovalID != "" || assertion.ApproverID != "" || assertion.TraceID != "" || assertion.Decision != "" || assertion.ReasonCode != ""
 		hasCapabilityAssertion := assertion.CapabilitiesReady != nil || len(assertion.MissingCapabilities) > 0
 		if !hasEventAssertion && !hasCapabilityAssertion {
 			return fmt.Errorf("governance eval case %q has no assertions", c.ID)
@@ -101,6 +108,14 @@ func (c Case) Validate() error {
 		if hasEventAssertion {
 			if !policy.IsKnownEventCategory(assertion.Category) || !policy.IsKnownOutcome(assertion.Decision) {
 				return fmt.Errorf("governance eval case %q requires a supported event category and decision", c.ID)
+			}
+			for field, value := range map[string]string{"action_id": assertion.ActionID, "actor_id": assertion.ActorID, "delegation_id": assertion.DelegationID, "approval_id": assertion.ApprovalID, "approver_id": assertion.ApproverID, "trace_id": assertion.TraceID} {
+				if value != "" && !identity.IsSafeReference(value) {
+					return fmt.Errorf("governance eval case %q has an invalid %s reference", c.ID, field)
+				}
+			}
+			if assertion.ApproverID != "" && assertion.ApprovalID == "" {
+				return fmt.Errorf("governance eval case %q approver_id requires approval_id", c.ID)
 			}
 			if (assertion.Decision == policy.Deny || assertion.Decision == policy.RequireApproval) && !policy.IsKnownReasonCode(assertion.ReasonCode) {
 				return fmt.Errorf("governance eval case %q requires a known reason code", c.ID)
@@ -515,11 +530,11 @@ func evaluateGovernance(item Case, evidence GovernanceEvidence) CaseResult {
 	result := CaseResult{CaseID: item.ID, Status: "pass", Score: 100, Evidence: []string{}}
 	checks, passed := 0, 0
 	assertion := item.Governance
-	if assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.Decision != "" || assertion.ReasonCode != "" {
+	if assertion.Category != "" || assertion.Tool != "" || assertion.ActionType != "" || assertion.ActionID != "" || assertion.ActorID != "" || assertion.DelegationID != "" || assertion.ApprovalID != "" || assertion.ApproverID != "" || assertion.TraceID != "" || assertion.Decision != "" || assertion.ReasonCode != "" {
 		checks++
 		matches := make([]run.AuditRecord, 0)
 		for _, event := range evidence.Events {
-			if event.Category == assertion.Category && (assertion.Tool == "" || event.Tool == assertion.Tool) && (assertion.ActionType == "" || event.ActionType == assertion.ActionType) {
+			if event.Category == assertion.Category && (assertion.Tool == "" || event.Tool == assertion.Tool) && (assertion.ActionType == "" || event.ActionType == assertion.ActionType) && (assertion.ActionID == "" || event.ActionID == assertion.ActionID) && (assertion.ActorID == "" || event.ActorID == assertion.ActorID) && (assertion.DelegationID == "" || event.DelegationID == assertion.DelegationID) && (assertion.ApprovalID == "" || event.ApprovalID == assertion.ApprovalID) && (assertion.ApproverID == "" || event.ApproverID == assertion.ApproverID) && (assertion.TraceID == "" || event.TraceID == assertion.TraceID) {
 				matches = append(matches, event)
 			}
 		}

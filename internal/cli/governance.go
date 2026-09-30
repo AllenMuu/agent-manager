@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/run"
 	"github.com/spf13/cobra"
@@ -241,13 +242,15 @@ func newApprovalsCommand() *cobra.Command {
 		status run.ApprovalStatus
 	}{{"approve", run.ApprovalApproved}, {"reject", run.ApprovalRejected}, {"expire", run.ApprovalExpired}} {
 		decision := decision
-		var reason string
+		var reason, approverID, approverKind, approverSubject, approverProvider string
+		var approverRoles []string
 		cmd := &cobra.Command{Use: decision.name + " <approval-id>", Short: "Record a manual approval decision", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := run.DefaultStore()
 			if err != nil {
 				return err
 			}
-			item, err := store.DecideApproval(args[0], decision.status, reason, time.Now().UTC())
+			approver := identity.ActorIdentity{ID: approverID, Kind: identity.ActorKind(approverKind), Subject: approverSubject, Provider: approverProvider, Roles: approverRoles}
+			item, err := store.DecideApproval(args[0], decision.status, reason, approver, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -258,6 +261,16 @@ func newApprovalsCommand() *cobra.Command {
 			return err
 		}}
 		cmd.Flags().StringVar(&reason, "reason", "", "operator decision note")
+		cmd.Flags().StringVar(&approverID, "approver-id", "", "stable ID of the actor making this decision")
+		cmd.Flags().StringVar(&approverKind, "approver-kind", "", "approver kind: human, agent, or service")
+		cmd.Flags().StringVar(&approverSubject, "approver-subject", "", "stable subject reference for the approver")
+		cmd.Flags().StringVar(&approverProvider, "approver-provider", "", "optional identity provider reference")
+		cmd.Flags().StringSliceVar(&approverRoles, "approver-role", nil, "optional approver role; may be repeated")
+		for _, flag := range []string{"approver-id", "approver-kind", "approver-subject"} {
+			if err := cmd.MarkFlagRequired(flag); err != nil {
+				panic(err)
+			}
+		}
 		command.AddCommand(cmd)
 	}
 	return command

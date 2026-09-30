@@ -2,6 +2,7 @@ package run_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/run"
 )
@@ -43,6 +45,10 @@ func testCapabilities() map[policy.Control]bool {
 	return map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}
 }
 
+func testApprover() identity.ActorIdentity {
+	return identity.ActorIdentity{ID: "reviewer", Kind: identity.Human, Subject: "reviewer@local", Roles: []string{"approver"}}
+}
+
 func approvalRequest(t *testing.T, manager *run.Manager, record run.Record, now time.Time) run.Approval {
 	t.Helper()
 	event := policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write"}
@@ -65,7 +71,7 @@ func TestStoreSharesRunsAcrossProjectsAndPreservesPolicySnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 9, 27, 1, 0, 0, 0, time.UTC)
-	first, report, err := store.Start(testSnapshot(t), "mock", filepath.Join(t.TempDir(), "project-a"), testCapabilities(), now)
+	first, report, err := store.Start(testSnapshot(t), "mock", filepath.Join(t.TempDir(), "project-a"), identity.AnonymousSelection(), testCapabilities(), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +84,7 @@ func TestStoreSharesRunsAcrossProjectsAndPreservesPolicySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := store.Start(changedSnapshot, "mock", filepath.Join(t.TempDir(), "project-b"), testCapabilities(), now.Add(time.Minute))
+	second, _, err := store.Start(changedSnapshot, "mock", filepath.Join(t.TempDir(), "project-b"), identity.AnonymousSelection(), testCapabilities(), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +112,186 @@ func TestStoreSharesRunsAcrossProjectsAndPreservesPolicySnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreStartSnapshotsExplicitIdentityAndDelegation(t *testing.T) {
+	store, err := run.NewStore(filepath.Join(t.TempDir(), "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 27, 1, 0, 0, 0, time.UTC)
+	actor := identity.ActorIdentity{ID: "allen", Kind: identity.Human, Subject: "allen@local", Roles: []string{"operator"}}
+	delegation := identity.Delegation{ID: "del-1", ActorID: actor.ID, Scopes: []string{"github:read"}, ExpiresAt: now.Add(time.Hour)}
+	selection := identity.Selection{Mode: identity.ModeNamed, Actor: &actor, Delegation: &delegation}
+	record, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), selection, testCapabilities(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Identity.Mode != identity.ModeNamed || record.Identity.Actor == nil || record.Identity.Actor.ID != actor.ID {
+		t.Fatalf("run identity = %#v", record.Identity)
+	}
+	if record.Identity.Delegation == nil || record.Identity.Delegation.RunID != record.ID || !record.Identity.Delegation.HasScope("github:read", now) {
+		t.Fatalf("run delegation = %#v", record.Identity.Delegation)
+	}
+	actor.Roles[0] = "mutated-after-start"
+	delegation.Scopes[0] = "github:write"
+	loaded, err := store.Get(record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Identity.Actor.Roles[0] != "operator" || !loaded.Identity.Delegation.HasScope("github:read", now) {
+		t.Fatalf("stored identity changed after input mutation: %#v", loaded.Identity)
+	}
+}
+
+func TestStoreStartRequiresExplicitIdentityMode(t *testing.T) {
+	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
+	if _, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.Selection{}, testCapabilities(), time.Now()); err == nil {
+		t.Fatal("run started without an explicit identity mode")
+	}
+	runs, err := store.List()
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("invalid identity created a run: runs=%#v err=%v", runs, err)
+	}
+	if _, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.Selection{Mode: identity.ModeAnonymous}, testCapabilities(), time.Now()); err != nil {
+		t.Fatalf("explicit anonymous run rejected: %v", err)
+	}
+}
+
+func TestV1RunStoreReadsAsLegacyWithoutRewriteAndUpgradesOnMutation(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runs")
+	store, _ := run.NewStore(root)
+	started, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), testCapabilities(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "state.json")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(contents, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope["version"] = "v1"
+	runs := envelope["runs"].(map[string]any)
+	legacy := runs[started.ID].(map[string]any)
+	delete(legacy, "identity")
+	events := envelope["events"].([]any)
+	events[0].(map[string]any)["actor"] = "historical-operator"
+	contents, err = json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), contents...)
+
+	legacyStore, _ := run.NewStore(root)
+	loaded, err := legacyStore.Get(started.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Identity.Mode != identity.ModeLegacyAnonymous || loaded.Identity.Actor != nil {
+		t.Fatalf("legacy record identity = %#v", loaded.Identity)
+	}
+	if _, err := legacyStore.List(); err != nil {
+		t.Fatal(err)
+	}
+	afterRead, err := os.ReadFile(path)
+	if err != nil || !reflect.DeepEqual(afterRead, before) {
+		t.Fatalf("read-only inspection rewrote v1 state: err=%v", err)
+	}
+
+	manager, _ := run.NewManager(legacyStore)
+	decision, _, _, err := manager.EvaluateAndRecord(started.ID, policy.Event{Category: policy.ToolCallRequested, Tool: "read_file"}, policy.BudgetState{}, time.Now().UTC())
+	if err != nil || decision.Outcome != policy.Allow {
+		t.Fatalf("legacy policy-only action = %#v, err=%v", decision, err)
+	}
+	var upgraded map[string]any
+	upgradedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(upgradedBytes, &upgraded); err != nil {
+		t.Fatal(err)
+	}
+	if upgraded["version"] != "v2" {
+		t.Fatalf("mutated run-store envelope version = %v, want v2", upgraded["version"])
+	}
+	upgradedRecord, err := legacyStore.Get(started.ID)
+	if err != nil || upgradedRecord.Identity.Mode != identity.ModeLegacyAnonymous {
+		t.Fatalf("upgraded historical record identity=%#v err=%v", upgradedRecord.Identity, err)
+	}
+	upgradedEvents, err := legacyStore.Events(started.ID)
+	if err != nil || len(upgradedEvents) != 2 || upgradedEvents[0].Actor != "historical-operator" {
+		t.Fatalf("upgraded audit history=%#v err=%v", upgradedEvents, err)
+	}
+}
+
+func TestStoreRejectsMismatchedIdentityReferencesAtStartAndLoad(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runs")
+	store, _ := run.NewStore(root)
+	now := time.Now().UTC()
+	actor := identity.ActorIdentity{ID: "allen", Kind: identity.Human, Subject: "allen@local"}
+	wrongDelegation := identity.Delegation{ID: "del-wrong", ActorID: "other-user", Scopes: []string{"github:read"}, ExpiresAt: now.Add(time.Hour)}
+	if _, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.NamedSelection(actor, wrongDelegation), testCapabilities(), now); err == nil {
+		t.Fatal("run started with a delegation linked to another actor")
+	}
+	if runs, err := store.List(); err != nil || len(runs) != 0 {
+		t.Fatalf("mismatched input persisted a partial run: runs=%#v err=%v", runs, err)
+	}
+
+	validDelegation := identity.Delegation{ID: "del-valid", ActorID: actor.ID, Scopes: []string{"github:read"}, ExpiresAt: now.Add(time.Hour)}
+	started, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.NamedSelection(actor, validDelegation), testCapabilities(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "state.json")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(contents, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	runMap := envelope["runs"].(map[string]any)[started.ID].(map[string]any)
+	identityMap := runMap["identity"].(map[string]any)
+	delegationMap := identityMap["delegation"].(map[string]any)
+	delegationMap["run_id"] = "run-other"
+	contents, _ = json.MarshalIndent(envelope, "", "  ")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(started.ID); err == nil {
+		t.Fatal("store loaded a delegation linked to a different run")
+	}
+}
+
+func TestAuditRecordsCorrelateTypedIdentityActionPolicyResultAndTrace(t *testing.T) {
+	now := time.Now().UTC()
+	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
+	manager, _ := run.NewManager(store)
+	actor := identity.ActorIdentity{ID: "allen", Kind: identity.Human, Subject: "allen@local", Roles: []string{"operator"}}
+	delegation := identity.Delegation{ID: "del-1", ActorID: actor.ID, Scopes: []string{"github:read"}, ExpiresAt: now.Add(time.Hour)}
+	record, _, err := manager.Start(testSnapshot(t), "mock", t.TempDir(), identity.NamedSelection(actor, delegation), now, &mockController{capabilities: testCapabilities()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, _, audit, err := manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallRequested, Tool: "read_file", ActionID: "github.read", TraceID: "trace-1"}, policy.BudgetState{}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Outcome != policy.Allow || audit.ActorID != actor.ID || audit.DelegationID != "del-1" || audit.ActionID != "github.read" || audit.TraceID != "trace-1" || audit.Result != policy.Allow {
+		t.Fatalf("typed audit lineage: decision=%#v audit=%#v", decision, audit)
+	}
+	encoded, err := json.Marshal(audit)
+	if err != nil || strings.Contains(string(encoded), "token=") {
+		t.Fatalf("audit serialization exposed unsafe identity data: %s err=%v", encoded, err)
+	}
+}
+
 func TestDefaultStoreUsesSharedUserConfigDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -130,7 +316,7 @@ func TestCapabilityPreflightFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot, _ := policy.Resolve(configured, time.Now())
-	_, report, err := store.Start(snapshot, "mock", t.TempDir(), testCapabilities(), time.Now())
+	_, report, err := store.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), testCapabilities(), time.Now())
 	if err == nil || report.Ready || len(report.Missing) != 1 || report.Missing[0] != policy.ControlNetworkRestriction {
 		t.Fatalf("start = report %#v, err %v", report, err)
 	}
@@ -146,7 +332,7 @@ func TestManagerEvaluatesAndPersistsPolicyDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	controller := &mockController{capabilities: testCapabilities()}
-	record, _, err := manager.Start(testSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(testSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,11 +362,11 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 		policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true,
 	}, confirmPause: true, confirmResolve: true}
 	now := time.Now().UTC()
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), now, controller)
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	action := policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write"}
+	action := policy.Event{Category: policy.ToolCallRequested, Tool: "github.update_file", ActionType: "destructive_write", ActionID: "github.write", TraceID: "trace-approval"}
 	decision, _, decisionAudit, err := manager.EvaluateAndRecord(record.ID, action, policy.BudgetState{}, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -202,15 +388,25 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 	if len(events) != 3 || events[1].ID != decisionAudit.ID || events[1].Decision != policy.RequireApproval || events[2].Decision != policy.RequireApproval {
 		t.Fatalf("governance decision/approval audit chain = %#v", events)
 	}
-	if _, err := manager.DecideApproval(context.Background(), approval.ID, run.ApprovalApproved, "operator approved", now.Add(3*time.Second)); err != nil {
+	if events[2].ApprovalID != approval.ID || events[2].ActionID != action.ActionID || events[2].TraceID != decisionAudit.TraceID {
+		t.Fatalf("approval request audit lost the action trace: %#v", events[2])
+	}
+	if _, err := manager.DecideApproval(context.Background(), approval.ID, run.ApprovalApproved, "operator approved", testApprover(), now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	completionDecision, evaluation, completionAudit, err := manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallCompleted, Tool: action.Tool, ActionType: action.ActionType, RequestAuditID: decisionAudit.ID}, policy.BudgetState{}, now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completionDecision.Outcome != policy.Allow || len(evaluation.Violations) != 0 || completionAudit.RequestAuditID != decisionAudit.ID {
+	if completionDecision.Outcome != policy.Allow || len(evaluation.Violations) != 0 || completionAudit.RequestAuditID != decisionAudit.ID || completionAudit.ApprovalID != approval.ID || completionAudit.ActionID != action.ActionID || completionAudit.TraceID != decisionAudit.TraceID {
 		t.Fatalf("approved completion decision=%#v evaluation=%#v audit=%#v", completionDecision, evaluation, completionAudit)
+	}
+	completedEvents, err := store.Events(record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completedEvents) != 5 || completedEvents[3].ApproverID != testApprover().ID || completedEvents[3].ApprovalID != approval.ID {
+		t.Fatalf("approval transition audit attribution = %#v", completedEvents)
 	}
 }
 
@@ -225,7 +421,7 @@ func TestCompletedActionUsesAndLinksOriginalPreEventDecision(t *testing.T) {
 	}
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
-	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), time.Now(), &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlToolCallBudget: true}})
+	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlToolCallBudget: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +462,7 @@ func TestManagerRecordsBudgetDecisionAndCompletionUsesThatDecision(t *testing.T)
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlToolCallBudget: true}}
-	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +492,7 @@ func TestApprovalRoundTripsAndTerminalTransitionsAreRejected(t *testing.T) {
 	manager, _ := run.NewManager(store)
 	now := time.Now().UTC()
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}, confirmPause: true}
-	runRecord, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), now, controller)
+	runRecord, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,14 +509,17 @@ func TestApprovalRoundTripsAndTerminalTransitionsAreRejected(t *testing.T) {
 	if loaded.Status != run.ApprovalPending {
 		t.Fatalf("approval = %#v", loaded)
 	}
-	decided, err := store.DecideApproval(request.ID, run.ApprovalRejected, "operator rejected", now.Add(time.Second))
+	if _, err := store.DecideApproval(request.ID, run.ApprovalRejected, "missing decider", identity.ActorIdentity{}, now.Add(time.Second)); err == nil {
+		t.Fatal("approval transition without an explicit actor succeeded")
+	}
+	decided, err := store.DecideApproval(request.ID, run.ApprovalRejected, "operator rejected", testApprover(), now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decided.Status != run.ApprovalRejected {
+	if decided.Status != run.ApprovalRejected || decided.DecidedBy == nil || decided.DecidedBy.ID != testApprover().ID {
 		t.Fatalf("approval = %#v", decided)
 	}
-	if _, err := store.DecideApproval(request.ID, run.ApprovalApproved, "", now.Add(2*time.Second)); err == nil {
+	if _, err := store.DecideApproval(request.ID, run.ApprovalApproved, "", testApprover(), now.Add(2*time.Second)); err == nil {
 		t.Fatal("terminal approval transition was accepted")
 	}
 	events, err := store.Events(runRecord.ID)
@@ -329,6 +528,15 @@ func TestApprovalRoundTripsAndTerminalTransitionsAreRejected(t *testing.T) {
 	}
 	if len(events) != 4 {
 		t.Fatalf("events = %#v", events)
+	}
+	decisionAuditFound := false
+	for _, event := range events {
+		if event.ApprovalID == request.ID && event.ApproverID == testApprover().ID && event.Decision == policy.Deny {
+			decisionAuditFound = true
+		}
+	}
+	if !decisionAuditFound {
+		t.Fatalf("approval audit did not retain explicit approver: %#v", events)
 	}
 	again, err := store.Events(runRecord.ID)
 	if err != nil || !reflect.DeepEqual(events, again) {
@@ -345,7 +553,7 @@ func TestApprovalCanExpireOnlyWhilePending(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}, confirmPause: true}
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,14 +561,17 @@ func TestApprovalCanExpireOnlyWhilePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expired, err := store.DecideApproval(request.ID, run.ApprovalExpired, "deadline", time.Now())
+	expired, err := store.DecideApproval(request.ID, run.ApprovalExpired, "deadline", testApprover(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if expired.Status != run.ApprovalExpired {
 		t.Fatalf("approval=%#v", expired)
 	}
-	if _, err := store.DecideApproval(request.ID, run.ApprovalRejected, "late decision", time.Now()); err == nil {
+	if expired.DecidedBy == nil || expired.DecidedBy.ID != testApprover().ID {
+		t.Fatalf("expiry lost explicit deciding actor: %#v", expired)
+	}
+	if _, err := store.DecideApproval(request.ID, run.ApprovalRejected, "late decision", testApprover(), time.Now()); err == nil {
 		t.Fatal("expired approval accepted another terminal transition")
 	}
 }
@@ -369,7 +580,7 @@ func TestUnconfirmedKillDoesNotTerminateRun(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlRunTermination: true}}
-	record, _, err := manager.Start(testSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(testSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +617,9 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}, confirmPause: true, confirmResolve: true}
 	now := time.Now().UTC()
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), now, controller)
+	initiator := identity.ActorIdentity{ID: "initiator", Kind: identity.Human, Subject: "initiator@local", Roles: []string{"developer"}}
+	delegation := identity.Delegation{ID: "initiator-delegation", ActorID: initiator.ID, Scopes: []string{"github:write"}, ExpiresAt: now.Add(time.Hour)}
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.NamedSelection(initiator, delegation), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,12 +637,15 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	if paused.Status != run.Paused {
 		t.Fatalf("run status = %s", paused.Status)
 	}
-	decided, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "operator approved", now.Add(2*time.Second))
+	decided, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "operator approved", testApprover(), now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if decided.Status != run.ApprovalApproved {
 		t.Fatalf("approval = %#v", decided)
+	}
+	if decided.DecidedBy == nil || decided.DecidedBy.ID != testApprover().ID {
+		t.Fatalf("approval did not persist explicit approver: %#v", decided)
 	}
 	resumed, err := store.Get(record.ID)
 	if err != nil {
@@ -445,13 +661,16 @@ func TestApprovalRequiresConfirmedPauseAndRecordsTerminalDecision(t *testing.T) 
 	if len(events) != 4 || events[2].Decision != policy.RequireApproval || events[3].Decision != policy.Allow {
 		t.Fatalf("approval audit = %#v", events)
 	}
+	if events[3].ApprovalID != request.ID || events[3].ApproverID != testApprover().ID || events[3].ActorID != initiator.ID {
+		t.Fatalf("approval decision audit omitted approver attribution: %#v", events[3])
+	}
 }
 
 func TestApprovalRequestMustMatchPolicyAndRuntimeCapabilities(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}}
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +702,7 @@ func TestBudgetDeniedRequestCannotCreateApproval(t *testing.T) {
 		policy.ControlApprovalPauseResume: true,
 		policy.ControlToolCallBudget:      true,
 	}, confirmPause: true}
-	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +738,7 @@ func TestUnsupportedApprovalCapabilityBlocksRunBeforeAction(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}}
-	if _, report, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller); err == nil || report.Ready || controller.pauseCalls != 0 {
+	if _, report, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller); err == nil || report.Ready || controller.pauseCalls != 0 {
 		t.Fatalf("unsupported approval runtime start report=%#v err=%v pause calls=%d", report, err, controller.pauseCalls)
 	}
 }
@@ -528,7 +747,7 @@ func TestApprovalResolutionCanRetryAfterRuntimeDoesNotConfirm(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
 	manager, _ := run.NewManager(store)
 	controller := &mockController{capabilities: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true}, confirmPause: true}
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), time.Now(), controller)
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), time.Now(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +755,7 @@ func TestApprovalResolutionCanRetryAfterRuntimeDoesNotConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "approved", time.Now()); err == nil {
+	if _, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "approved", testApprover(), time.Now()); err == nil {
 		t.Fatal("unconfirmed runtime approval resolution succeeded")
 	}
 	paused, _ := store.Get(record.ID)
@@ -544,7 +763,7 @@ func TestApprovalResolutionCanRetryAfterRuntimeDoesNotConfirm(t *testing.T) {
 		t.Fatalf("run status after failed resolution = %s", paused.Status)
 	}
 	controller.confirmResolve = true
-	if _, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "approved", time.Now()); err != nil {
+	if _, err := manager.DecideApproval(context.Background(), request.ID, run.ApprovalApproved, "approved", testApprover(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	resumed, _ := store.Get(record.ID)
@@ -555,7 +774,7 @@ func TestApprovalResolutionCanRetryAfterRuntimeDoesNotConfirm(t *testing.T) {
 
 func TestAuditOmitsUntrustedActorText(t *testing.T) {
 	store, _ := run.NewStore(filepath.Join(t.TempDir(), "runs"))
-	record, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), testCapabilities(), time.Now())
+	record, _, err := store.Start(testSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), testCapabilities(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

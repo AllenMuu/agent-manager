@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 )
 
@@ -30,7 +31,7 @@ func TestStoreUpdateSerializesSeparateInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	startedAt := time.Now().UTC()
-	record, _, err := first.Start(snapshot, "mock", t.TempDir(), map[policy.Control]bool{
+	record, _, err := first.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), map[policy.Control]bool{
 		policy.ControlToolInterception: true,
 		policy.ControlRuntimeEvents:    true,
 	}, startedAt)

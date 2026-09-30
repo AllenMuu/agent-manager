@@ -17,11 +17,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	Version       = "v1"
+	Version2      = "v2"
 	Kind          = "agent-policy"
 	maxPolicySize = 1 << 20
 )
@@ -32,6 +34,7 @@ type AgentPolicy struct {
 	ID          string           `yaml:"id" json:"id"`
 	Name        string           `yaml:"name" json:"name"`
 	Tools       ToolRules        `yaml:"tools" json:"tools"`
+	Identity    *IdentityRules   `yaml:"identity,omitempty" json:"identity,omitempty"`
 	Network     *NetworkRules    `yaml:"network,omitempty" json:"network,omitempty"`
 	Credentials *CredentialRules `yaml:"credentials,omitempty" json:"credentials,omitempty"`
 	Subagents   *SubagentLimits  `yaml:"subagents,omitempty" json:"subagents,omitempty"`
@@ -39,6 +42,17 @@ type AgentPolicy struct {
 	Approval    ApprovalRules    `yaml:"approval,omitempty" json:"approval,omitempty"`
 	Termination *Termination     `yaml:"termination,omitempty" json:"termination,omitempty"`
 	Enforcement Enforcement      `yaml:"enforcement,omitempty" json:"enforcement,omitempty"`
+}
+
+type IdentityRules struct {
+	Rules []IdentityRule `yaml:"rules" json:"rules"`
+}
+
+type IdentityRule struct {
+	ActionID       string   `yaml:"action_id" json:"action_id"`
+	ActorKinds     []string `yaml:"actor_kinds" json:"actor_kinds"`
+	Roles          []string `yaml:"roles,omitempty" json:"roles,omitempty"`
+	RequiredScopes []string `yaml:"required_scopes,omitempty" json:"required_scopes,omitempty"`
 }
 
 type ToolRules struct {
@@ -143,8 +157,11 @@ func Load(r io.Reader) (AgentPolicy, error) {
 }
 
 func (p AgentPolicy) Validate() error {
-	if p.Version != Version {
+	if p.Version != Version && p.Version != Version2 {
 		return fmt.Errorf("unsupported policy version %q", p.Version)
+	}
+	if p.Version == Version && p.Identity != nil {
+		return errors.New("identity rules require AgentPolicy v2")
 	}
 	if p.Kind != Kind {
 		return fmt.Errorf("policy kind must be %q", Kind)
@@ -160,6 +177,34 @@ func (p AgentPolicy) Validate() error {
 	}
 	if err := validateIdentifiers("tools.deny", p.Tools.Deny, toolPattern, true); err != nil {
 		return err
+	}
+	if p.Identity != nil {
+		if len(p.Identity.Rules) == 0 {
+			return errors.New("identity.rules must contain at least one rule")
+		}
+		seenActions := make(map[string]struct{}, len(p.Identity.Rules))
+		for i, rule := range p.Identity.Rules {
+			name := fmt.Sprintf("identity.rules[%d]", i)
+			if err := validateIdentifiers(name+".action_id", []string{rule.ActionID}, actionPattern, true); err != nil {
+				return err
+			}
+			if _, duplicate := seenActions[rule.ActionID]; duplicate {
+				return fmt.Errorf("identity.rules repeats action %q", rule.ActionID)
+			}
+			seenActions[rule.ActionID] = struct{}{}
+			if err := validateIdentifiers(name+".actor_kinds", rule.ActorKinds, actorKindPattern, true); err != nil {
+				return err
+			}
+			if len(rule.ActorKinds) == 0 {
+				return fmt.Errorf("%s.actor_kinds must contain at least one actor kind", name)
+			}
+			if err := validateSafeIdentityLabels(name+".roles", rule.Roles, identifierPattern, true); err != nil {
+				return err
+			}
+			if err := validateSafeIdentityLabels(name+".required_scopes", rule.RequiredScopes, scopePattern, false); err != nil {
+				return err
+			}
+		}
 	}
 	if err := validateIdentifiers("approval.required_for", p.Approval.RequiredFor, actionPattern, true); err != nil {
 		return err
@@ -286,6 +331,10 @@ type Event struct {
 	Timestamp        time.Time     `json:"timestamp,omitempty" yaml:"timestamp,omitempty"`
 	Category         EventCategory `json:"category" yaml:"category"`
 	Actor            string        `json:"actor,omitempty" yaml:"actor,omitempty"`
+	ActionID         string        `json:"action_id,omitempty" yaml:"action_id,omitempty"`
+	TraceID          string        `json:"trace_id,omitempty" yaml:"trace_id,omitempty"`
+	ApprovalID       string        `json:"approval_id,omitempty" yaml:"approval_id,omitempty"`
+	ApproverID       string        `json:"approver_id,omitempty" yaml:"approver_id,omitempty"`
 	Runtime          string        `json:"runtime,omitempty" yaml:"runtime,omitempty"`
 	Resource         string        `json:"resource,omitempty" yaml:"resource,omitempty"`
 	Tool             string        `json:"tool,omitempty" yaml:"tool,omitempty"`
@@ -327,6 +376,20 @@ func (e Event) Validate() error {
 	if e.ActionType != "" && !actionPattern.MatchString(e.ActionType) {
 		return fmt.Errorf("event has invalid action type %q", e.ActionType)
 	}
+	if e.ActionID != "" && !actionPattern.MatchString(e.ActionID) {
+		return errors.New("event has an invalid normalized action id")
+	}
+	if e.TraceID != "" && (!traceIDPattern.MatchString(e.TraceID) || identity.IsCredentialLike(e.TraceID)) {
+		return errors.New("event has an invalid trace id")
+	}
+	for name, value := range map[string]string{"approval id": e.ApprovalID, "approver id": e.ApproverID} {
+		if value != "" && (!correlationIDPattern.MatchString(value) || identity.IsCredentialLike(value)) {
+			return fmt.Errorf("event has an invalid %s", name)
+		}
+	}
+	if e.ApproverID != "" && e.ApprovalID == "" {
+		return errors.New("event approver id requires an approval id")
+	}
 	if e.ObservedDecision != "" && !IsKnownOutcome(e.ObservedDecision) {
 		return fmt.Errorf("event has invalid observed decision %q", e.ObservedDecision)
 	}
@@ -359,22 +422,28 @@ const (
 type ReasonCode string
 
 const (
-	ReasonToolDenied                  ReasonCode = "TOOL_DENIED_BY_POLICY"
-	ReasonToolNotAllowlisted          ReasonCode = "TOOL_NOT_ALLOWLISTED"
-	ReasonApprovalRequired            ReasonCode = "ACTION_APPROVAL_REQUIRED"
-	ReasonDomainDenied                ReasonCode = "NETWORK_DOMAIN_DENIED"
-	ReasonDomainNotAllowed            ReasonCode = "NETWORK_DOMAIN_NOT_ALLOWED"
-	ReasonCredentialDenied            ReasonCode = "CREDENTIAL_SCOPE_DENIED"
-	ReasonCredentialNotAllowed        ReasonCode = "CREDENTIAL_SCOPE_NOT_ALLOWED"
-	ReasonDurationBudgetExceeded      ReasonCode = "DURATION_BUDGET_EXCEEDED"
-	ReasonCostBudgetExceeded          ReasonCode = "COST_BUDGET_EXCEEDED"
-	ReasonToolCallBudgetExceeded      ReasonCode = "TOOL_CALL_BUDGET_EXCEEDED"
-	ReasonConcurrentSubagentsExceeded ReasonCode = "SUBAGENT_CONCURRENCY_LIMIT_EXCEEDED"
-	ReasonTotalSubagentsExceeded      ReasonCode = "SUBAGENT_TOTAL_LIMIT_EXCEEDED"
-	ReasonInvalidEvent                ReasonCode = "INVALID_GOVERNANCE_EVENT"
-	ReasonInvalidSnapshot             ReasonCode = "INVALID_POLICY_SNAPSHOT"
-	ReasonInvalidBudgetState          ReasonCode = "INVALID_BUDGET_STATE"
-	ReasonUnexpectedTermination       ReasonCode = "UNEXPECTED_TERMINATION"
+	ReasonToolDenied                       ReasonCode = "TOOL_DENIED_BY_POLICY"
+	ReasonToolNotAllowlisted               ReasonCode = "TOOL_NOT_ALLOWLISTED"
+	ReasonApprovalRequired                 ReasonCode = "ACTION_APPROVAL_REQUIRED"
+	ReasonDomainDenied                     ReasonCode = "NETWORK_DOMAIN_DENIED"
+	ReasonDomainNotAllowed                 ReasonCode = "NETWORK_DOMAIN_NOT_ALLOWED"
+	ReasonCredentialDenied                 ReasonCode = "CREDENTIAL_SCOPE_DENIED"
+	ReasonCredentialNotAllowed             ReasonCode = "CREDENTIAL_SCOPE_NOT_ALLOWED"
+	ReasonDurationBudgetExceeded           ReasonCode = "DURATION_BUDGET_EXCEEDED"
+	ReasonCostBudgetExceeded               ReasonCode = "COST_BUDGET_EXCEEDED"
+	ReasonToolCallBudgetExceeded           ReasonCode = "TOOL_CALL_BUDGET_EXCEEDED"
+	ReasonConcurrentSubagentsExceeded      ReasonCode = "SUBAGENT_CONCURRENCY_LIMIT_EXCEEDED"
+	ReasonTotalSubagentsExceeded           ReasonCode = "SUBAGENT_TOTAL_LIMIT_EXCEEDED"
+	ReasonInvalidEvent                     ReasonCode = "INVALID_GOVERNANCE_EVENT"
+	ReasonInvalidSnapshot                  ReasonCode = "INVALID_POLICY_SNAPSHOT"
+	ReasonInvalidBudgetState               ReasonCode = "INVALID_BUDGET_STATE"
+	ReasonUnexpectedTermination            ReasonCode = "UNEXPECTED_TERMINATION"
+	ReasonIdentityRequired                 ReasonCode = "IDENTITY_REQUIRED"
+	ReasonIdentityPolicyRuleMissing        ReasonCode = "IDENTITY_POLICY_RULE_MISSING"
+	ReasonIdentityPolicyUnsupportedVersion ReasonCode = "IDENTITY_POLICY_UNSUPPORTED_VERSION"
+	ReasonIdentityPolicyDenied             ReasonCode = "IDENTITY_POLICY_DENIED"
+	ReasonDelegationScopeMissing           ReasonCode = "DELEGATION_SCOPE_MISSING"
+	ReasonDelegationExpired                ReasonCode = "DELEGATION_EXPIRED"
 )
 
 type Decision struct {
@@ -404,6 +473,11 @@ type BudgetState struct {
 	ToolCalls           int64
 	ConcurrentSubagents int64
 	TotalSubagents      int64
+}
+
+type IdentityRequirement struct {
+	ActionID string
+	Required bool
 }
 
 type Engine struct{}
@@ -472,6 +546,78 @@ type Evaluation struct {
 // EvaluateAfter expects state captured before the action. Run Manager callers
 // should link completion events to the persisted request audit so the engine
 // can use the original decision and avoid re-evaluating post-action budgets.
+// EvaluateBeforeWithIdentity applies the existing policy first, then an
+// identity gate for actions whose contract explicitly requires it. Ordinary
+// policy denials retain precedence; a passing gate preserves ALLOW or
+// REQUIRE_APPROVAL from the existing policy engine.
+func (e Engine) EvaluateBeforeWithIdentity(snapshot Snapshot, event Event, state BudgetState, requirement IdentityRequirement, runID string, selection identity.Selection, now time.Time) Decision {
+	decision := e.EvaluateBefore(snapshot, event, state)
+	if !requirement.Required || decision.Outcome == Deny {
+		return decision
+	}
+	if event.ActionID != requirement.ActionID {
+		return Decision{Outcome: Deny, ReasonCode: ReasonIdentityPolicyDenied}
+	}
+	if result := evaluateIdentity(snapshot, requirement, runID, selection, now); result.Outcome == Deny {
+		return result
+	}
+	return decision
+}
+
+func evaluateIdentity(snapshot Snapshot, requirement IdentityRequirement, runID string, selection identity.Selection, now time.Time) Decision {
+	deny := func(reason ReasonCode) Decision { return Decision{Outcome: Deny, ReasonCode: reason} }
+	if !actionPattern.MatchString(requirement.ActionID) {
+		return deny(ReasonIdentityPolicyRuleMissing)
+	}
+	if snapshot.Policy.Version == Version {
+		return deny(ReasonIdentityPolicyUnsupportedVersion)
+	}
+	if snapshot.Policy.Version != Version2 || snapshot.Policy.Identity == nil {
+		return deny(ReasonIdentityPolicyRuleMissing)
+	}
+	var rule *IdentityRule
+	for i := range snapshot.Policy.Identity.Rules {
+		if snapshot.Policy.Identity.Rules[i].ActionID == requirement.ActionID {
+			rule = &snapshot.Policy.Identity.Rules[i]
+			break
+		}
+	}
+	if rule == nil {
+		return deny(ReasonIdentityPolicyRuleMissing)
+	}
+	if runID == "" || now.IsZero() || selection.Mode != identity.ModeNamed || selection.Validate() != nil || selection.Actor == nil || selection.Delegation == nil {
+		return deny(ReasonIdentityRequired)
+	}
+	actor, delegation := selection.Actor, selection.Delegation
+	if delegation.RunID != runID || delegation.ActorID != actor.ID {
+		return deny(ReasonIdentityRequired)
+	}
+	if !now.Before(delegation.ExpiresAt) {
+		return deny(ReasonDelegationExpired)
+	}
+	if !contains(rule.ActorKinds, string(actor.Kind)) {
+		return deny(ReasonIdentityPolicyDenied)
+	}
+	if len(rule.Roles) > 0 {
+		matchedRole := false
+		for _, role := range actor.Roles {
+			if contains(rule.Roles, role) {
+				matchedRole = true
+				break
+			}
+		}
+		if !matchedRole {
+			return deny(ReasonIdentityPolicyDenied)
+		}
+	}
+	for _, scope := range rule.RequiredScopes {
+		if !delegation.HasScope(scope, now) {
+			return deny(ReasonDelegationScopeMissing)
+		}
+	}
+	return Decision{Outcome: Allow}
+}
+
 func (e Engine) EvaluateAfter(snapshot Snapshot, event Event, state BudgetState) Evaluation {
 	result := Evaluation{Violations: []EventCategory{}}
 	var request Event
@@ -596,6 +742,18 @@ func (p AgentPolicy) normalized() AgentPolicy {
 	result.Tools.Allow = sortedCopy(p.Tools.Allow)
 	result.Tools.Deny = sortedCopy(p.Tools.Deny)
 	result.Approval.RequiredFor = sortedCopy(p.Approval.RequiredFor)
+	if p.Identity != nil {
+		identityRules := &IdentityRules{Rules: append([]IdentityRule(nil), p.Identity.Rules...)}
+		for i := range identityRules.Rules {
+			identityRules.Rules[i].ActorKinds = sortedCopy(identityRules.Rules[i].ActorKinds)
+			identityRules.Rules[i].Roles = sortedCopy(identityRules.Rules[i].Roles)
+			identityRules.Rules[i].RequiredScopes = normalizeScopes(identityRules.Rules[i].RequiredScopes)
+		}
+		sort.Slice(identityRules.Rules, func(i, j int) bool {
+			return identityRules.Rules[i].ActionID < identityRules.Rules[j].ActionID
+		})
+		result.Identity = identityRules
+	}
 	result.Enforcement.OptionalControls = append([]Control(nil), p.Enforcement.OptionalControls...)
 	sort.Slice(result.Enforcement.OptionalControls, func(i, j int) bool {
 		return result.Enforcement.OptionalControls[i] < result.Enforcement.OptionalControls[j]
@@ -688,12 +846,27 @@ func isBudgetReason(reason ReasonCode) bool {
 }
 
 var (
-	policyIDPattern   = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
-	toolPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
-	actionPattern     = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,127}$`)
-	scopePattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,127}$`)
+	policyIDPattern      = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	identifierPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	correlationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$`)
+	traceIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	toolPattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
+	actionPattern        = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,127}$`)
+	scopePattern         = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,127}$`)
+	actorKindPattern     = regexp.MustCompile(`^(human|agent|service)$`)
 )
+
+func validateSafeIdentityLabels(name string, values []string, pattern *regexp.Regexp, caseSensitive bool) error {
+	if err := validateIdentifiers(name, values, pattern, caseSensitive); err != nil {
+		return err
+	}
+	for _, value := range values {
+		if identity.IsCredentialLike(value) {
+			return fmt.Errorf("%s contains a credential-like identifier", name)
+		}
+	}
+	return nil
+}
 
 func validateIdentifiers(name string, values []string, pattern *regexp.Regexp, caseSensitive bool) error {
 	seen := make(map[string]struct{}, len(values))
@@ -875,7 +1048,9 @@ func IsKnownReasonCode(reason ReasonCode) bool {
 		ReasonCredentialNotAllowed, ReasonDurationBudgetExceeded, ReasonCostBudgetExceeded,
 		ReasonToolCallBudgetExceeded, ReasonConcurrentSubagentsExceeded,
 		ReasonTotalSubagentsExceeded, ReasonInvalidEvent, ReasonInvalidSnapshot, ReasonInvalidBudgetState,
-		ReasonUnexpectedTermination:
+		ReasonUnexpectedTermination, ReasonIdentityRequired, ReasonIdentityPolicyRuleMissing,
+		ReasonIdentityPolicyUnsupportedVersion, ReasonIdentityPolicyDenied, ReasonDelegationScopeMissing,
+		ReasonDelegationExpired:
 		return true
 	default:
 		return false
