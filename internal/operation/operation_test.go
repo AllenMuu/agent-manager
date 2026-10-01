@@ -3,11 +3,15 @@ package operation_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/operation"
 )
@@ -356,6 +360,117 @@ func TestJournalUndoRequiresConfirmation(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("declined undo changed path: %v", err)
+	}
+}
+
+func TestConcurrentJournalRecordsAreNotLost(t *testing.T) {
+	const recordCount = 48
+	path := filepath.Join(t.TempDir(), "journal.json")
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	errs := make(chan error, recordCount)
+	for i := 0; i < recordCount; i++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			err := operation.New(path).Record(fmt.Sprintf("operation-%02d", index), nil, nil)
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []operation.Entry
+	if err := json.Unmarshal(contents, &entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != recordCount {
+		t.Fatalf("journal has %d entries, want %d", len(entries), recordCount)
+	}
+}
+
+func TestOperationLockSerializesProcesses(t *testing.T) {
+	if journalPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_JOURNAL"); journalPath != "" {
+		readyPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_READY")
+		markerPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_MARKER")
+		if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		unlock, err := operation.New(journalPath).LockOperation()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(markerPath, []byte("acquired"), 0o600); err != nil {
+			_ = unlock()
+			t.Fatal(err)
+		}
+		if err := unlock(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	root := t.TempDir()
+	journalPath := filepath.Join(root, "journal.json")
+	readyPath := filepath.Join(root, "ready")
+	markerPath := filepath.Join(root, "acquired")
+	unlock, err := operation.New(journalPath).LockOperation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestOperationLockSerializesProcesses$")
+	cmd.Env = append(os.Environ(),
+		"AGENT_MANAGER_LOCK_HELPER_JOURNAL="+journalPath,
+		"AGENT_MANAGER_LOCK_HELPER_READY="+readyPath,
+		"AGENT_MANAGER_LOCK_HELPER_MARKER="+markerPath,
+	)
+	if err := cmd.Start(); err != nil {
+		_ = unlock()
+		t.Fatal(err)
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = unlock()
+			t.Fatal("child process did not reach the lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(markerPath); err == nil {
+		_ = unlock()
+		t.Fatal("child process acquired the project lock while it was held")
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	finished = true
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("child process did not acquire the released project lock: %v", err)
 	}
 }
 

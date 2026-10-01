@@ -38,8 +38,8 @@ type Recommendation struct {
 
 // Match records one technology hit in one catalog field.
 type Match struct {
-	Technology string
-	Field      string
+	Technology string `json:"technology"`
+	Field      string `json:"field"`
 }
 
 // textAliases lists complete-term spellings recognized in free text for

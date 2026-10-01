@@ -13,6 +13,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/diagnostic"
 	"github.com/AllenMuu/skill-manager/internal/initcmd"
+	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/search"
@@ -44,7 +45,7 @@ func newInitCommand() *cobra.Command {
 }
 
 func newProjectCommands(options *rootOptions) []*cobra.Command {
-	return []*cobra.Command{newSelectCommand(options), newAddCommand(options), newListCommand(options), newRemoveCommand(options), newAdoptCommand(options), newForkCommand(options), newDoctorCommand(options), newReconcileCommand(options), newUndoCommand(options), newDeleteCommand(options)}
+	return []*cobra.Command{newSelectCommand(options), newInstallCommand(options), newWebUICommand(options), newAddCommand(options), newListCommand(options), newRemoveCommand(options), newAdoptCommand(options), newForkCommand(options), newDoctorCommand(options), newReconcileCommand(options), newUndoCommand(options), newDeleteCommand(options)}
 }
 func newSelectCommand(options *rootOptions) *cobra.Command {
 	var project string
@@ -96,43 +97,45 @@ func newSelectCommand(options *rootOptions) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		selected := make([]catalog.Skill, 0, len(ids))
+		selectedIDs := make([]string, 0, len(ids))
 		for _, id := range ids {
-			var skill catalog.Skill
 			found := false
 			for _, candidate := range matches {
 				if candidate.Identifier == strings.TrimSpace(id) {
-					skill = candidate
 					found = true
 				}
 			}
 			if !found {
 				return fmt.Errorf("selected skill %q was not found", id)
 			}
-			selected = append(selected, skill)
+			selectedIDs = append(selectedIDs, strings.TrimSpace(id))
 		}
-		var previewErr error
-		confirm := func(plan operation.Plan) bool {
-			if _, previewErr = fmt.Fprint(cmd.OutOrStdout(), plan.String()); previewErr != nil {
-				return false
-			}
-			if _, previewErr = fmt.Fprint(cmd.OutOrStdout(), "Confirm [y/N]: "); previewErr != nil {
-				return false
-			}
-			if !in.Scan() {
-				if err := in.Err(); err != nil {
-					previewErr = err
-				}
-				return false
-			}
-			return strings.ToLower(strings.TrimSpace(in.Text())) == "y"
-		}
-		_, err = lifecycle.New(lib, journal(project), confirm).AddMany(project, selected, targets)
-		if previewErr != nil {
-			return previewErr
+		service := installation.New(lib)
+		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: selectedIDs, Targets: targets})
+		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
+			return writeErr
 		}
 		if err != nil {
 			return err
+		}
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), "Confirm [y/N]: "); err != nil {
+			return err
+		}
+		if !in.Scan() {
+			if err := in.Err(); err != nil {
+				return err
+			}
+			return fmt.Errorf("selection cancelled")
+		}
+		if strings.ToLower(strings.TrimSpace(in.Text())) != "y" {
+			return lifecycle.ErrNotConfirmed
+		}
+		result, err := service.Apply("cli", preview.ID)
+		if err != nil {
+			return err
+		}
+		if result.Stale {
+			return lifecycle.ErrPlanChanged
 		}
 		return nil
 	}}
@@ -201,38 +204,32 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		skills, _, err := catalog.Discover(lib)
-		if err != nil {
-			return err
-		}
-		var skill catalog.Skill
-		found := false
-		for _, s := range skills {
-			if s.Identifier == args[0] {
-				skill = s
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("skill %q not found", args[0])
-		}
 		ts, err := parseTargets(targets)
 		if err != nil {
 			return err
 		}
-		var previewErr error
-		confirm := func(plan operation.Plan) bool {
-			_, previewErr = fmt.Fprint(cmd.OutOrStdout(), plan.String())
-			return previewErr == nil && yes
+		service := installation.New(lib)
+		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: args, Targets: ts, Options: opts})
+		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
+			return writeErr
 		}
-		_, err = lifecycle.New(lib, journal(project), confirm).Add(project, skill, ts, opts)
-		if previewErr != nil {
-			return previewErr
+		if err != nil {
+			return err
 		}
-		return err
+		if !yes {
+			return lifecycle.ErrNotConfirmed
+		}
+		result, err := service.Apply("cli", preview.ID)
+		if err != nil {
+			return err
+		}
+		if result.Stale {
+			return lifecycle.ErrPlanChanged
+		}
+		return nil
 	}}
 	projectFlag(cmd, &project)
-	cmd.Flags().StringSliceVar(&targets, "target", nil, "target agent (claude-code or codex)")
+	cmd.Flags().StringSliceVar(&targets, "target", nil, "target agent (claude-code, codex, or pi)")
 	cmd.Flags().BoolVar(&allDetected, "all-detected", false, "activate for every detected supported target agent")
 	cmd.Flags().StringVar(&conflict, "conflict", "", "conflict strategy for existing destination paths (replace)")
 	cmd.Flags().BoolVar(&force, "force", false, "supply force confirmation for the selected conflict strategy")

@@ -1,8 +1,8 @@
-# Use Go for the CLI and reserve React and Wails for later interfaces
+# Use Go for the core and CLI, with a React WebUI and Wails-compatible boundary
 
-Skill Manager will implement its first release as a Go CLI. The domain model, application services, filesystem operations, and operation journal will be independent from command and terminal presentation packages.
+Agent Manager uses Go for its domain model, application services, filesystem operations, and operation journal; those remain independent from command, terminal, and browser presentation packages.
 
-The intended later evolution is a React and TypeScript WebUI backed by the same Go application services, followed by a Wails macOS package that reuses the React interface and Go core. The first release will not include an HTTP service, frontend toolchain, browser interface, or Wails dependency. Each later phase will receive its own specification before implementation.
+The CLI and a minimal React WebUI use the same Go application services. The WebUI is served by the Agent Manager process on an IPv4 loopback address, uses a session-scoped local API, and embeds its compiled assets in the Go executable. The dedicated installation UI (`webui`) and the broader local console (`web`) retain separate frontend entry points and embedded assets. Both use guarded local services; neither is a public HTTP service or general-purpose remote API. A Wails macOS package may later reuse the React interface and Go core.
 
 ## Considered Options
 
@@ -10,4 +10,4 @@ The intended later evolution is a React and TypeScript WebUI backed by the same 
 - Use Go for the CLI and core with React for the Web UI, preserving a Wails-compatible boundary
 - Use SwiftUI and AppKit for a macOS-only application
 
-The staged Go, React, and Wails route was selected because it gives the first release a small, single-executable scope while preserving a reliable filesystem core for later interfaces. It avoids speculative GUI infrastructure without making terminal behavior the place where domain rules live.
+The Go core with React WebUI route was selected because it keeps filesystem rules and operation journaling in one reliable service while giving users both terminal and browser workflows. Embedding the frontend keeps the runtime a single executable. Loopback binding, Host and Origin checks, and a session token constrain the HTTP bridge to the active local operator. Wails remains a separate packaging choice rather than a prerequisite for the browser UI.

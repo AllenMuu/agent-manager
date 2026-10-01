@@ -66,6 +66,16 @@ type Journal struct {
 // New creates a journal that persists entries at path.
 func New(path string) *Journal { return &Journal{Path: path} }
 
+// LockOperation serializes a project operation across CLI and WebUI processes.
+// Callers should hold it for the full operation, including its journal commit.
+func (j *Journal) LockOperation() (func() error, error) {
+	path, err := filepath.Abs(j.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve operation journal path: %w", err)
+	}
+	return acquireFileLock(filepath.Join(filepath.Dir(path), ".operation.lock"))
+}
+
 // Capture snapshots each explicit path without following soft links.
 func (j *Journal) Capture(paths []string) ([]Snapshot, error) {
 	result := make([]Snapshot, 0, len(paths))
@@ -106,6 +116,11 @@ func (j *Journal) Record(operation string, before, after []Snapshot, metadata ..
 // RecordPlan appends a confirmed operation using the plan's versioned
 // resource metadata. Empty metadata retains the legacy Skill defaults.
 func (j *Journal) RecordPlan(plan Plan, before, after []Snapshot) error {
+	unlock, err := acquireFileLock(j.recordLockPath())
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	version, kind := normalizeMetadata(plan.Version, plan.ResourceKind)
 	if err := validateMetadata(version, kind); err != nil {
 		return err
@@ -226,6 +241,16 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 
 // UndoLatestWithFingerprints also verifies reviewed pre-operation backups before restore.
 func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected map[string]string) error {
+	unlockOperation, err := j.LockOperation()
+	if err != nil {
+		return err
+	}
+	defer unlockOperation()
+	unlockJournal, err := acquireFileLock(j.recordLockPath())
+	if err != nil {
+		return err
+	}
+	defer unlockJournal()
 	plan, entries, err := j.previewUndo()
 	if err != nil {
 		return err
@@ -271,6 +296,14 @@ func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected m
 		return errors.Join(err, j.Restore(entry.After))
 	}
 	return nil
+}
+
+func (j *Journal) recordLockPath() string {
+	path, err := filepath.Abs(j.Path)
+	if err != nil {
+		return j.Path + ".lock"
+	}
+	return path + ".lock"
 }
 
 func normalizeMetadata(version, kind string) (string, string) {

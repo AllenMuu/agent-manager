@@ -25,7 +25,7 @@ openspec doctor
 
 The Web console assets are checked in under `internal/webconsole/ui` so a Go
 binary does not need Node.js or network access at runtime. To change the React
-console, use the pinned dependencies and rebuild those embedded assets:
+console or installation UI, use the pinned dependencies and rebuild those embedded assets:
 
 ```text
 cd web
@@ -36,6 +36,10 @@ npm run build
 
 The frontend toolchain follows the pinned Vite/Vitest engine range: Node.js
 22.12+ on the 22.x line, 24.x, or 26+.
+
+The build preserves both embedded clients: the console in `internal/webconsole/ui`
+and the installation UI in `internal/webui/dist`. Their source entry points are
+`web/index.html` and `web/install/index.html`, respectively.
 
 ## Configuration
 
@@ -82,6 +86,8 @@ agent-manager web --project .      # open the local Web console for this reposit
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
 agent-manager add <skill> --project . --target codex --yes
+agent-manager install go-helper review --project . --target codex --yes
+agent-manager webui --project .     # open the local installation UI; stop with Ctrl+C
 agent-manager list --project .      # show managed/unmanaged/orphaned Skills
 agent-manager agents --project . --json # inspect registered agent adapters
 agent-manager subagents list        # list canonical SubAgent definitions
@@ -113,6 +119,8 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `memory promote` | Explicitly append confirmed text or typed lessons to the configured provider |
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
+| `install <skill-id>...` | Preview and install explicitly selected library Skills in one operation |
+| `webui` | Serve the local project installation interface on loopback |
 | `list` | Inventory project skills with their status |
 | `remove <skill>` | Remove one managed project link |
 | `adopt <skill>` | Move an eligible project skill into the library and link it back |

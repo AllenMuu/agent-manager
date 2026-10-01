@@ -5,22 +5,22 @@ import "strings"
 
 // Change is one filesystem change shown before an operation is confirmed.
 type Change struct {
-	Path   string
-	Action string
-	Detail string
+	Path   string `json:"path"`
+	Action string `json:"action"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // Plan is a preview of a guarded operation.
 type Plan struct {
 	// Version identifies the operation journal schema used by this plan.
 	// Empty values are normalized to the current schema when recorded.
-	Version string
+	Version string `json:"version,omitempty"`
 	// ResourceKind identifies the managed resource affected by this plan.
 	// Empty values are normalized to Skill for legacy callers.
-	ResourceKind string
-	Operation    string
-	Changes      []Change
-	Warnings     []string
+	ResourceKind string   `json:"resourceKind,omitempty"`
+	Operation    string   `json:"operation"`
+	Changes      []Change `json:"changes"`
+	Warnings     []string `json:"warnings"`
 }
 
 // NewPlan creates a plan for the current Skill operation schema. It keeps

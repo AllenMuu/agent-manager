@@ -1323,3 +1323,87 @@ func infoIsLink(t *testing.T, path string) bool {
 	}
 	return info.Mode()&os.ModeSymlink != 0
 }
+
+func TestPreviewManyIsReadOnlyAndApplyManyRequiresConfirmation(t *testing.T) {
+	root, project, skill := fixture(t)
+	targets := []adapter.Target{adapter.Codex}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, nil)
+
+	plan, err := svc.PreviewMany(project, []catalog.Skill{skill}, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, ".codex", "skills", skill.Identifier)
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("preview created link: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("preview journal state = (%v, %v), want no entry", ok, err)
+	}
+	if _, err := svc.ApplyMany(project, []catalog.Skill{skill}, targets, plan, false); !errors.Is(err, operation.ErrNotConfirmed) {
+		t.Fatalf("unconfirmed apply error = %v", err)
+	}
+	if _, err := svc.ApplyMany(project, []catalog.Skill{skill}, targets, plan, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(link); err != nil || got != skill.SourcePath {
+		t.Fatalf("link = %q, %v", got, err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || !ok {
+		t.Fatalf("successful apply journal state = (%v, %v), want entry", ok, err)
+	}
+}
+
+func TestApplyManyRejectsChangedPlanWithoutReplacingDestination(t *testing.T) {
+	root, project, skill := fixture(t)
+	targets := []adapter.Target{adapter.Codex}
+	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "journal.json")), nil)
+	plan, err := svc.PreviewMany(project, []catalog.Skill{skill}, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, ".codex", "skills", skill.Identifier)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte("user data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current, err := svc.ApplyMany(project, []catalog.Skill{skill}, targets, plan, true)
+	if !errors.Is(err, lifecycle.ErrPlanChanged) {
+		t.Fatalf("apply error = %v, want plan changed", err)
+	}
+	if len(current.Changes) != 1 || current.Changes[0].Action != "refuse conflicting destination" {
+		t.Fatalf("updated plan = %#v", current)
+	}
+	contents, err := os.ReadFile(link)
+	if err != nil || string(contents) != "user data" {
+		t.Fatalf("destination contents = %q, %v", contents, err)
+	}
+}
+
+func TestAddManyRestoresConflictWhenReplacementPublishFails(t *testing.T) {
+	root, project, skill := fixture(t)
+	a, _ := adapter.For(adapter.Codex)
+	path := a.ProjectSkillPath(project, skill.Identifier)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("user-owned content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(root, "j.json")), func(operation.Plan) bool { return true })
+	svc.BeforePublish = func(string) error { return errors.New("publish denied") }
+	options := lifecycle.Options{Conflict: lifecycle.ConflictReplace, Force: true}
+	if _, err := svc.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}, options); err == nil {
+		t.Fatal("AddMany unexpectedly succeeded")
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil || string(contents) != "user-owned content" {
+		t.Fatalf("conflicting destination after failed replacement = %q, %v", contents, err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("original destination was not restored: %v", err)
+	}
+}
