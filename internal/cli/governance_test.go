@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/cli"
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/run"
 )
@@ -64,7 +65,7 @@ func TestGovernanceCLIPoliciesRunsApprovalsAndEvalEvidence(t *testing.T) {
 	}
 	manager, _ := run.NewManager(store)
 	controller := &cliRuntimeController{}
-	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), time.Now().UTC(), controller)
+	record, _, err := manager.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), time.Now().UTC(), controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +93,15 @@ func TestGovernanceCLIPoliciesRunsApprovalsAndEvalEvidence(t *testing.T) {
 	if out, err := executeCLI("approvals", "list"); err != nil || !strings.Contains(out, approval.ID) {
 		t.Fatalf("approvals list output=%q err=%v", out, err)
 	}
-	if out, err := executeCLI("approvals", "approve", approval.ID, "--reason", "human review"); err != nil || !strings.Contains(out, "no runtime action was executed or resumed") {
+	if _, err := executeCLI("approvals", "approve", approval.ID); err == nil || !strings.Contains(err.Error(), "required flag") {
+		t.Fatalf("approvals approve without explicit actor err=%v", err)
+	}
+	if out, err := executeCLI("approvals", "approve", approval.ID, "--reason", "human review", "--approver-id", "reviewer", "--approver-kind", "human", "--approver-subject", "reviewer@local", "--approver-role", "approver"); err != nil || !strings.Contains(out, "no runtime action was executed or resumed") {
 		t.Fatalf("approvals approve output=%q err=%v", out, err)
+	}
+	decided, err := store.GetApproval(approval.ID)
+	if err != nil || decided.DecidedBy == nil || decided.DecidedBy.ID != "reviewer" {
+		t.Fatalf("CLI approval actor was not persisted: approval=%#v err=%v", decided, err)
 	}
 	if _, err := executeCLI("runs", "kill", record.ID); err == nil || !strings.Contains(err.Error(), "does not support run termination") {
 		t.Fatalf("runs kill err=%v", err)
@@ -123,7 +131,7 @@ func TestGovernanceEvalCLIReadsRunAuditEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, _ := run.NewStore(filepath.Join(userConfig, "agent-manager", "runs"))
-	record, _, err := store.Start(snapshot, "mock", t.TempDir(), map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}, time.Now().UTC())
+	record, _, err := store.Start(snapshot, "mock", t.TempDir(), identity.AnonymousSelection(), map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

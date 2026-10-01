@@ -54,6 +54,25 @@ _Avoid_: installation support, adapter support
 The local, reversible record of a confirmed Agent Manager file operation, used to preview changes and support undo.
 _Avoid_: audit log, sync history
 
+**Actor identity**:
+A typed, runtime-neutral reference to the human, agent, or service that initiated a governed AgentRun. It contains a stable ID and safe identity metadata, never credentials; identity must be explicit rather than inferred from ambient machine state.
+_Avoid_: shared admin identity, OS-derived actor
+
+**Delegation**:
+The immutable, run-bound authority snapshot granted to an AgentRun, represented by exact scopes and an expiry time. A scope grants only its exact identifier and does not imply prefix or wildcard access.
+_Avoid_: ambient permission, inherited wildcard scope
+
+**Invocation context**:
+The correlation metadata carried through a governed tool or MCP call: run, actor, delegation, policy snapshot, optional approval, and trace references. It carries identifiers, not credentials or unrestricted identity claims.
+_Avoid_: runtime credential bundle, prompt context
+
+**Operational context provider**:
+An optional read-only boundary that returns operational records with source and freshness metadata. A separate exact-key access policy authorizes each read. The provider does not authorize mutations or establish actor identity.
+
+**Operational context access policy**:
+An exact allowlist of operational context keys that may be read. It is evaluated before the provider is called and remains separate from mutation-tool policy.
+_Avoid_: policy provider, mutation adapter
+
 **Initialization**:
 The explicit global operation that verifies the CLI and installs or updates Operator skills. Project operations do not implicitly alter the global baseline.
 _Avoid_: setup, bootstrap

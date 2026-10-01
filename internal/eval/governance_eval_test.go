@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/eval"
+	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 	"github.com/AllenMuu/skill-manager/internal/run"
 )
@@ -72,7 +73,10 @@ func TestEvalCanReadAuditEventsFromSharedLocalRunStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, _, err := store.Start(snapshot, "mock", t.TempDir(), map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}, time.Now())
+	now := time.Now().UTC()
+	actor := identity.ActorIdentity{ID: "eval-actor", Kind: identity.Human, Subject: "eval@local", Roles: []string{"operator"}}
+	delegation := identity.Delegation{ID: "eval-delegation", ActorID: actor.ID, Scopes: []string{"local:read"}, ExpiresAt: now.Add(time.Hour)}
+	record, _, err := store.Start(snapshot, "mock", t.TempDir(), identity.NamedSelection(actor, delegation), map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +84,7 @@ func TestEvalCanReadAuditEventsFromSharedLocalRunStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallRequested, Tool: "read_file", ActionType: "inspect"}, policy.BudgetState{}, time.Now())
+	_, _, _, err = manager.EvaluateAndRecord(record.ID, policy.Event{Category: policy.ToolCallRequested, Tool: "read_file", ActionType: "inspect", ActionID: "local.read", TraceID: "eval-trace"}, policy.BudgetState{}, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +92,7 @@ func TestEvalCanReadAuditEventsFromSharedLocalRunStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	suite.Cases = []eval.Case{{Version: eval.GovernanceCaseVersion, ID: "shared-run-evidence", Category: "governance", Governance: &eval.GovernanceAssertion{Category: policy.ToolCallRequested, Tool: "read_file", ActionType: "inspect", Decision: policy.Allow}}}
+	suite.Cases = []eval.Case{{Version: eval.GovernanceCaseVersion, ID: "shared-run-evidence", Category: "governance", Governance: &eval.GovernanceAssertion{Category: policy.ToolCallRequested, Tool: "read_file", ActionType: "inspect", ActionID: "local.read", ActorID: actor.ID, DelegationID: record.Identity.Delegation.ID, TraceID: "eval-trace", Decision: policy.Allow}}}
 	result, err := eval.Run(suite, eval.Options{GovernanceRunID: record.ID, RunStoreRoot: root})
 	if err != nil {
 		t.Fatal(err)
