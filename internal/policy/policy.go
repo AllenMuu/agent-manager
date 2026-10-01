@@ -201,7 +201,7 @@ func (p AgentPolicy) Validate() error {
 			if err := validateSafeIdentityLabels(name+".roles", rule.Roles, identifierPattern, true); err != nil {
 				return err
 			}
-			if err := validateSafeIdentityLabels(name+".required_scopes", rule.RequiredScopes, scopePattern, false); err != nil {
+			if err := identity.ValidateScopes(name+".required_scopes", rule.RequiredScopes); err != nil {
 				return err
 			}
 		}
@@ -218,10 +218,10 @@ func (p AgentPolicy) Validate() error {
 		}
 	}
 	if p.Credentials != nil {
-		if err := validateIdentifiers("credentials.allowed_scopes", p.Credentials.AllowedScopes, scopePattern, false); err != nil {
+		if err := identity.ValidateScopes("credentials.allowed_scopes", p.Credentials.AllowedScopes); err != nil {
 			return err
 		}
-		if err := validateIdentifiers("credentials.denied_scopes", p.Credentials.DeniedScopes, scopePattern, false); err != nil {
+		if err := identity.ValidateScopes("credentials.denied_scopes", p.Credentials.DeniedScopes); err != nil {
 			return err
 		}
 	}
@@ -365,7 +365,7 @@ func (e Event) Validate() error {
 			return errors.New("network completion requires its persisted request audit id")
 		}
 	case CredentialAccessRequested, EventCredentialAccess:
-		if !scopePattern.MatchString(e.CredentialScope) {
+		if !identity.IsValidScope(e.CredentialScope) {
 			return fmt.Errorf("event %s requires a valid credential scope", e.Category)
 		}
 	case SubAgentSpawnRequested:
@@ -852,7 +852,6 @@ var (
 	traceIDPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 	toolPattern          = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
 	actionPattern        = regexp.MustCompile(`^[a-z][a-z0-9_.:/-]{0,127}$`)
-	scopePattern         = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,127}$`)
 	actorKindPattern     = regexp.MustCompile(`^(human|agent|service)$`)
 )
 

@@ -31,6 +31,7 @@ const (
 var (
 	stableIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$`)
 	labelPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	scopePattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]{0,127}$`)
 	credentialText  = regexp.MustCompile(`(?i)(bearer[\s:_=-]|access[_-]?token[:=]|api[_-]?key[:=]|password[:=]|secret[:=]|token[:=])`)
 )
 
@@ -94,7 +95,7 @@ func (d Delegation) Validate() error {
 	if d.ExpiresAt.IsZero() {
 		return errors.New("delegation expiry is required")
 	}
-	if err := validateLabels("delegation scopes", d.Scopes); err != nil {
+	if err := ValidateScopes("delegation scopes", d.Scopes); err != nil {
 		return err
 	}
 	return nil
@@ -192,9 +193,22 @@ func validStableID(value string) bool {
 func IsSafeReference(value string) bool { return validStableID(value) }
 
 func validateLabels(field string, values []string) error {
+	return validateIdentifiers(field, values, labelPattern)
+}
+
+// ValidateScopes enforces the canonical scope syntax shared with policy rules.
+// Scope identifiers are exact, lowercase values and may contain path separators.
+func ValidateScopes(field string, values []string) error {
+	return validateIdentifiers(field, values, scopePattern)
+}
+
+// IsValidScope reports whether value uses the canonical scope syntax.
+func IsValidScope(value string) bool { return scopePattern.MatchString(value) }
+
+func validateIdentifiers(field string, values []string, pattern *regexp.Regexp) error {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if !labelPattern.MatchString(value) || credentialLike(value) {
+		if !pattern.MatchString(value) || credentialLike(value) {
 			return fmt.Errorf("%s contains an invalid or credential-like value", field)
 		}
 		if _, exists := seen[value]; exists {

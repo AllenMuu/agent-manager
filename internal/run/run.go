@@ -754,37 +754,27 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 			event.TraceID = requestAudit.TraceID
 		}
 		if requestAudit.Decision == policy.RequireApproval {
-			approvalID := event.ApprovalID
-			if approvalID == "" {
-				approvalID = requestAudit.ApprovalID
+			requestedApprovalID := event.ApprovalID
+			if requestedApprovalID == "" {
+				requestedApprovalID = requestAudit.ApprovalID
 			}
-			if approvalID != "" {
-				approval, err := m.Store.GetApproval(approvalID)
-				if err != nil {
-					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
-				}
+			approval, found, err := m.Store.approvalForRequest(runID, requestAudit.ID)
+			if err != nil {
+				return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
+			}
+			// A completion is evidence that the action ran, even if its approval
+			// is absent, pending, rejected, expired, or unrelated. Only a matching
+			// approved request changes the recorded policy decision to ALLOW.
+			event.ApprovalID, event.ApproverID = "", ""
+			if found && approval.Status == ApprovalApproved &&
+				(requestedApprovalID == "" || requestedApprovalID == approval.ID) &&
+				approval.DecidedBy != nil {
 				approvedRequest, err := m.Store.requestAuditForApproval(approval)
 				if err != nil {
 					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 				}
-				if approval.Status != ApprovalApproved || approval.RunID != runID || approvedRequest.ActionID != requestAudit.ActionID || approvedRequest.Tool != requestAudit.Tool || approvedRequest.ActionType != requestAudit.ActionType || approvedRequest.TraceID != requestAudit.TraceID {
-					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approval does not authorize this invocation request")
-				}
-				if approval.DecidedBy == nil {
-					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approved invocation has no explicit approver")
-				}
-				event.ObservedDecision, event.ReasonCode = policy.Allow, ""
-				event.ApprovalID = approvalID
-				event.ApproverID = approval.DecidedBy.ID
-			} else {
-				approval, found, err := m.Store.approvalForRequest(runID, requestAudit.ID)
-				if err != nil {
-					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
-				}
-				if found && approval.Status == ApprovalApproved {
-					if approval.DecidedBy == nil {
-						return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approved invocation has no explicit approver")
-					}
+				if approvedRequest.ActionID == requestAudit.ActionID && approvedRequest.Tool == requestAudit.Tool &&
+					approvedRequest.ActionType == requestAudit.ActionType && approvedRequest.TraceID == requestAudit.TraceID {
 					event.ObservedDecision, event.ReasonCode = policy.Allow, ""
 					event.ApprovalID = approval.ID
 					event.ApproverID = approval.DecidedBy.ID
@@ -1377,7 +1367,7 @@ func validateAudit(event AuditRecord, db database) error {
 			if !found {
 				return fmt.Errorf("audit event %q completion has no linked request record", event.ID)
 			}
-			if request.Decision == policy.RequireApproval && (event.ApprovalID == "" || event.ApproverID == "") {
+			if request.Decision == policy.RequireApproval && event.Decision == policy.Allow && (event.ApprovalID == "" || event.ApproverID == "") {
 				return fmt.Errorf("audit event %q approved completion is missing its approval or approver reference", event.ID)
 			}
 		}
@@ -1562,7 +1552,8 @@ func validateRequestAuditLink(events []AuditRecord, runID string, event policy.E
 		if prior.ID != event.RequestAuditID {
 			continue
 		}
-		if prior.RunID != runID || prior.Category != wantCategory || prior.Tool != event.Tool || !sameAuditDomain(prior.Domain, event.Domain) || prior.ActionType != event.ActionType || prior.Timestamp.After(event.Timestamp) || (strict && (prior.ActionID != event.ActionID || prior.TraceID != event.TraceID)) {
+		strictCorrelation := strict && prior.Version != legacyAuditVersion
+		if prior.RunID != runID || prior.Category != wantCategory || prior.Tool != event.Tool || !sameAuditDomain(prior.Domain, event.Domain) || prior.ActionType != event.ActionType || prior.Timestamp.After(event.Timestamp) || (strictCorrelation && (prior.ActionID != event.ActionID || prior.TraceID != event.TraceID)) {
 			return errors.New("completion event request audit does not match its action")
 		}
 		return nil
