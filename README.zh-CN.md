@@ -39,6 +39,10 @@ agent-manager recommend --project .
 agent-manager select --project .
 agent-manager add <skill> --project . --target codex --yes
 
+# 一次安装多个明确选择的 Skill，或打开专用安装界面
+agent-manager install go-helper review --project . --target codex --yes
+agent-manager webui --project .
+
 # 启动只监听本机的 Web 控制台
 agent-manager web --project . --port 0
 ```
@@ -65,6 +69,8 @@ npm ci
 npm test
 npm run build
 ```
+
+`npm run build` 同时构建两个嵌入式客户端：`web/index.html` 对应 `internal/webconsole/ui`，`web/install/index.html` 对应 `internal/webui/dist`。
 
 前端工具链支持 Node.js 22.12 及更高的 22.x 版本、24.x 或 26 及更高版本。
 
@@ -122,6 +128,8 @@ memory:
 | `recommend` | 静态分析项目技术栈并推荐匹配的 Skills。 |
 | `select` | 交互式搜索、选择 Skills 和目标代理，并确认计划。 |
 | `add <skill>` | 激活 Skill 到指定目标代理。 |
+| `install <skill-id>...` | 预览并一次安装明确选择的多个 Skills。 |
+| `webui` | 启动只监听本机的项目安装界面。 |
 | `list` | 查看项目 Skills 的受管理状态。 |
 | `remove <skill>` | 移除一个受管理的项目链接。 |
 | `adopt <skill>` | 将合适的项目 Skill 收入 Skill 库并建立链接。 |

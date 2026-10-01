@@ -18,6 +18,7 @@ import (
 )
 
 var (
+	ErrPlanChanged    = errors.New("operation plan changed since preview")
 	ErrNotConfirmed   = operation.ErrNotConfirmed
 	ErrUnsafePath     = resource.ErrUnsafeLifecycle
 	ErrForceRequired  = resource.ErrForceRequired
@@ -240,6 +241,65 @@ func (s *Service) Activate(project string, skill catalog.Skill, targets []adapte
 	return s.Add(project, skill, targets)
 }
 
+// PreviewMany builds a read-only plan for an explicit batch installation.
+func (s *Service) PreviewMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
+	return s.PreviewAddMany(project, skills, targets, opts...)
+}
+
+// ApplyMany applies a confirmed installation only while its plan still matches.
+func (s *Service) ApplyMany(project string, skills []catalog.Skill, targets []adapter.Target, expected operation.Plan, confirmed bool, opts ...Options) (operation.Plan, error) {
+	if !confirmed {
+		return expected, ErrNotConfirmed
+	}
+	current, err := s.PreviewMany(project, skills, targets, opts...)
+	if !samePlan(expected, current) {
+		return current, ErrPlanChanged
+	}
+	if err != nil {
+		return current, err
+	}
+	service := *s
+	service.confirm = func(plan operation.Plan) bool { return samePlan(expected, plan) }
+	return service.AddMany(project, skills, targets, opts...)
+}
+
+func samePlan(left, right operation.Plan) bool {
+	if left.Version != right.Version || left.ResourceKind != right.ResourceKind || left.Operation != right.Operation || len(left.Changes) != len(right.Changes) || len(left.Warnings) != len(right.Warnings) {
+		return false
+	}
+	for i := range left.Changes {
+		if left.Changes[i] != right.Changes[i] {
+			return false
+		}
+	}
+	for i := range left.Warnings {
+		if left.Warnings[i] != right.Warnings[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func placementConflict(path, source string) (bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return false, err
+		}
+		if target == source {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // AddMany activates an explicit selection as one confirmed, journaled transaction.
 func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
 	options := optionsOf(opts)
@@ -285,7 +345,9 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 		return plan, err
 	}
 	defer cleanup()
-	return plan, s.mutateWithBefore(plan, paths, beforeConfirmation, func() error {
+	journalPlan := plan
+	journalPlan.Operation = "activate"
+	return plan, s.mutateWithBefore(journalPlan, paths, beforeConfirmation, func() error {
 		if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
 			return err
 		}
@@ -395,6 +457,17 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 			}
 			planned, err := s.planSkill(request)
 			if err != nil {
+				conflict, conflictErr := placementConflict(path, base.Resource.Provenance.Source)
+				if conflictErr != nil {
+					return preview, conflictErr
+				}
+				if conflict && (errors.Is(err, ErrUnsafePath) || errors.Is(err, ErrForceRequired)) {
+					action := "refuse conflicting destination"
+					if options.Conflict == ConflictReplace && !options.Force {
+						action = "replace conflict (force required)"
+					}
+					preview.plan.Changes = append(preview.plan.Changes, operation.Change{Path: path, Action: action, Detail: base.Resource.Provenance.Source})
+				}
 				return preview, err
 			}
 			preview.paths = append(preview.paths, path)

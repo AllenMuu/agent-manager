@@ -20,7 +20,7 @@ func TestRootExposesGuardedCommandSurface(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"init", "select", "add", "list", "remove", "adopt", "fork", "doctor", "reconcile", "undo", "delete"} {
+	for _, name := range []string{"init", "select", "add", "install", "webui", "list", "remove", "adopt", "fork", "doctor", "reconcile", "undo", "delete"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("help missing %q: %s", name, out.String())
 		}

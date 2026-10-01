@@ -11,6 +11,7 @@ export default defineConfig({
     assetsDir: 'assets',
   },
   test: {
+    exclude: ['install/**', '**/node_modules/**', '**/.git/**'],
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     css: true,

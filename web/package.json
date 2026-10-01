@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "build": "npm run build:console && npm run build:install",
+    "test": "vitest run --config vite.config.ts && vitest run --config vite.install.config.js",
+    "test:watch": "vitest",
+    "build:console": "tsc --noEmit && vite build --config vite.config.ts",
+    "build:install": "vite build --config vite.install.config.js"
   },
   "dependencies": {
     "react": "19.3.0",
