@@ -758,7 +758,14 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 			if requestedApprovalID == "" {
 				requestedApprovalID = requestAudit.ApprovalID
 			}
-			approval, found, err := m.Store.approvalForRequest(runID, requestAudit.ID)
+			var approval Approval
+			var found bool
+			if requestedApprovalID != "" {
+				approval, err = m.Store.GetApproval(requestedApprovalID)
+				found = err == nil && approval.RunID == runID
+			} else {
+				approval, found, err = m.Store.approvalForRequest(runID, requestAudit.ID)
+			}
 			if err != nil {
 				return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 			}
@@ -774,7 +781,8 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 				}
 				if approvedRequest.ActionID == requestAudit.ActionID && approvedRequest.Tool == requestAudit.Tool &&
-					approvedRequest.ActionType == requestAudit.ActionType && approvedRequest.TraceID == requestAudit.TraceID {
+					approvedRequest.ActionType == requestAudit.ActionType && approvedRequest.TraceID == requestAudit.TraceID &&
+					sameAuditDomain(approvedRequest.Domain, requestAudit.Domain) {
 					event.ObservedDecision, event.ReasonCode = policy.Allow, ""
 					event.ApprovalID = approval.ID
 					event.ApproverID = approval.DecidedBy.ID
