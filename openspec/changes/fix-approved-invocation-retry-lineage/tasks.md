@@ -12,4 +12,4 @@
 
 - [x] 3.1 Run all Go tests, related package race tests, vet, CLI build, strict OpenSpec validation and diff checks; record actual results.
 - [x] 3.2 Complete independent review and resolve actionable findings with behavior tests; preserve the review evidence for the final diff.
-- [ ] 3.3 Run the prescribed read-only OCR subagent review on the final PR scope; publish a PR only if there are no actionable findings and coverage is complete.
+- [x] 3.3 Run the prescribed read-only OCR subagent review on the final PR scope; publish a PR only if there are no actionable findings and coverage is complete.

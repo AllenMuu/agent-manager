@@ -173,9 +173,9 @@ if err != nil {
 - [x] Run `go test ./...`, `go test -race ./internal/run ./internal/governance ./internal/invocation`, `go vet ./...`, and `go build -o /tmp/agent-manager-issue18 ./cmd/agent-manager`; all must exit zero.
 - [x] Run `openspec validate fix-approved-invocation-retry-lineage --strict`, `openspec doctor`, and `git diff --check`; all must pass.
 - [x] Have an independent reviewer inspect the complete diff and acceptance matrix; fix actionable findings and rerun affected checks.
-- [ ] Have the prescribed gpt-6.1-sol/high independent OCR subagent review the final scope using the actual delegation skill. Any actionable finding stops publication without a repair in that phase.
+- [x] Have the prescribed gpt-6.1-sol/high independent OCR subagent review the final scope using the actual delegation skill. Any actionable finding stops publication without a repair in that phase.
 - [x] Stage only `internal/run/run.go`, `internal/run/approval_retry_test.go`, `internal/governance/approval_retry_test.go` and this change's OpenSpec/plan files. Commit with `Fix approval lineage for invocation retries` after inspecting staged filenames and diff checks.
-- [ ] After successful OCR, push the feature branch, create a PR with `Closes #18` and `Refs #16`, and attach it to this chat. Do not merge or close parent issues.
+- [x] After successful OCR, push the feature branch, create a PR with `Closes #18` and `Refs #16`, and attach it to this chat. Do not merge or close parent issues.
 
 Exact OpenSpec requirements and executable checklist are in `openspec/changes/fix-approved-invocation-retry-lineage/`; record completed validation and review evidence in that change's delivery record. This plan does not implement Memory or sandbox features.
 
