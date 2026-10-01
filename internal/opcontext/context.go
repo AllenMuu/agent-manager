@@ -13,6 +13,8 @@ import (
 
 var keyPattern = regexp.MustCompile(`^[a-z][a-z0-9_.:-]{0,127}$`)
 
+var ErrAccessDenied = errors.New("operational context read denied by access policy")
+
 type Query struct {
 	Keys []string
 }
@@ -42,8 +44,37 @@ type Provider interface {
 	Read(context.Context, Query) ([]Record, error)
 }
 
+// AccessPolicy is an exact allowlist for context keys. It is intentionally
+// independent from the mutation policy engine and grants no tool authority.
+type AccessPolicy struct {
+	AllowedKeys []string
+}
+
+func (p AccessPolicy) authorize(query Query) error {
+	if len(query.Keys) == 0 || len(p.AllowedKeys) == 0 {
+		return ErrAccessDenied
+	}
+	allowed := make(map[string]struct{}, len(p.AllowedKeys))
+	for _, key := range p.AllowedKeys {
+		if !keyPattern.MatchString(key) {
+			return fmt.Errorf("operational context access policy contains an invalid key %q", key)
+		}
+		if _, duplicate := allowed[key]; duplicate {
+			return fmt.Errorf("operational context access policy contains duplicate key %q", key)
+		}
+		allowed[key] = struct{}{}
+	}
+	for _, key := range query.Keys {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("%w: key %q is not explicitly allowed", ErrAccessDenied, key)
+		}
+	}
+	return nil
+}
+
 type Service struct {
-	Provider Provider
+	Provider     Provider
+	AccessPolicy AccessPolicy
 }
 
 func (s Service) Read(ctx context.Context, query Query, now time.Time) (Snapshot, error) {
@@ -56,11 +87,19 @@ func (s Service) Read(ctx context.Context, query Query, now time.Time) (Snapshot
 	if err := validateQuery(query); err != nil {
 		return Snapshot{}, err
 	}
+	if err := s.AccessPolicy.authorize(query); err != nil {
+		return Snapshot{}, err
+	}
 	snapshot := Snapshot{CheckedAt: now.UTC(), Records: []FreshRecord{}}
 	if s.Provider == nil {
 		return snapshot, nil
 	}
-	records, err := s.Provider.Read(ctx, query)
+	requested := make(map[string]struct{}, len(query.Keys))
+	providerQuery := Query{Keys: append([]string(nil), query.Keys...)}
+	for _, key := range query.Keys {
+		requested[key] = struct{}{}
+	}
+	records, err := s.Provider.Read(ctx, providerQuery)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read operational context: %w", err)
 	}
@@ -68,6 +107,9 @@ func (s Service) Read(ctx context.Context, query Query, now time.Time) (Snapshot
 	for _, record := range records {
 		if err := validateRecord(record); err != nil {
 			return Snapshot{}, err
+		}
+		if _, ok := requested[record.Key]; !ok {
+			return Snapshot{}, fmt.Errorf("operational context provider returned unrequested key %q", record.Key)
 		}
 		key := record.Source + "\x00" + record.Key
 		if _, duplicate := seen[key]; duplicate {

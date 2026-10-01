@@ -362,7 +362,9 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 		policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true,
 	}, confirmPause: true, confirmResolve: true}
 	now := time.Now().UTC()
-	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.AnonymousSelection(), now, controller)
+	initiator := identity.ActorIdentity{ID: "initiator", Kind: identity.Human, Subject: "initiator@local", Roles: []string{"developer"}}
+	delegation := identity.Delegation{ID: "initiator-delegation", ActorID: initiator.ID, Scopes: []string{"github:write"}, ExpiresAt: now.Add(time.Hour)}
+	record, _, err := manager.Start(approvalSnapshot(t), "mock", t.TempDir(), identity.NamedSelection(initiator, delegation), now, controller)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,15 +400,97 @@ func TestManagerEvaluatesApprovalAndWritesLinkedAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if completionDecision.Outcome != policy.Allow || len(evaluation.Violations) != 0 || completionAudit.RequestAuditID != decisionAudit.ID || completionAudit.ApprovalID != approval.ID || completionAudit.ActionID != action.ActionID || completionAudit.TraceID != decisionAudit.TraceID {
+	if completionDecision.Outcome != policy.Allow || len(evaluation.Violations) != 0 || completionAudit.RequestAuditID != decisionAudit.ID || completionAudit.ActorID != initiator.ID || completionAudit.DelegationID != delegation.ID || completionAudit.ApprovalID != approval.ID || completionAudit.ApproverID != testApprover().ID || completionAudit.ActionID != action.ActionID || completionAudit.PolicyHash != record.Policy.Hash || completionAudit.Runtime != record.Runtime || completionAudit.TraceID != decisionAudit.TraceID || completionAudit.Result != policy.Allow {
 		t.Fatalf("approved completion decision=%#v evaluation=%#v audit=%#v", completionDecision, evaluation, completionAudit)
 	}
 	completedEvents, err := store.Events(record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(completedEvents) != 5 || completedEvents[3].ApproverID != testApprover().ID || completedEvents[3].ApprovalID != approval.ID {
+	if len(completedEvents) != 5 || completedEvents[3].ApproverID != testApprover().ID || completedEvents[3].ApprovalID != approval.ID || completedEvents[4].ApproverID != testApprover().ID || completedEvents[4].ApprovalID != approval.ID {
 		t.Fatalf("approval transition audit attribution = %#v", completedEvents)
+	}
+	path := filepath.Join(store.Root(), "state.json")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(contents, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	audits := envelope["events"].([]any)
+	completion := audits[len(audits)-1].(map[string]any)
+	if completion["version"] != "v3" {
+		t.Fatalf("new audit version = %v, want v3", completion["version"])
+	}
+	pristine, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion["approver_id"] = "other-reviewer"
+	contents, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Events(record.ID); err == nil {
+		t.Fatal("store accepted a completion record with a mismatched approver")
+	}
+	if err := os.WriteFile(path, pristine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(pristine, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	audits = envelope["events"].([]any)
+	completion = audits[len(audits)-1].(map[string]any)
+	delete(completion, "approver_id")
+	contents, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Events(record.ID); err == nil {
+		t.Fatal("store accepted a v3 completion record without an approver")
+	}
+	if err := json.Unmarshal(pristine, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	audits = envelope["events"].([]any)
+	completion = audits[len(audits)-1].(map[string]any)
+	delete(completion, "approval_id")
+	delete(completion, "approver_id")
+	contents, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Events(record.ID); err == nil {
+		t.Fatal("store accepted a v3 completion without approval lineage")
+	}
+	if err := json.Unmarshal(pristine, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	audits = envelope["events"].([]any)
+	completion = audits[len(audits)-1].(map[string]any)
+	completion["version"] = "v2"
+	delete(completion, "approver_id")
+	contents, err = json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Events(record.ID); err != nil {
+		t.Fatalf("store could not read historical v2 completion audit: %v", err)
 	}
 }
 

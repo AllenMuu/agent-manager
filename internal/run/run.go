@@ -24,10 +24,11 @@ import (
 )
 
 const (
-	storeVersion       = "v2"
-	legacyStoreVersion = "v1"
-	auditVersion       = "v2"
-	legacyAuditVersion = "v1"
+	storeVersion         = "v2"
+	legacyStoreVersion   = "v1"
+	auditVersion         = "v3"
+	previousAuditVersion = "v2"
+	legacyAuditVersion   = "v1"
 )
 const maxStoreSize = 32 << 20
 
@@ -769,16 +770,24 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 				if approval.Status != ApprovalApproved || approval.RunID != runID || approvedRequest.ActionID != requestAudit.ActionID || approvedRequest.Tool != requestAudit.Tool || approvedRequest.ActionType != requestAudit.ActionType || approvedRequest.TraceID != requestAudit.TraceID {
 					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approval does not authorize this invocation request")
 				}
+				if approval.DecidedBy == nil {
+					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approved invocation has no explicit approver")
+				}
 				event.ObservedDecision, event.ReasonCode = policy.Allow, ""
 				event.ApprovalID = approvalID
+				event.ApproverID = approval.DecidedBy.ID
 			} else {
 				approval, found, err := m.Store.approvalForRequest(runID, requestAudit.ID)
 				if err != nil {
 					return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 				}
 				if found && approval.Status == ApprovalApproved {
+					if approval.DecidedBy == nil {
+						return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, errors.New("approved invocation has no explicit approver")
+					}
 					event.ObservedDecision, event.ReasonCode = policy.Allow, ""
 					event.ApprovalID = approval.ID
+					event.ApproverID = approval.DecidedBy.ID
 				}
 			}
 		}
@@ -1171,7 +1180,7 @@ func validateDatabase(db database) error {
 			return err
 		}
 		if event.RequestAuditID != "" {
-			if err := validateRequestAuditLink(db.Events, event.RunID, policy.Event{Category: event.Category, Tool: event.Tool, Domain: event.Domain, ActionType: event.ActionType, ActionID: event.ActionID, TraceID: event.TraceID, Timestamp: event.Timestamp, RequestAuditID: event.RequestAuditID}, event.Version == auditVersion); err != nil {
+			if err := validateRequestAuditLink(db.Events, event.RunID, policy.Event{Category: event.Category, Tool: event.Tool, Domain: event.Domain, ActionType: event.ActionType, ActionID: event.ActionID, TraceID: event.TraceID, Timestamp: event.Timestamp, RequestAuditID: event.RequestAuditID}, event.Version != legacyAuditVersion); err != nil {
 				return fmt.Errorf("audit event %q has invalid request correlation: %w", event.ID, err)
 			}
 		}
@@ -1335,7 +1344,7 @@ func validateAudit(event AuditRecord, db database) error {
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if (event.Version != auditVersion && event.Version != legacyAuditVersion) || !safeID.MatchString(event.ID) {
+	if !validAuditVersion(event.Version) || !safeID.MatchString(event.ID) {
 		return fmt.Errorf("audit event has invalid version or id")
 	}
 	if _, ok := db.Runs[event.RunID]; !ok {
@@ -1345,7 +1354,7 @@ func validateAudit(event AuditRecord, db database) error {
 		return fmt.Errorf("audit event %q has invalid category or time", event.ID)
 	}
 	run := db.Runs[event.RunID]
-	if event.Version == auditVersion {
+	if event.Version != legacyAuditVersion {
 		if event.TraceID == "" || event.Result == "" {
 			return fmt.Errorf("audit event %q is missing result or trace correlation", event.ID)
 		}
@@ -1363,6 +1372,15 @@ func validateAudit(event AuditRecord, db database) error {
 		} else if event.ActorID != "" || event.DelegationID != "" {
 			return fmt.Errorf("audit event %q invents identity for a non-named run", event.ID)
 		}
+		if event.Version == auditVersion && (event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted) {
+			request, found := auditRecordByID(db.Events, event.RequestAuditID)
+			if !found {
+				return fmt.Errorf("audit event %q completion has no linked request record", event.ID)
+			}
+			if request.Decision == policy.RequireApproval && (event.ApprovalID == "" || event.ApproverID == "") {
+				return fmt.Errorf("audit event %q approved completion is missing its approval or approver reference", event.ID)
+			}
+		}
 		if (event.TerminationReason == "approval_approved" || event.TerminationReason == "approval_rejected" || event.TerminationReason == "approval_expired") && event.ApprovalID == "" {
 			return fmt.Errorf("audit event %q has an approval transition without an approval reference", event.ID)
 		}
@@ -1377,6 +1395,9 @@ func validateAudit(event AuditRecord, db database) error {
 			}
 			if (request.ActionID != "" && event.ActionID != request.ActionID) || (request.TraceID != "" && event.TraceID != request.TraceID) || event.Tool != request.Tool || event.ActionType != request.ActionType {
 				return fmt.Errorf("audit event %q approval lineage does not match its request", event.ID)
+			}
+			if (event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted) && !completionReferencesApprovalRequest(db, event, approval) {
+				return fmt.Errorf("audit event %q completion does not reference a request linked to its approval", event.ID)
 			}
 			if event.ApproverID != "" && (approval.DecidedBy == nil || event.ApproverID != approval.DecidedBy.ID) {
 				return fmt.Errorf("audit event %q approver does not match approval decision", event.ID)
@@ -1398,17 +1419,51 @@ func validateAudit(event AuditRecord, db database) error {
 			if (event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted) && (approval.Status != ApprovalApproved || event.Decision != policy.Allow) {
 				return fmt.Errorf("audit event %q records completion without an approved request", event.ID)
 			}
+			approvedCompletion := (event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted) && approval.Status == ApprovalApproved && event.Decision == policy.Allow && completionReferencesApprovalRequest(db, event, approval) && approval.DecidedBy != nil && event.ApproverID == approval.DecidedBy.ID
+			if event.Version == auditVersion && (event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted) && approval.Status == ApprovalApproved && event.Decision == policy.Allow && (approval.DecidedBy == nil || event.ApproverID != approval.DecidedBy.ID) {
+				return fmt.Errorf("audit event %q approved completion is missing its explicit approver", event.ID)
+			}
+			if event.ApproverID != "" && event.TerminationReason != "approval_approved" && event.TerminationReason != "approval_rejected" && event.TerminationReason != "approval_expired" && !approvedCompletion {
+				return fmt.Errorf("audit event %q has an approver without an approval transition or approved completion", event.ID)
+			}
 		} else if event.ApproverID != "" {
 			return fmt.Errorf("audit event %q has an approver without an approval", event.ID)
-		}
-		if event.ApproverID != "" && event.TerminationReason != "approval_approved" && event.TerminationReason != "approval_rejected" && event.TerminationReason != "approval_expired" {
-			return fmt.Errorf("audit event %q has an approver without an approval transition", event.ID)
 		}
 	}
 	if event.PolicyID != run.Policy.PolicyID || event.PolicyVersion != run.Policy.Version || event.PolicyHash != run.Policy.Hash || !event.PolicyResolvedAt.Equal(run.Policy.ResolvedAt) {
 		return fmt.Errorf("audit event %q policy reference does not match run snapshot", event.ID)
 	}
 	return nil
+}
+
+func validAuditVersion(version string) bool {
+	return version == auditVersion || version == previousAuditVersion || version == legacyAuditVersion
+}
+
+func auditRecordByID(events []AuditRecord, id string) (AuditRecord, bool) {
+	for _, event := range events {
+		if event.ID == id {
+			return event, true
+		}
+	}
+	return AuditRecord{}, false
+}
+
+func completionReferencesApprovalRequest(db database, completion AuditRecord, approval Approval) bool {
+	if completion.RequestAuditID == approval.RequestAuditID {
+		return true
+	}
+	wantCategory := policy.ToolCallRequested
+	if completion.Category == policy.NetworkAccessCompleted {
+		wantCategory = policy.NetworkAccessRequested
+	}
+	for _, request := range db.Events {
+		if request.ID != completion.RequestAuditID {
+			continue
+		}
+		return request.RunID == completion.RunID && request.Category == wantCategory && request.Decision == policy.RequireApproval && request.ApprovalID == approval.ID && request.Tool == completion.Tool && request.ActionType == completion.ActionType && request.ActionID == completion.ActionID && request.TraceID == completion.TraceID
+	}
+	return false
 }
 
 func isInvocationResult(result policy.Outcome) bool {
@@ -1418,7 +1473,7 @@ func isInvocationResult(result policy.Outcome) bool {
 // Validate checks the public, standalone audit event shape used by local eval
 // fixtures. Store validation additionally checks it against the referenced run.
 func (event AuditRecord) Validate() error {
-	if (event.Version != auditVersion && event.Version != legacyAuditVersion) || !safeID.MatchString(event.ID) || !safeID.MatchString(event.RunID) {
+	if !validAuditVersion(event.Version) || !safeID.MatchString(event.ID) || !safeID.MatchString(event.RunID) {
 		return errors.New("audit event has invalid version or identity")
 	}
 	if event.Timestamp.IsZero() || !policy.IsKnownEventCategory(event.Category) {

@@ -67,7 +67,10 @@ The correlation metadata carried through a governed tool or MCP call: run, actor
 _Avoid_: runtime credential bundle, prompt context
 
 **Operational context provider**:
-An optional read-only boundary that returns operational records with source and freshness metadata. It supplies context to a consumer but does not authorize mutations or establish actor identity.
+An optional read-only boundary that returns operational records with source and freshness metadata. A separate exact-key access policy authorizes each read. The provider does not authorize mutations or establish actor identity.
+
+**Operational context access policy**:
+An exact allowlist of operational context keys that may be read. It is evaluated before the provider is called and remains separate from mutation-tool policy.
 _Avoid_: policy provider, mutation adapter
 
 **Initialization**:

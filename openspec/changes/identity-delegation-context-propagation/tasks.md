@@ -16,6 +16,7 @@
 - [x] 3.2 Preserve existing policy precedence and outcomes around the identity gate; verify ordinary policy DENY remains DENY and a passing identity gate preserves ALLOW or REQUIRE_APPROVAL.
 - [x] 3.3 Require an explicit deciding actor for approval transitions and persist approver attribution; require the existing approval CLI commands to accept approver identity explicitly; verify approval, rejection, and expiry record the supplied approver and never infer the initiator.
 - [x] 3.4 Extend structured audit lineage with actor, delegation, action, policy, approval, result, runtime, and trace references while retaining legacy event readability; verify evaluation fixtures consume typed fields and serialized events contain no credentials.
+- [x] 3.5 Write v3 approved action completion records with the explicit approver ID and validate it against the linked approval while preserving v2 reads; verify full lineage, mismatched or missing approvers, and historical v2 compatibility.
 
 ## 4. Invocation Context Propagation
 
@@ -27,6 +28,7 @@
 
 - [x] 5.1 Add the provider interface and freshness-aware context record with source and capture time; verify retrieval is read-only and missing provider reports unavailable without inventing context.
 - [x] 5.2 Verify operational context retrieval is independent from identity, mutation authorization, and invocation by testing that reads never dispatch a mutation tool.
+- [x] 5.3 Add a separate exact-key read access policy for operational context; verify missing policy and unlisted keys fail closed before provider access while authorized reads remain independent from mutation authorization.
 
 ## 6. Local Governed Invocation Slice
 
@@ -39,3 +41,4 @@
 - [x] 7.2 Update `CONTEXT.md` with ActorIdentity, Delegation, InvocationContext, and OperationalContextProvider terminology; verify definitions match the specs and introduce no credential or ambient-identity semantics.
 - [x] 7.3 Run `gofmt` on changed Go files and `go test ./...`; verify the complete Go suite passes.
 - [x] 7.4 Run `openspec validate identity-delegation-context-propagation` and review the final diff; verify OpenSpec validation succeeds and every added requirement has implementation coverage.
+- [x] 7.5 Run the full Go suite and OpenSpec validation after completing the approval-lineage and context-read policy requirements; verify both pass.

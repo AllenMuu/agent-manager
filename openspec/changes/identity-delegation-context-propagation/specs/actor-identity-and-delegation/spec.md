@@ -56,9 +56,15 @@ The existing runtime policy engine SHALL evaluate actor kind/roles and required 
 ### Requirement: Actor-attributed approvals and audit lineage
 Governance audit records SHALL correlate the initiating actor, delegation, AgentRun, runtime, action, immutable policy snapshot, decision, approval, result, and trace ID. Approval transitions SHALL identify the actor who approved, rejected, or expired the request; the approver SHALL be explicit and SHALL NOT be inferred from the run initiator. Audit and approval records SHALL retain only stable identity references and safe identity metadata, never credential values.
 
+When an approved action completes, its new-format completion audit record SHALL include the explicit approver ID from the linked approval, in addition to its approval ID and request-audit link, so that one structured completion record contains the full action lineage. The store SHALL validate that this approver matches the linked approval decision. Newly written audit records SHALL use format v3; existing v2 audit records without the approver field SHALL remain readable as historical evidence.
+
 #### Scenario: Reconstruct a governed action
 - **WHEN** an operator inspects a completed action's structured audit evidence
 - **THEN** the evidence identifies who initiated the run, what authority was delegated, which runtime and policy snapshot applied, the decision and approval, the resulting action, and its trace correlation
+
+#### Scenario: Read full lineage from one approved completion record
+- **WHEN** an operator inspects the structured completion record for an approved action
+- **THEN** that record directly contains the initiator, delegation, approver, approval, action, policy snapshot, result, and trace references
 
 #### Scenario: Attribute an approval decision
 - **WHEN** an approval is approved, rejected, or expired

@@ -9,8 +9,8 @@ Issue [#6](https://github.com/AllenMuu/agent-manager/issues/6) uses Akuity Agent
 - A governed run receives an explicit typed `ActorIdentity` or explicit anonymous mode. Named identity and exact, expiring delegated scopes are snapshotted on the run; no ambient OS identity, shared privileged token, or mutable identity registry supplies authority.
 - The existing Agent Manager policy engine remains authoritative. `AgentPolicy` v2 adds exact-action identity rules, while v1 keeps policy-only behavior for actions whose contract does not require identity conditions. Identity-bound actions fail closed without matching v2 rules and run-bound delegation.
 - Tool and MCP invocation use a separate adapter boundary that declares whether it preserves canonical `InvocationContext`. Filesystem resource placement is not evidence of invocation support.
-- Approval and audit records identify the explicit deciding actor and preserve run, actor, delegation, policy, action, result, approval, and trace references without storing credentials.
-- Operational context is an optional read-only provider port with source and freshness metadata. It does not authorize mutations or establish actor identity.
+- Approval and audit records identify the explicit deciding actor and preserve run, actor, delegation, policy, action, result, approval, and trace references without storing credentials. New v3 approved completion records carry the approver reference directly; existing v2 records remain readable.
+- Operational context is an optional read-only provider port with source and freshness metadata. A separate exact-key access policy governs reads; the provider does not authorize mutations or establish actor identity.
 - The initial implementation is local and deterministic: no OAuth, organization directory, agent launch, live runtime adapter, network-backed provider, or Akuity-specific protocol.
 
 ## Consequences

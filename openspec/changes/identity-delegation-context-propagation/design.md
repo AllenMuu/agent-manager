@@ -44,15 +44,17 @@ Extend approval transitions to receive the deciding `ActorIdentity` explicitly. 
 
 Alternative considered: use the existing free-form event `Actor` string for all identities. Rejected because it cannot safely carry kind, roles, delegation, and approval attribution as typed evidence.
 
+For an approved tool or network action, copy the explicit deciding actor ID onto the completion audit record, alongside the approval ID and request-audit link. The transition record remains the evidence of the approval decision; the completion record becomes independently sufficient to identify the initiator, delegation, approver, policy, action, result, and trace. New audit records use format v3, where store validation requires and checks the completion approver against the linked approved request. Existing v2 audit records remain readable without rewriting them. Do not attach approvers to actions that did not require approval.
+
 ### Introduce a separate invocation contract
 
 Place canonical `InvocationContext` and invocation adapter contracts in an invocation-focused domain package, separate from `internal/adapter` filesystem placement and `RuntimeController`. The context carries correlation IDs and policy snapshot hash, not credentials or unrestricted claims. Adapters declare whether they preserve this context; required-but-unsupported propagation blocks dispatch. The first implementation uses a deterministic mock adapter and checks lineage before dispatch.
 
 Alternative considered: add invocation methods to the existing filesystem adapter. Rejected because placement capability says nothing about a runtime's ability to preserve identity across a tool/MCP call.
 
-### Keep operational context as an optional read-only port
+### Govern operational context reads through a separate exact-key policy
 
-Define a provider interface and records with source, capture time, and freshness. Return unavailable when no provider is configured. Do not let this port authorize mutations or supply implicit actor identity. No provider implementation is part of this change.
+Define a provider interface and records with source, capture time, and freshness. A separate `AccessPolicy` explicitly allowlists readable context keys; each query must name keys and every key must be allowed before the provider is called. Missing or empty policy denies reads. This small read policy is independent from the mutation policy engine and cannot dispatch tools. Return unavailable when no provider is configured after the query passes read authorization. Do not let this port authorize mutations or supply implicit actor identity. No provider implementation is part of this change.
 
 Alternative considered: make a live provider part of the first end-to-end slice. Rejected because it would add external state and network assumptions to a deterministic governance contract.
 
