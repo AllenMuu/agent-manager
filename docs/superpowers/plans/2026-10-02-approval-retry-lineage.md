@@ -177,6 +177,16 @@ if err != nil {
 - [x] Stage only `internal/run/run.go`, `internal/run/approval_retry_test.go`, `internal/governance/approval_retry_test.go` and this change's OpenSpec/plan files. Commit with `Fix approval lineage for invocation retries` after inspecting staged filenames and diff checks.
 - [x] After successful OCR, push the feature branch, create a PR with `Closes #18` and `Refs #16`, and attach it to this chat. Do not merge or close parent issues.
 
-Exact OpenSpec requirements and executable checklist are in `openspec/changes/fix-approved-invocation-retry-lineage/`; record completed validation and review evidence in that change's delivery record. This plan does not implement Memory or sandbox features.
+Exact OpenSpec requirements and executable checklist are now in `openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/`; record completed validation and review evidence in that change's delivery record. This plan does not implement Memory or sandbox features.
 
 Implemented Task 3 tests: `TestApprovedRetryCompletionSeparatesPolicyFromExecutionResult`, `TestRetryCompletionDoesNotAuthorizeUnrelatedApproval`, `TestRetryCompletionRejectsMissingApproval`, `TestRetryCompletionDoesNotAuthorizeNonApprovedDecision`, and `TestApprovedAdapterFailureRetainsConsumedAuthorization`. The failed result also exercises approval lookup from its retry request when completion omits the ID. The domain case retains the explicit approval on the retry to exercise domain validation before persistence.
+
+## Authorized merge and archive
+
+On 2026-10-02 the user authorized merging PRs and continuing #19. PR #30
+merged into main as `2d2963ce41e163280936f8d87e6e3ed8265d03e4`, closing #18.
+Its complete capability is synchronized to
+`openspec/specs/approved-invocation-completion-lineage/spec.md`; the change is
+archived locally after exact Purpose/requirement/scenario comparison. The archive
+documentation PR remains to be reviewed and delivered; #16 stays open. The earlier
+publication step's no-merge boundary applied before this subsequent authorization.

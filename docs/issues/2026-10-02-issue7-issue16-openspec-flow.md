@@ -8,7 +8,7 @@
 
 | 切片 | GitHub ticket | OpenSpec change | 真正阻塞项 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已发布、未合并 |
+| F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并；#18 已关闭，规格同步/归档已在本分支完成 |
 | M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/define-scoped-memory-contracts/proposal.md) | 无 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/add-structured-local-memory-store/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | proposal/design/spec/tasks 已生成；实现 0 项 |
@@ -79,7 +79,7 @@ M1 与 R1 是不依赖其他 tickets 的 frontier；F0 优先修复现有基线�
 | #28 / 4 | 2.4 | [Real sandbox approval smoke evidence](../../openspec/changes/integrate-experimental-openshell/specs/experimental-openshell-integration/spec.md) | Real denied network retry |
 | #28 / 5 | 2.5 | [No implicit external setup](../../openspec/changes/integrate-experimental-openshell/specs/experimental-openshell-integration/spec.md) | Offline workflows |
 
-F0 的逐场景验证与已执行结果保存在 [delivery.md](../../openspec/changes/fix-approved-invocation-retry-lineage/delivery.md)，不复制其实现清单。
+F0 的逐场景验证与已执行结果保存在 [delivery.md](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/delivery.md)，不复制其实现清单。
 
 ## 必须经过的流程
 
@@ -107,4 +107,4 @@ Memory 保留已有文本 promotion，新增结构化存储显式选择，Mem0 �
 - GitHub 原生 blocked_by 回读：#19–#28 的全部依赖与已批准拆分一致；新增 change 内未虚构 CLI 会自动强制这些依赖。
 - 本地检查：50 条 requirement、63 个 scenario；映射链接全部有效，新增产物无占位符、尾随空白或虚假完成勾选。
 - 普通独立规划审查发现 M5 缺少真实 Mem0 双 Agent 联合场景，现已补入 spec、task 2.1 和父级验收门槛；普通独立最终复核已通过，无剩余可行动规划问题。
-- #18 实现的全量 Go/race/vet/build 已通过；最终 gpt-6.1-sol/high OCR 首次因额度限制未完成，明确重试已通过，纳入 2/2、补充审查排除项 8/8、完整覆盖 10/10；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已发布但未合并。
+- #18 实现的全量 Go/race/vet/build 已通过；最终 gpt-6.1-sol/high OCR 首次因额度限制未完成，明确重试已通过，纳入 2/2、补充审查排除项 8/8、完整覆盖 10/10；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并（`2d2963ce`），#18 已关闭；此分支同步并归档其已验收规格。
