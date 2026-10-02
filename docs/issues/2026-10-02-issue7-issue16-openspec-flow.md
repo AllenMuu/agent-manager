@@ -9,7 +9,7 @@
 | 切片 | GitHub ticket | OpenSpec change | 真正阻塞项 | 当前状态 |
 | --- | --- | --- | --- | --- |
 | F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并；#18 已关闭，规格同步/归档已在本分支完成 |
-| M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/define-scoped-memory-contracts/proposal.md) | 无 | proposal/design/spec/tasks 已生成；实现 0 项 |
+| M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/proposal.md) | 无 | 实现/审查 10/10；PR #32 已合并、#19 已关闭；本分支已同步/归档 |
 | M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/add-structured-local-memory-store/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M4 | [#22](https://github.com/AllenMuu/agent-manager/issues/22) | [add-mem0-memory-provider](../../openspec/changes/add-mem0-memory-provider/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
@@ -28,11 +28,11 @@ M1 与 R1 是不依赖其他 tickets 的 frontier；F0 优先修复现有基线�
 
 | Ticket / 验收项 | Task | Requirement | Scenario / 计划验证 |
 | --- | --- | --- | --- |
-| #19 / 1 | 2.1 | [Explicit owner partitions](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Missing ownership identifiers；Two-project isolation |
-| #19 / 2 | 2.2 | [Canonical typed record round trip](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Remember and recall project knowledge |
-| #19 / 3 | 2.3 | [Honest optional capabilities and errors](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Unsupported recall versus unavailable storage；Canceled operation |
-| #19 / 4 | 2.4 | [Deterministic neutral contract implementation](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Portable contract suite |
-| #19 / 5 | 2.5 | [Text and Skill compatibility](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Legacy promotion remains available |
+| #19 / 1 | 2.1 | [Explicit owner partitions](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Missing ownership identifiers；Two-project isolation |
+| #19 / 2 | 2.2 | [Canonical typed record round trip](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Remember and recall project knowledge |
+| #19 / 3 | 2.3 | [Honest optional capabilities and errors](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Unsupported recall versus unavailable storage；Canceled operation |
+| #19 / 4 | 2.4 | [Deterministic neutral contract implementation](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Portable contract suite |
+| #19 / 5 | 2.5 | [Text and Skill compatibility](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Legacy promotion remains available |
 | #20 / 1 | 2.1 | [Durable owner and provenance](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Reopen owned record |
 | #20 / 2 | 2.2 | [Conditional serialized updates](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Competing version updates |
 | #20 / 3 | 2.3 | [Atomic lifecycle and history](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Supersede and forget；Supersession fails before commit |
