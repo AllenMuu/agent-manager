@@ -14,3 +14,5 @@ func replaceStoreFile(context.Context, *os.File, string, []byte, FileSyncer) err
 }
 
 func syncStoreFile(FileSyncer, *os.File) error { return ErrUnsupported }
+
+func inspectStoreFile(*os.File, string) (os.FileInfo, error) { return nil, ErrUnsupported }

@@ -32,7 +32,7 @@ swap during the open itself; such a mismatch is rejected after opening.
 
 ## Structured Memory contract (Issue #19)
 
-The [scoped Memory contract](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md)
+The [scoped Memory contract](../../openspec/specs/scoped-memory-contracts/spec.md)
 adds a canonical record boundary separately from the legacy text Provider,
 Promote and Searcher interfaces. Agent Manager owns neutral record IDs, versions,
 knowledge types, owner partitions, state, layer, source and evidence references;

@@ -45,6 +45,15 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 	if err := sample.validate(); err != nil {
 		return nil, err
 	}
+	storeDir, err := s.directory()
+	if err != nil {
+		return nil, err
+	}
+	defer storeDir.Close()
+	storeInfo, err := storeDir.Stat()
+	if err != nil {
+		return nil, err
+	}
 	// Resolve parent directories once, then read a direct regular file through an
 	// anchored handle. A replaced directory cannot redirect this read.
 	info, err := os.Lstat(input.Path)
@@ -60,6 +69,18 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 		return nil, err
 	}
 	defer dir.Close()
+	sourceParentInfo, err := dir.Stat()
+	if err != nil {
+		return nil, err
+	}
+	// Compare anchored identities, so an ancestor alias cannot turn canonical
+	// storage into a legacy source that the import itself subsequently rewrites.
+	if os.SameFile(sourceParentInfo, storeInfo) && filepath.Base(input.Path) == "memory.json" {
+		return nil, fmt.Errorf("%w: legacy source is the canonical destination", ErrInvalidInput)
+	}
+	if err := rejectCanonicalImportSource(storeDir, dir, filepath.Base(input.Path)); err != nil {
+		return nil, err
+	}
 	data, err := readStoreFile(dir, filepath.Base(input.Path))
 	if err != nil {
 		return nil, err
@@ -72,6 +93,11 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 		Content string              `json:"content"`
 	}{input, string(data)})
 	return s.transactionBatch(ctx, input.OperationID, intent, func(state *storeState) ([]Record, error) {
+		// Recheck while the storage transaction holds its lock: a cooperating
+		// writer cannot change the canonical inode between these identity checks.
+		if err := rejectCanonicalImportSource(storeDir, dir, filepath.Base(input.Path)); err != nil {
+			return nil, err
+		}
 		records := []Record{}
 		for _, line := range strings.Split(string(data), "\n") {
 			if strings.TrimSpace(line) == "" {
@@ -100,4 +126,24 @@ func ImportLegacy(ctx context.Context, p StructuredProvider, input LegacyImportR
 		return nil, err
 	}
 	return importer.ImportLegacy(ctx, input, confirmation)
+}
+
+// Conservatively reject any direct file sharing the current canonical inode,
+// including case-insensitive filename aliases and hardlinks outside the root.
+func rejectCanonicalImportSource(storeDir, sourceDir *os.File, name string) error {
+	sourceInfo, err := inspectStoreFile(sourceDir, name)
+	if err != nil {
+		return err
+	}
+	canonicalInfo, err := inspectStoreFile(storeDir, "memory.json")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if os.SameFile(sourceInfo, canonicalInfo) {
+		return fmt.Errorf("%w: legacy source aliases canonical storage", ErrInvalidInput)
+	}
+	return nil
 }

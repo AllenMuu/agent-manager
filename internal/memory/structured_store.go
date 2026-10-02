@@ -99,6 +99,9 @@ func loadStore(dir *os.File) (storeState, error) {
 	if !utf8.Valid(data) {
 		return state, fmt.Errorf("%w: structured state must be valid UTF-8", ErrUnavailable)
 	}
+	if err := validateJSONUnicode(data); err != nil {
+		return state, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
 	state = storeState{}
 	if err = json.Unmarshal(data, &state); err != nil || state.Format != 1 || state.Records == nil || state.History == nil || state.Operations == nil {
 		return state, fmt.Errorf("%w: invalid structured Memory format", ErrUnavailable)

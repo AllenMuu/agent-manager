@@ -21,3 +21,5 @@
 - [ ] 3.3 Run the final gpt-6.1-sol/high read-only OCR review covering all proposed PR files; publish only if no actionable findings and no important coverage gap remain. An unavailable required reviewer stops publication.
 
 普通独立规格审查在 `3616a46` 发现非 UTF-8 输入经 JSON 编码后改变所有权/来源和操作意图。已补公共边界 RED→GREEN 回归并拒绝这些输入；corrupted state 不再静默标准化。复核证据见 delivery.md；3.2/3.3 继续等待 controller 验证，不因修复提交而勾选。
+
+普通独立质量审查在 `3e82787` 发现 canonical source/destination 导入重叠、JSON 未配对 Unicode surrogate 转义及 ADR 旧链接。已补公共 RED→GREEN 回归和合法 Unicode 正向验证，拒绝 canonical inode 别名来源、严格验证 JSON scalar escapes 并修复 main spec 链接；证据见 delivery.md。3.2/3.3 仍待 controller 复核和最终 OCR。

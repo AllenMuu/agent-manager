@@ -106,3 +106,12 @@ func syncStoreFile(syncer FileSyncer, file *os.File) error {
 	}
 	return file.Sync()
 }
+
+func inspectStoreFile(dir *os.File, name string) (os.FileInfo, error) {
+	file, err := openStoreFile(dir, name, unix.O_RDONLY)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return file.Stat()
+}
