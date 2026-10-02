@@ -96,3 +96,15 @@ _Avoid_: skill frontmatter, registry entry
 **Guarded operation**:
 A management operation that previews its changes, requires confirmation, records a reversible journal entry, and never executes skill-provided code.
 _Avoid_: automatic sync, unsafe update
+
+**Canonical Memory record**:
+Provider-neutral knowledge with an opaque ID, version, explicit owner partition,
+knowledge type, inert content, source/evidence references, state and layer metadata.
+RAW/ATOMIC/COMPOSITE/PROFILE are layers, not automatic consolidation behavior.
+_Avoid_: provider object, executable Skill or Task
+
+**Memory owner partition**:
+An exact USER or PROJECT owner, or an AGENT/SESSION partition within exactly one
+owning user or project. The identifiers partition data; they do not authenticate
+or authorize a caller. GLOBAL is not currently supported.
+_Avoid_: ambient owner, authority inferred from labels

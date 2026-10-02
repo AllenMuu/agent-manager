@@ -29,3 +29,25 @@ post-open file-identity verification. This rejects direct symlink references
 and ordinary replacement races, but has a weaker guarantee than the Unix
 `O_NOFOLLOW` or Windows reparse-point paths if a platform permits a symlink
 swap during the open itself; such a mismatch is rejected after opening.
+
+## Structured Memory contract (Issue #19)
+
+The [scoped Memory contract](../../openspec/changes/define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md)
+adds a canonical record boundary separately from the legacy text Provider,
+Promote and Searcher interfaces. Agent Manager owns neutral record IDs, versions,
+knowledge types, owner partitions, state, layer, source and evidence references;
+a provider maps its own objects to that shape without inventing provenance.
+Capabilities describe implemented operations; health separately describes current
+availability. Optional operations return unsupported rather than pretending an
+empty result is success. Context cancellation and uncertain writes have distinct
+error categories.
+
+USER and PROJECT identify one owner; AGENT and SESSION refine exactly one owning
+user or project. Owner labels establish partitions, not authenticated authority;
+the authorized Gateway is a later slice. An in-memory implementation is only a
+deterministic contract implementation: it does not enable durable storage,
+external providers, automatic extraction, conversion of legacy text, or a new
+CLI default. SKILL and TASK record content is inert knowledge, never executable.
+Managed-skill operations retain their guarded reversible lifecycle and do not
+write Memory, execute skill-provided code, install dependencies or access a
+network through this contract. See [ticket #19](https://github.com/AllenMuu/agent-manager/issues/19).
