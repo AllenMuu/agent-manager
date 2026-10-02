@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 var ErrInvalidInput = errors.New("invalid Memory input")
@@ -46,7 +47,7 @@ func (o Owner) validate() error {
 	}
 	for _, id := range []string{o.UserID, o.ProjectID, o.AgentID, o.SessionID} {
 		if id != "" {
-			if err := validateToken("owner identifier", id); err != nil {
+			if err := validateStructuredToken("owner identifier", id); err != nil {
 				return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 			}
 		}
@@ -81,7 +82,11 @@ const (
 
 type RecordState string
 
-const RecordActive RecordState = "ACTIVE"
+const (
+	RecordActive     RecordState = "ACTIVE"
+	RecordSuperseded RecordState = "SUPERSEDED"
+	RecordDeleted    RecordState = "DELETED"
+)
 
 type RecordID string
 
@@ -97,15 +102,17 @@ type NewRecord struct {
 
 // Record is the canonical shape. Provider object IDs never replace this ID.
 type Record struct {
-	ID       RecordID      `json:"id"`
-	Version  uint64        `json:"version"`
-	Owner    Owner         `json:"owner"`
-	Type     KnowledgeType `json:"type"`
-	Content  string        `json:"content"`
-	Source   string        `json:"source,omitempty"`
-	Evidence []string      `json:"evidence,omitempty"`
-	State    RecordState   `json:"state"`
-	Layer    Layer         `json:"layer"`
+	Supersedes   RecordID      `json:"supersedes,omitempty"`
+	SupersededBy RecordID      `json:"supersededBy,omitempty"`
+	ID           RecordID      `json:"id"`
+	Version      uint64        `json:"version"`
+	Owner        Owner         `json:"owner"`
+	Type         KnowledgeType `json:"type"`
+	Content      string        `json:"content"`
+	Source       string        `json:"source,omitempty"`
+	Evidence     []string      `json:"evidence,omitempty"`
+	State        RecordState   `json:"state"`
+	Layer        Layer         `json:"layer"`
 }
 type Query struct {
 	Owner Owner  `json:"owner"`
@@ -134,18 +141,25 @@ var (
 	ErrUnavailable     = ErrProviderUnavailable
 	ErrOwnershipDenied = errors.New("Memory ownership denied")
 	ErrConflict        = errors.New("Memory version conflict")
+	ErrNotCommitted    = errors.New("Memory write not committed")
 	ErrOutcomeUnknown  = errors.New("Memory write outcome unknown")
 )
 
 // StructuredCapabilities describes actual implemented semantics, independent
 // of configured requests and current health. Future mutations are optional.
+// Update/Supersede describe operation support; ConditionalUpdate and
+// AtomicSupersede separately advertise the stronger concurrency guarantees.
 type StructuredCapabilities struct {
-	Remember  bool `json:"remember"`
-	Get       bool `json:"get"`
-	Recall    bool `json:"recall"`
-	Update    bool `json:"update"`
-	Forget    bool `json:"forget"`
-	Supersede bool `json:"supersede"`
+	Remember          bool `json:"remember"`
+	Get               bool `json:"get"`
+	Recall            bool `json:"recall"`
+	Update            bool `json:"update"`
+	Forget            bool `json:"forget"`
+	Supersede         bool `json:"supersede"`
+	History           bool `json:"history"`
+	ConditionalUpdate bool `json:"conditionalUpdate"`
+	AtomicSupersede   bool `json:"atomicSupersede"`
+	ImportLegacy      bool `json:"importLegacy"`
 }
 type HealthStatus struct {
 	Available bool   `json:"available"`
@@ -223,6 +237,11 @@ func Recall(ctx context.Context, p StructuredProvider, query Query) ([]Record, e
 }
 
 func (input NewRecord) validate() error {
+	for _, value := range append([]string{input.Content, input.Source}, input.Evidence...) {
+		if !utf8.ValidString(value) {
+			return fmt.Errorf("%w: record content, source and evidence must be valid UTF-8", ErrInvalidInput)
+		}
+	}
 	if err := input.Owner.validate(); err != nil {
 		return err
 	}
@@ -246,4 +265,13 @@ func knownType(kind KnowledgeType) bool {
 	default:
 		return false
 	}
+}
+
+// Structured tokens must survive canonical JSON encoding exactly. Keep this
+// validation separate from the compatibility text provider's token rules.
+func validateStructuredToken(label, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8", label)
+	}
+	return validateToken(label, value)
 }

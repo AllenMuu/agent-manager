@@ -84,3 +84,13 @@ gate passed, attached to this chat and read back at the exact reviewed head with
 read-only gate before push. The implementation checklist is complete; #19 remains
 open until accepted merge, and this change stays active. Sync/archive follows
 accepted authorized delivery; #7 stays open and other Memory tickets are pending.
+
+## Accepted main delivery
+
+The user authorized autonomous completion of the remaining approved roadmap on
+2026-10-02. PR #32 merged into main as `31efa7f6747fed88072bf131c5263e25c0526626`,
+closing #19; the #18 archive PR #33 also merged as
+`7240f50caea7afdffbefb003548775127e7597cb`. All five M1 requirements and seven
+scenarios are copied exactly into the main capability after sync verification.
+This branch archives the completed change; that archive will be reviewed with
+the next delivery before entering main. Parent #7 remains open.

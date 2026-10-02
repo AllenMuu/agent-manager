@@ -42,7 +42,7 @@ func (p *InMemoryProvider) Get(ctx context.Context, owner Owner, id RecordID) (R
 	if err := owner.validate(); err != nil {
 		return Record{}, err
 	}
-	if err := validateToken("record ID", string(id)); err != nil {
+	if err := validateStructuredToken("record ID", string(id)); err != nil {
 		return Record{}, fmt.Errorf("%w: invalid record ID", ErrInvalidInput)
 	}
 	p.mu.RLock()
