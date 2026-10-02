@@ -1,0 +1,74 @@
+# Structured local Memory delivery evidence
+
+## Baseline and selected boundaries (task 1.1)
+
+Ticket [#20](https://github.com/AllenMuu/agent-manager/issues/20) has five acceptance requirements and seven scenarios. Native blocker [#19](https://github.com/AllenMuu/agent-manager/issues/19) was re-read and verified CLOSED on 2026-10-02. Main-delivered baseline is `7240f50caea7afdffbefb003548775127e7597cb` (PR #32 and PR #33 merged). The controller verified baseline `go test ./...` before implementation. This branch preserves prerequisite M1 spec sync/archive commit `24b8374159955744d49719835ad3ce35784bd389`; its documentation remains part of the independent review scope.
+
+The user-authorized boundaries are `OpenStructuredStore`, existing `Remember/Get/Recall/Capabilities/Health`, optional conditional `Update/Supersede/Forget/History`, explicitly confirmed `ImportLegacy`, and the external filesystem durability/persistence seam. All new behavior tests are external `package memory_test` tests using these public boundaries. No private-helper assertions or internal collaborator mocks are used. TDD was performed one implementation slice at a time; historical red logs and final green evidence remain outside the repository at `/tmp/agent-manager-issue20-evidence`.
+
+## Acceptance matrix (tasks 2.1–2.5)
+
+All named tests passed in the uncached final behavior run (`final-behaviors.log`).
+
+| Task / requirement | Scenario | Public behavior test | Actual outcome |
+| --- | --- | --- | --- |
+| 2.1 Durable owner and provenance | Reopen owned record | `TestStructuredStoreReopenOwnedRecord` | Same ID, owner, source, evidence, state, layer and version after reopen; another project gets `ErrNotFound`. |
+| 2.2 Conditional serialized updates | Competing version updates | `TestStructuredStoreCompetingProcesses`, `TestStructuredStoreCompetingInstances` | Two separate processes or instances attempting version 1 yield exactly one version 2 and one conflict; unrelated records remain readable. |
+| 2.3 Atomic lifecycle and history | Supersede and forget | `TestStructuredStoreSupersedeForgetHistory`, `TestStructuredStoreLifecycleVersionsAndRetries` | New neutral replacement ID, bidirectional lineage, SUPERSEDED old record and DELETED replacement retained in owner-bound version history; current recall excludes both; stale retirement requests conflict. |
+| 2.3 Atomic lifecycle and history | Supersession fails before commit | `TestStructuredStoreSupersessionFailsBeforeCommit` | Injected temporary-file sync failure reports `ErrNotCommitted`; reopening returns only the unchanged ACTIVE original and its single history version. |
+| 2.4 Recoverable local writes | Failure and retry evidence | `TestStructuredStoreFailureRetryEvidence`, `TestStructuredStoreRetryMustConfirmDurability`, `TestStructuredStoreLifecycleVersionsAndRetries` | Rename followed by injected directory-sync failure reports `ErrOutcomeUnknown`; reopened identical operation ID returns its original result without another increment. Different content/owner intent conflicts. Retried receipts must confirm durability before success. Create, supersede and forget receipts also retain their original results. |
+| 2.5 Explicit legacy import | No implicit conversion | `TestStructuredStoreNoImplicitConversion` | Open, health and reopen leave legacy bytes unchanged and recall empty; a text file cannot serve as the structured root. |
+| 2.5 Explicit legacy import | Confirmed import | `TestStructuredStoreConfirmedLegacyImport`, `TestStructuredStoreLegacyImportAtomicFailure` | Separate exact owner/source confirmation is mandatory. Nonblank legacy lines become inert records with declared source and no invented evidence. Failed batch preparation imports nothing; retry imports the whole batch once. Legacy bytes remain unchanged. |
+
+Additional passing coverage: `TestStructuredStoreCancellableProcessLock` acquires a real lock in a subprocess and verifies deadline cancellation in a competing caller; `TestStructuredStoreGuardsFileAndDirectoryIdentity` rejects direct root/state/lock symlinks and a replaced root directory; `TestStructuredStoreRejectsForeignFormat` rejects unrelated JSON. These are real temporary-directory/subprocess tests. Sync failures are deliberately injected at the external filesystem boundary while writing and renaming actual files. They are not real-service, remote-provider, power-loss, or hardware fault experiments.
+
+Historical TDD evidence: `2.1-red.log` → `2.1-green.log`, `2.2-red.log` → `2.2-green.log`, `2.3-lifecycle-red.log` → `2.3-lifecycle-green.log`, `2.3-failure-red.log` → `2.3-failure-green.log`, `2.4-red.log` → `2.4-green.log`, `2.5-red.log` → `2.5-green.log`. The import red targets the missing explicit import API; no-implicit-conversion is a regression assertion of the already implemented explicit constructor. Self-review regression evidence: `guard-format-red.log` → `guard-format-green.log` and `retry-confirm-red.log` → `retry-confirm-green.log`. `final-behaviors.log` validates the final code, superseding earlier green snapshots.
+
+## Public API and semantics
+
+```go
+OpenStructuredStore(root string, options ...StoreOption) (*StructuredStore, error)
+(*StructuredStore).Remember(context.Context, NewRecord) (Record, error)
+(*StructuredStore).RememberWithOperation(context.Context, RememberRequest) (Record, error)
+(*StructuredStore).Get(context.Context, Owner, RecordID) (Record, error)
+(*StructuredStore).Recall(context.Context, Query) ([]Record, error)
+(*StructuredStore).Update(context.Context, UpdateRequest) (Record, error)
+(*StructuredStore).Supersede(context.Context, UpdateRequest) (Record, error)
+(*StructuredStore).Forget(context.Context, MutationRequest) (Record, error)
+(*StructuredStore).History(context.Context, Owner, RecordID) ([]Record, error)
+(*StructuredStore).ImportLegacy(context.Context, LegacyImportRequest, ImportConfirmation) ([]Record, error)
+(*StructuredStore).Capabilities() StructuredCapabilities
+(*StructuredStore).Health(context.Context) (HealthStatus, error)
+```
+
+Optional interfaces and package dispatch functions expose these operations separately from legacy `Provider/Promote/Searcher`. `UpdateRequest` contains `Owner`, `ID`, mandatory nonzero `ExpectedVersion`, full replacement `Record NewRecord`, and optional `OperationID`. `MutationRequest` contains owner, ID, expected version and operation ID. `RememberRequest` combines `Record NewRecord` and operation ID. Ownership cannot be transferred by update or supersede. `History` returns versions of one exact owned ID in ascending version order, including lifecycle states and replacement links; callers may inspect the linked ID separately.
+
+`Update`/`Supersede` capability flags describe support; `ConditionalUpdate`/`AtomicSupersede` separately advertise the stronger local guarantees. Local dispatch checks both flags. `History` and `ImportLegacy` describe their corresponding optional operations. Future providers may advertise basic update support without claiming CAS semantics; this slice adds no remote update boundary.
+
+All mutations accept caller-supplied operation IDs, generated when omitted. Callers requiring reliable retry must supply and retain an ID. Committed receipts fingerprint the complete intent (operation kind, ownership, content, metadata, target ID and expected version); matching committed receipts are checked before stale-version checks and return the original result. Different intent under the same ID returns `ErrConflict`. Records, version history and receipts are committed in a single canonical JSON batch.
+
+`LegacyImportRequest` contains `Path`, `Owner`, `Source`, `Type`, optional `Layer` and `OperationID`. A separate `ImportConfirmation` must have `Confirmed: true` and the exact proposed owner/source. Import converts each nonblank line into inert content and adds no historical evidence. Owner partitions do not authenticate callers; authorized Gateway enforcement remains the next slice.
+
+The store root must already exist as a direct directory. Opening and health are read-only. No legacy configuration/default or text-provider implementation is changed. Filesystem operations use anchored directory descriptors, direct regular files and no-follow opens. A persistent `memory.lock` inode remains independent of atomically replaced `memory.json`; the full read/modify/replace transaction is locked and acquisition is cancellable. Atomic persistence writes a private temporary file, syncs it, renames it, then syncs the directory before reporting success. `ErrNotCommitted` classifies persistence failures before rename; `ErrOutcomeUnknown` classifies post-rename durability uncertainty. A receipt retry flushes the directory before reporting success.
+
+`WithPersistence(StorePersistence)` selects the external persistence seam. `StorePersistence.Commit(context.Context, *os.File, []byte) error` must atomically commit through the anchored directory; `Confirm(context.Context, *os.File) error` must establish durability for a recognized receipt without repeating the mutation. `AtomicFilePersistence{Syncer: FileSyncer}` is the real local implementation; `FileSyncer.Sync(*os.File) error` defaults to `os.File.Sync` and enables filesystem failure injection. Custom implementations must preserve the documented outcome and no-follow semantics.
+
+Supported OS-lock/anchored-filesystem implementations: Darwin, DragonFly BSD, FreeBSD, Linux, NetBSD and OpenBSD. Other platforms explicitly return an error matching `ErrUnsupported`; they do not claim process-safe storage. Actual runtime validation in this delivery is on Darwin; Windows compilation checks the honest unsupported implementation, not Windows storage execution. The store rewrites a full batch and retains tombstones/history/receipts; no automatic compaction, conversion, extraction or execution is added.
+
+## Verification and gates (task 3.1)
+
+| Check | Result | External evidence |
+| --- | --- | --- |
+| `go test ./...` | PASS | `go-test.log` |
+| `go test -race ./internal/memory/...` | PASS, including real subprocess competition | `go-race.log` |
+| `go vet ./...` | PASS | `go-vet.log` |
+| `go build -o /tmp/agent-manager-issue20 ./cmd/agent-manager` | PASS | `go-build.log` |
+| `go test -count=1 -v ./internal/memory -run TestStructuredStore` | PASS, 14 top-level behavior tests | `final-behaviors.log` |
+| `GOOS=windows GOARCH=amd64 go test -c -o /tmp/agent-manager-memory-windows.test.exe ./internal/memory` | PASS, compilation only | `windows-compile.log` |
+| `openspec validate add-structured-local-memory-store --strict` | PASS | `openspec-validate.log` |
+| `openspec doctor` | PASS | `openspec-doctor.log` |
+| `git diff --check` and staged diff check | PASS | `diff-check.log` |
+
+Self-review checked correctness, completeness and public-seam test focus. It fixed acceptance of foreign empty JSON and retry success before durability confirmation, each with an observed failing test and a passing final test. No network provider, dependency installation, skill/task execution, or real external service is used.
+
+Tasks 3.2 and 3.3 remain pending for independent specification review, code-quality review and the controller's final gpt-6.1-sol/high read-only OCR covering the entire branch, including prerequisite M1 documentation. No push, PR creation, merge or M2 archival is performed by the implementation agent.
