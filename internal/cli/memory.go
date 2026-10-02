@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +33,12 @@ func newMemoryCommand(rootOptions *rootOptions) *cobra.Command {
 	}
 	command.AddCommand(newMemoryStatusCommand(rootOptions))
 	command.AddCommand(newMemoryPromoteCommand(rootOptions))
+	command.AddCommand(newMemoryProjectCommand(rootOptions))
+	for _, operation := range []memory.Operation{memory.OperationAdd, memory.OperationUpdate, memory.OperationSupersede, memory.OperationForget, memory.OperationImport} {
+		command.AddCommand(newStructuredMutationCommand(rootOptions, operation))
+	}
+	command.AddCommand(newStructuredInspectCommand(rootOptions))
+	command.AddCommand(newStructuredSearchCommand(rootOptions))
 	return command
 }
 
@@ -60,7 +67,7 @@ func newMemoryPromoteCommand(rootOptions *rootOptions) *cobra.Command {
 			}
 			loaded, err := config.Load(rootOptions.configPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("invalid Memory configuration")
 			}
 			if loaded.Memory == nil {
 				return fmt.Errorf("no Memory provider is configured; add a memory.provider configuration")
@@ -149,7 +156,7 @@ func newMemoryStatusCommand(rootOptions *rootOptions) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			loaded, err := config.Load(rootOptions.configPath)
 			if err != nil {
-				return err
+				return fmt.Errorf("invalid Memory configuration")
 			}
 			providerStatus := memory.ProviderStatus{}
 			if loaded.Memory != nil {
@@ -186,15 +193,7 @@ func newMemoryStatusCommand(rootOptions *rootOptions) *cobra.Command {
 }
 
 func discoverConfiguredMemoryProvider(config memory.ProviderConfig) (memory.ProviderStatus, error) {
-	switch config.Provider {
-	case memory.FileProviderID:
-		return memory.DiscoverFileProvider(config)
-	default:
-		return memory.ProviderStatus{
-			Unsupported: true,
-			Reason:      fmt.Sprintf("provider %q is not supported locally; configure the supported file provider", config.Provider),
-		}, memory.ErrProviderUnavailable
-	}
+	return memory.DiscoverConfiguredProvider(context.Background(), config)
 }
 
 func writeMemoryStatus(cmd *cobra.Command, report memory.StatusReport) error {
@@ -212,6 +211,14 @@ func writeMemoryStatus(cmd *cobra.Command, report memory.StatusReport) error {
 	}
 	if report.Reason != "" {
 		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Reason: %s\n", report.Reason); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Requested capabilities: %s\nUnsupported capabilities: %s\nUnavailable capabilities: %s\n", joinMemoryValues(report.RequestedCapabilities), joinMemoryValues(report.UnsupportedCapabilities), joinMemoryValues(report.UnavailableCapabilities)); err != nil {
+		return err
+	}
+	if report.Ranking != "" {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Ranking: %s\n", report.Ranking); err != nil {
 			return err
 		}
 	}

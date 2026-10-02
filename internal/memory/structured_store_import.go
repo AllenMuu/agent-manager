@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,12 +14,13 @@ import (
 // LegacyImportRequest treats each nonblank legacy line as inert knowledge.
 // Source is declared by the operator; no historical evidence is invented.
 type LegacyImportRequest struct {
-	Path        string        `json:"path"`
-	Owner       Owner         `json:"owner"`
-	Source      string        `json:"source"`
-	Type        KnowledgeType `json:"type"`
-	Layer       Layer         `json:"layer,omitempty"`
-	OperationID string        `json:"operationId,omitempty"`
+	Path                  string        `json:"path"`
+	Owner                 Owner         `json:"owner"`
+	Source                string        `json:"source"`
+	Type                  KnowledgeType `json:"type"`
+	Layer                 Layer         `json:"layer,omitempty"`
+	OperationID           string        `json:"operationId,omitempty"`
+	ExpectedContentSHA256 string        `json:"expectedContentSha256,omitempty"`
 }
 
 // ImportConfirmation is separate from the proposal and binds confirmation to
@@ -27,6 +30,9 @@ type ImportConfirmation struct {
 	Owner     Owner
 	Source    string
 }
+
+// Implementations must reject a nonempty ExpectedContentSHA256 that does not
+// match the exact inert bytes read, before any canonical mutation.
 type LegacyImporter interface {
 	ImportLegacy(context.Context, LegacyImportRequest, ImportConfirmation) ([]Record, error)
 }
@@ -87,6 +93,12 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 	}
 	if !utf8.Valid(data) {
 		return nil, fmt.Errorf("%w: legacy content must be valid UTF-8", ErrInvalidInput)
+	}
+	if input.ExpectedContentSHA256 != "" {
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != input.ExpectedContentSHA256 {
+			return nil, ErrConflict
+		}
 	}
 	intent := mutationIntent("import", struct {
 		Request LegacyImportRequest `json:"request"`

@@ -16,8 +16,8 @@ The third option is selected. It preserves guarded and reversible Skill link ope
 
 For the initial provider boundary, Agent Manager selects a local file-backed
 provider as the feasible implementation. Capability discovery validates an
-already-existing regular file and reports the configured read, write, and
-search capabilities and user/project scopes without creating or mutating the
+already-existing regular file. Configured capability requests are separate
+from its implemented confirmed-append operation and user/project scopes without creating or mutating the
 file during discovery; writes are reserved for an explicit confirmed
 promotion. Network-backed providers are intentionally unavailable by default: the
 configuration stores only a non-secret `file` reference, and an unavailable or
@@ -51,3 +51,32 @@ CLI default. SKILL and TASK record content is inert knowledge, never executable.
 Managed-skill operations retain their guarded reversible lifecycle and do not
 write Memory, execute skill-provided code, install dependencies or access a
 network through this contract. See [ticket #19](https://github.com/AllenMuu/agent-manager/issues/19).
+
+
+## Authorized Memory Gateway (Issue #21)
+
+CLI and task context share a Gateway with trusted exact owner allowlists and
+separate read/write authority. Requested partition labels do not grant access.
+The local operator explicitly chooses a user identity or registered project;
+project identities are opaque IDs with explicit canonical directory mappings,
+not directory basenames. Registration and relocation preview the exact mapping
+and require confirmation. Relocation preserves the ID; no path is inferred or
+automatically adopted.
+
+`structured-local` explicitly selects an existing direct directory through the
+existing non-secret configuration reference. Discovery is read-only. Structured
+store writes require an immutable owner/content/version/operation preview plus
+exact confirmation; legacy import also binds declared source and previewed
+content bytes. Configured requests, implemented optional interfaces and current
+availability remain separate. Legacy text promotion/defaults are preserved.
+
+Gateway retrieval authorizes before provider access and verifies provider output.
+It filters current records and knowledge type, uses documented lexical token
+coverage unless a provider explicitly offers finite normalized scores, breaks
+ties by neutral IDs and bounds count, content bytes and the full attributed JSON
+array. Task context includes canonical records once and retains provenance;
+provider outages leave independent context resources and resource workflows
+available with safe diagnostic categories. Memory writes use provider lifecycle
+semantics and are outside the reversible Skill filesystem operation journal.
+No network provider, extraction/consolidation, executable knowledge, dependency
+installation or native agent Memory mechanism is introduced by this slice.

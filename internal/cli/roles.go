@@ -5,12 +5,14 @@ import (
 	"fmt"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
+	"github.com/AllenMuu/skill-manager/internal/config"
+	"github.com/AllenMuu/skill-manager/internal/memory"
 	"github.com/AllenMuu/skill-manager/internal/role"
 	"github.com/AllenMuu/skill-manager/internal/taskcontext"
 	"github.com/spf13/cobra"
 )
 
-func newRolesCommand() *cobra.Command {
+func newRolesCommand(rootOptions *rootOptions) *cobra.Command {
 	var asJSON bool
 	command := &cobra.Command{Use: "roles", Short: "Inspect agent-neutral workflow role contracts"}
 	command.Flags().BoolVar(&asJSON, "json", false, "write machine-readable JSON")
@@ -27,12 +29,12 @@ func newRolesCommand() *cobra.Command {
 		return nil
 	}
 	command.AddCommand(newRoleBindCommand())
-	command.AddCommand(newRoleContextCommand())
+	command.AddCommand(newRoleContextCommand(rootOptions))
 	return command
 }
 
-func newRoleContextCommand() *cobra.Command {
-	var project, library, target, roleID string
+func newRoleContextCommand(rootOptions *rootOptions) *cobra.Command {
+	var project, library, target, roleID, registryPath string
 	var selectedSkills []string
 	command := &cobra.Command{Use: "context <task-id>", Short: "Assemble a role's canonical task inputs for an external agent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		contract, ok := role.For(role.ID(roleID))
@@ -43,10 +45,21 @@ func newRoleContextCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		bundle, err := taskcontext.ResolveWithOptions(taskcontext.Options{
-			Project: project, TaskID: args[0], Library: library, Contract: contract,
-			Agent: target, SelectedSkills: selectedSkills,
-		})
+		options := taskcontext.Options{Project: project, TaskID: args[0], Library: library, Contract: contract, Agent: target, SelectedSkills: selectedSkills}
+		loaded, err := config.Load(rootOptions.configPath)
+		if err != nil {
+			return fmt.Errorf("invalid Memory configuration")
+		}
+		if loaded.Memory != nil && loaded.Memory.Provider == memory.StructuredLocalProviderID {
+			gateway, owner, err := configuredGateway(rootOptions, memoryOwnerOptions{project: project, registry: registryPath}, false)
+			if err != nil {
+				return err
+			}
+			options.MemoryGateway = gateway
+			options.MemoryOwner = owner
+		}
+		bundle, err := taskcontext.ResolveWithOptions(options)
+
 		if err != nil {
 			return err
 		}
@@ -59,6 +72,7 @@ func newRoleContextCommand() *cobra.Command {
 	command.Flags().StringVar(&library, "library", "", "local Skill library")
 	command.Flags().StringVar(&target, "agent", "", "target agent for the external handoff")
 	command.Flags().StringVar(&roleID, "role", "", "canonical role id")
+	command.Flags().StringVar(&registryPath, "memory-registry", "", "explicit Memory project registry file")
 	command.Flags().StringSliceVar(&selectedSkills, "skill", nil, "explicitly selected Skill identifier (repeatable)")
 	_ = command.MarkFlagRequired("agent")
 	_ = command.MarkFlagRequired("role")

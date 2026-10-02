@@ -51,7 +51,7 @@ library: ~/.agents/skills
 
 Pass it with `--config <path>`; without it the default `~/.agents/skills` is used.
 
-The local Memory foundation optionally accepts one file-backed provider with
+The legacy Memory foundation optionally accepts one file-backed provider with
 read-only discovery. Only an external reference is stored; the referenced file
 is never created or written during discovery, and writes require the explicit
 confirmed `memory promote --scope <user|project> --knowledge <text> --yes`
@@ -77,6 +77,12 @@ Configure a non-secret provider reference rather than placing credentials in
 this file. The initial release does not provide a native Memory integration for
 Claude Code, Codex, or Pi, so `memory status` reports those mappings as
 unsupported even when the local provider is available.
+
+For owned canonical records, explicitly select `structured-local` and use the
+[Memory Gateway guide](docs/memory-gateway.md) for registration, confirmed
+lifecycle operations, bounded search and read-only role context. Status separates
+requested text search from unsupported implementation; existing text promotion
+remains available.
 
 ## Getting started
 

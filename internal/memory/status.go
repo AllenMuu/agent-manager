@@ -15,6 +15,8 @@ const (
 // requirements instead of silently dropping them. No provider reference is
 // included in this evidence model.
 type AgentStatus struct {
+	RequestedCapabilities   []Capability `json:"requestedCapabilities" yaml:"requestedCapabilities"`
+	ImplementedCapabilities []Capability `json:"implementedCapabilities" yaml:"implementedCapabilities"`
 	Agent                   string       `json:"agent" yaml:"agent"`
 	State                   string       `json:"state" yaml:"state"`
 	Reason                  string       `json:"reason,omitempty" yaml:"reason,omitempty"`
@@ -30,14 +32,19 @@ type AgentStatus struct {
 // ConfigReference is intentionally absent so environment, file, and keychain
 // names cannot leak through status output.
 type StatusReport struct {
-	Configured   bool          `json:"configured" yaml:"configured"`
-	Provider     string        `json:"provider,omitempty" yaml:"provider,omitempty"`
-	State        string        `json:"state" yaml:"state"`
-	Available    bool          `json:"available" yaml:"available"`
-	Reason       string        `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Capabilities []Capability  `json:"capabilities" yaml:"capabilities"`
-	Scopes       []Scope       `json:"scopes" yaml:"scopes"`
-	Agents       []AgentStatus `json:"agents" yaml:"agents"`
+	StructuredCapabilities  *StructuredCapabilities `json:"structuredCapabilities,omitempty" yaml:"structuredCapabilities,omitempty"`
+	Ranking                 string                  `json:"ranking,omitempty" yaml:"ranking,omitempty"`
+	RequestedCapabilities   []Capability            `json:"requestedCapabilities" yaml:"requestedCapabilities"`
+	UnsupportedCapabilities []Capability            `json:"unsupportedCapabilities" yaml:"unsupportedCapabilities"`
+	UnavailableCapabilities []Capability            `json:"unavailableCapabilities" yaml:"unavailableCapabilities"`
+	Configured              bool                    `json:"configured" yaml:"configured"`
+	Provider                string                  `json:"provider,omitempty" yaml:"provider,omitempty"`
+	State                   string                  `json:"state" yaml:"state"`
+	Available               bool                    `json:"available" yaml:"available"`
+	Reason                  string                  `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Capabilities            []Capability            `json:"capabilities" yaml:"capabilities"`
+	Scopes                  []Scope                 `json:"scopes" yaml:"scopes"`
+	Agents                  []AgentStatus           `json:"agents" yaml:"agents"`
 }
 
 // BuildStatus combines provider discovery with declared agent integrations
@@ -45,6 +52,7 @@ type StatusReport struct {
 // performs provider writes.
 func BuildStatus(config *ProviderConfig, provider ProviderStatus, integrations []AgentAccess, unsupported []string) StatusReport {
 	report := StatusReport{
+		RequestedCapabilities: []Capability{}, UnsupportedCapabilities: []Capability{}, UnavailableCapabilities: []Capability{},
 		State:        StateUnconfigured,
 		Available:    false,
 		Capabilities: []Capability{},
@@ -55,14 +63,18 @@ func BuildStatus(config *ProviderConfig, provider ProviderStatus, integrations [
 		report.Reason = "no Memory provider is configured; add a memory.provider configuration"
 	} else {
 		report.Configured = true
+		report.Ranking = provider.Ranking
+		if provider.StructuredCapabilities != nil {
+			c := *provider.StructuredCapabilities
+			report.StructuredCapabilities = &c
+		}
 		report.Provider = config.Provider
 		report.Capabilities = append([]Capability(nil), provider.Capabilities...)
 		report.Scopes = append([]Scope(nil), provider.Scopes...)
-		if len(report.Capabilities) == 0 && !provider.Available {
-			report.Capabilities = append([]Capability(nil), config.Capabilities...)
-		}
-		if len(report.Scopes) == 0 && !provider.Available {
-			report.Scopes = append([]Scope(nil), config.Scopes...)
+		report.RequestedCapabilities = append([]Capability{}, config.Capabilities...)
+		report.UnsupportedCapabilities = unsupportedCapabilities(config.Capabilities, provider.Capabilities)
+		if !provider.Available {
+			report.UnavailableCapabilities = availableCapabilities(config.Capabilities, provider.Capabilities)
 		}
 		if provider.Unsupported {
 			report.State = StateUnsupported
@@ -84,14 +96,19 @@ func BuildStatus(config *ProviderConfig, provider ProviderStatus, integrations [
 
 	for _, integration := range integrations {
 		agent := AgentStatus{
-			Agent:                   integration.Agent,
-			State:                   StateUnsupported,
+			Agent:                 integration.Agent,
+			State:                 StateUnsupported,
+			RequestedCapabilities: []Capability{}, ImplementedCapabilities: []Capability{},
 			Capabilities:            []Capability{},
 			UnsupportedCapabilities: []Capability{},
 			UnavailableCapabilities: []Capability{},
 			Scopes:                  []Scope{},
 			UnsupportedScopes:       []Scope{},
 			UnavailableScopes:       []Scope{},
+		}
+		if config != nil {
+			agent.RequestedCapabilities = append([]Capability{}, config.Capabilities...)
+			agent.ImplementedCapabilities = availableCapabilities(provider.Capabilities, integration.Capabilities)
 		}
 		if config == nil {
 			agent.State = StateUnconfigured
@@ -103,15 +120,22 @@ func BuildStatus(config *ProviderConfig, provider ProviderStatus, integrations [
 		} else if !provider.Available {
 			agent.State = StateUnavailable
 			agent.Reason = report.Reason
-			agent.UnsupportedCapabilities = unsupportedCapabilities(config.Capabilities, integration.Capabilities)
-			agent.UnavailableCapabilities = availableCapabilities(config.Capabilities, integration.Capabilities)
-			agent.UnsupportedScopes = unsupportedScopes(config.Scopes, integration.Scopes)
-			agent.UnavailableScopes = availableScopes(config.Scopes, integration.Scopes)
+			agent.UnsupportedCapabilities = unsupportedCapabilities(config.Capabilities, agent.ImplementedCapabilities)
+			agent.UnavailableCapabilities = availableCapabilities(config.Capabilities, agent.ImplementedCapabilities)
+			implementedScopes := availableScopes(provider.Scopes, integration.Scopes)
+			agent.UnsupportedScopes = unsupportedScopes(config.Scopes, implementedScopes)
+			agent.UnavailableScopes = availableScopes(config.Scopes, implementedScopes)
 		} else {
 			access := MapAgentAccess(provider, integration)
 			agent.Capabilities = append([]Capability(nil), access.Capabilities...)
 			agent.Scopes = append([]Scope(nil), access.Scopes...)
-			agent.UnsupportedCapabilities = unsupportedCapabilities(provider.Capabilities, integration.Capabilities)
+			requests := append([]Capability{}, config.Capabilities...)
+			for _, capability := range provider.Capabilities {
+				if !containsCapability(requests, capability) {
+					requests = append(requests, capability)
+				}
+			}
+			agent.UnsupportedCapabilities = unsupportedCapabilities(requests, agent.ImplementedCapabilities)
 			agent.UnsupportedScopes = unsupportedScopes(provider.Scopes, integration.Scopes)
 			if len(integration.Capabilities) == 0 || len(integration.Scopes) == 0 {
 				agent.Reason = "agent adapter does not declare a Memory integration"
@@ -125,9 +149,10 @@ func BuildStatus(config *ProviderConfig, provider ProviderStatus, integrations [
 	}
 	for _, id := range unsupported {
 		report.Agents = append(report.Agents, AgentStatus{
-			Agent:                   id,
-			State:                   StateUnsupported,
-			Reason:                  "no compatible agent adapter is registered",
+			Agent:                 id,
+			State:                 StateUnsupported,
+			Reason:                "no compatible agent adapter is registered",
+			RequestedCapabilities: []Capability{}, ImplementedCapabilities: []Capability{},
 			Capabilities:            []Capability{},
 			UnsupportedCapabilities: []Capability{},
 			UnavailableCapabilities: []Capability{},
