@@ -19,3 +19,5 @@
 - [x] 3.1 Verify every requirement/scenario against implementation and test/live evidence, run `go test ./...`, relevant package race checks, `go vet ./...`, CLI build, `openspec validate add-structured-local-memory-store --strict`, `openspec doctor` and diff checks; record actual results and distinguish fixture/mock from real-service validation.
 - [ ] 3.2 Obtain ordinary independent review of the complete change, resolve actionable findings and rerun affected behavior tests; retain the final reviewed scope and acceptance matrix.
 - [ ] 3.3 Run the final gpt-6.1-sol/high read-only OCR review covering all proposed PR files; publish only if no actionable findings and no important coverage gap remain. An unavailable required reviewer stops publication.
+
+普通独立规格审查在 `3616a46` 发现非 UTF-8 输入经 JSON 编码后改变所有权/来源和操作意图。已补公共边界 RED→GREEN 回归并拒绝这些输入；corrupted state 不再静默标准化。复核证据见 delivery.md；3.2/3.3 继续等待 controller 验证，不因修复提交而勾选。

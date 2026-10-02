@@ -1,6 +1,9 @@
 package memory
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // UpdateRequest replaces caller metadata on the same neutral ID. Ownership is
 // immutable and ExpectedVersion is mandatory for every lifecycle mutation.
@@ -96,4 +99,17 @@ func RememberWithOperation(ctx context.Context, p StructuredProvider, input Reme
 		return Record{}, err
 	}
 	return m.RememberWithOperation(ctx, input)
+}
+
+func (input MutationRequest) validate() error {
+	if err := input.Owner.validate(); err != nil {
+		return err
+	}
+	if err := validateStructuredToken("record ID", string(input.ID)); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if input.ExpectedVersion == 0 {
+		return fmt.Errorf("%w: expected version required", ErrInvalidInput)
+	}
+	return nil
 }

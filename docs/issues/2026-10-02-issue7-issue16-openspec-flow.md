@@ -10,7 +10,7 @@
 | --- | --- | --- | --- | --- |
 | F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并；#18 已关闭，规格同步/归档已在本分支完成 |
 | M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/proposal.md) | 无 | 实现/审查 10/10；PR #32 已合并、#19 已关闭；本分支已同步/归档 |
-| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/add-structured-local-memory-store/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
+| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/add-structured-local-memory-store/proposal.md) | #19 | 本分支实现/验证 7/9；普通独立审查及修复复核进行中，最终 OCR 待完成；尚未合并 |
 | M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M4 | [#22](https://github.com/AllenMuu/agent-manager/issues/22) | [add-mem0-memory-provider](../../openspec/changes/add-mem0-memory-provider/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M5 | [#23](https://github.com/AllenMuu/agent-manager/issues/23) | [share-memory-across-codex-and-claude](../../openspec/changes/share-memory-across-codex-and-claude/proposal.md) | #21, #22 | proposal/design/spec/tasks 已生成；实现 0 项 |

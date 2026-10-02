@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // LegacyImportRequest treats each nonblank legacy line as inert knowledge.
@@ -34,6 +35,9 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 	if err := operationContext(ctx); err != nil {
 		return nil, err
 	}
+	if !utf8.ValidString(input.Path) {
+		return nil, fmt.Errorf("%w: legacy path must be valid UTF-8", ErrInvalidInput)
+	}
 	if !confirmation.Confirmed || confirmation.Owner != input.Owner || confirmation.Source != input.Source || strings.TrimSpace(input.Source) == "" {
 		return nil, fmt.Errorf("%w: separately confirmed owner and source required", ErrInvalidInput)
 	}
@@ -59,6 +63,9 @@ func (s *StructuredStore) ImportLegacy(ctx context.Context, input LegacyImportRe
 	data, err := readStoreFile(dir, filepath.Base(input.Path))
 	if err != nil {
 		return nil, err
+	}
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("%w: legacy content must be valid UTF-8", ErrInvalidInput)
 	}
 	intent := mutationIntent("import", struct {
 		Request LegacyImportRequest `json:"request"`

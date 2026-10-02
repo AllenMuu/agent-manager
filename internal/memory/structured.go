@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 var ErrInvalidInput = errors.New("invalid Memory input")
@@ -46,7 +47,7 @@ func (o Owner) validate() error {
 	}
 	for _, id := range []string{o.UserID, o.ProjectID, o.AgentID, o.SessionID} {
 		if id != "" {
-			if err := validateToken("owner identifier", id); err != nil {
+			if err := validateStructuredToken("owner identifier", id); err != nil {
 				return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 			}
 		}
@@ -236,6 +237,11 @@ func Recall(ctx context.Context, p StructuredProvider, query Query) ([]Record, e
 }
 
 func (input NewRecord) validate() error {
+	for _, value := range append([]string{input.Content, input.Source}, input.Evidence...) {
+		if !utf8.ValidString(value) {
+			return fmt.Errorf("%w: record content, source and evidence must be valid UTF-8", ErrInvalidInput)
+		}
+	}
 	if err := input.Owner.validate(); err != nil {
 		return err
 	}
@@ -259,4 +265,13 @@ func knownType(kind KnowledgeType) bool {
 	default:
 		return false
 	}
+}
+
+// Structured tokens must survive canonical JSON encoding exactly. Keep this
+// validation separate from the compatibility text provider's token rules.
+func validateStructuredToken(label, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8", label)
+	}
+	return validateToken(label, value)
 }

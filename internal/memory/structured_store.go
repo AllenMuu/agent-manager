@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // StructuredStore is an explicitly selected local canonical store. Opening it
@@ -95,6 +96,9 @@ func loadStore(dir *os.File) (storeState, error) {
 	if err != nil {
 		return state, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	if !utf8.Valid(data) {
+		return state, fmt.Errorf("%w: structured state must be valid UTF-8", ErrUnavailable)
+	}
 	state = storeState{}
 	if err = json.Unmarshal(data, &state); err != nil || state.Format != 1 || state.Records == nil || state.History == nil || state.Operations == nil {
 		return state, fmt.Errorf("%w: invalid structured Memory format", ErrUnavailable)
@@ -152,7 +156,7 @@ func (s *StructuredStore) transactionBatch(ctx context.Context, operationID stri
 		}
 		operationID = string(id)
 	}
-	if err := validateToken("operation ID", operationID); err != nil {
+	if err := validateStructuredToken("operation ID", operationID); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	encoded, err := json.Marshal(intent)
@@ -229,6 +233,9 @@ func (s *StructuredStore) RememberWithOperation(ctx context.Context, request Rem
 	})
 }
 func (s *StructuredStore) Update(ctx context.Context, input UpdateRequest) (Record, error) {
+	if err := (MutationRequest{Owner: input.Owner, ID: input.ID, ExpectedVersion: input.ExpectedVersion}).validate(); err != nil {
+		return Record{}, err
+	}
 	if err := input.Record.validate(); err != nil {
 		return Record{}, err
 	}
@@ -253,6 +260,9 @@ func (s *StructuredStore) Update(ctx context.Context, input UpdateRequest) (Reco
 	})
 }
 func currentRecord(state *storeState, owner Owner, id RecordID, version uint64) (Record, error) {
+	if err := validateStructuredToken("record ID", string(id)); err != nil {
+		return Record{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
 	if err := owner.validate(); err != nil {
 		return Record{}, err
 	}
@@ -275,7 +285,7 @@ func (s *StructuredStore) Get(ctx context.Context, owner Owner, id RecordID) (Re
 	if err := owner.validate(); err != nil {
 		return Record{}, err
 	}
-	if err := validateToken("record ID", string(id)); err != nil {
+	if err := validateStructuredToken("record ID", string(id)); err != nil {
 		return Record{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	state, err := s.read(ctx)
@@ -321,6 +331,9 @@ func saveRecord(state *storeState, record Record) {
 	state.History[record.ID] = append(state.History[record.ID], cloneRecord(record))
 }
 func (s *StructuredStore) Supersede(ctx context.Context, input UpdateRequest) (Record, error) {
+	if err := (MutationRequest{Owner: input.Owner, ID: input.ID, ExpectedVersion: input.ExpectedVersion}).validate(); err != nil {
+		return Record{}, err
+	}
 	if err := input.Record.validate(); err != nil {
 		return Record{}, err
 	}
@@ -346,6 +359,9 @@ func (s *StructuredStore) Supersede(ctx context.Context, input UpdateRequest) (R
 	})
 }
 func (s *StructuredStore) Forget(ctx context.Context, input MutationRequest) (Record, error) {
+	if err := (MutationRequest{Owner: input.Owner, ID: input.ID, ExpectedVersion: input.ExpectedVersion}).validate(); err != nil {
+		return Record{}, err
+	}
 	return s.transaction(ctx, input.OperationID, mutationIntent("forget", input), func(state *storeState) (Record, error) {
 		record, err := currentRecord(state, input.Owner, input.ID, input.ExpectedVersion)
 		if err != nil {
@@ -387,7 +403,7 @@ func validateStoreState(state storeState) error {
 			if version.ID != id || version.Version != uint64(i)+1 || version.Owner != r.Owner || version.Layer == "" {
 				return fmt.Errorf("invalid record identity/version")
 			}
-			if err := validateToken("record ID", string(id)); err != nil {
+			if err := validateStructuredToken("record ID", string(id)); err != nil {
 				return err
 			}
 			if err := (NewRecord{Owner: version.Owner, Type: version.Type, Content: version.Content, Source: version.Source, Evidence: version.Evidence, Layer: version.Layer}).validate(); err != nil {
@@ -424,7 +440,7 @@ func validateStoreState(state storeState) error {
 		}
 	}
 	for operationID, receipt := range state.Operations {
-		if err := validateToken("operation ID", operationID); err != nil {
+		if err := validateStructuredToken("operation ID", operationID); err != nil {
 			return err
 		}
 		digest, err := hex.DecodeString(receipt.Intent)

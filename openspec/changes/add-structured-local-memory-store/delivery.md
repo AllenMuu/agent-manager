@@ -55,7 +55,9 @@ The store root must already exist as a direct directory. Opening and health are 
 
 Supported OS-lock/anchored-filesystem implementations: Darwin, DragonFly BSD, FreeBSD, Linux, NetBSD and OpenBSD. Other platforms explicitly return an error matching `ErrUnsupported`; they do not claim process-safe storage. Actual runtime validation in this delivery is on Darwin; Windows compilation checks the honest unsupported implementation, not Windows storage execution. The store rewrites a full batch and retains tombstones/history/receipts; no automatic compaction, conversion, extraction or execution is added.
 
-## Verification and gates (task 3.1)
+## Initial implementation verification and gates (task 3.1)
+
+This table records the `3616a46` implementation baseline. The ordinary-review repair evidence below supersedes it for the current code.
 
 | Check | Result | External evidence |
 | --- | --- | --- |
@@ -72,3 +74,21 @@ Supported OS-lock/anchored-filesystem implementations: Darwin, DragonFly BSD, Fr
 Self-review checked correctness, completeness and public-seam test focus. It fixed acceptance of foreign empty JSON and retry success before durability confirmation, each with an observed failing test and a passing final test. No network provider, dependency installation, skill/task execution, or real external service is used.
 
 Tasks 3.2 and 3.3 remain pending for independent specification review, code-quality review and the controller's final gpt-6.1-sol/high read-only OCR covering the entire branch, including prerequisite M1 documentation. No push, PR creation, merge or M2 archival is performed by the implementation agent.
+
+## Ordinary specification review repair
+
+The independent specification review of `7240f50` → `3616a46` found one reproducible P2: Go strings containing invalid UTF-8 were accepted and JSON silently replaced their bytes with U+FFFD. This altered canonical content/source/evidence and exact owner partitions, and distinct operation intents could share a fingerprint. The public review report and reproduction are `/tmp/agent-manager-issue20-spec-review.md` and `/tmp/agent-manager-issue20-spec-overlay.log`; those intentionally failing overlay probes describe the pre-fix state.
+
+The repair rejects non-UTF-8 canonical record content/source/evidence and owner/token/operation identifiers with `ErrInvalidInput`, before persistence or receipt lookup. Mutation owner/record-ID validation precedes fingerprinting so an invalid owner cannot replay another owner's normalized receipt. Existing knowledge-type/layer/owner-kind allowlists already reject invalid enum strings. Structured validation remains separate from legacy text-provider token rules and does not change legacy configuration/defaults. Confirmed import rejects non-UTF-8 proposal paths and raw file bytes before fingerprinting or creating any batch record. Raw structured JSON bytes must be valid UTF-8 before decoding; corrupt state returns `ErrUnavailable` and is left unchanged. Valid Unicode, including Chinese owner identifiers, sources/evidence and emoji content, continues to round-trip and retry exactly.
+
+| Behavior / affected task | Public regression test | Red / green evidence under `review-utf8/` |
+| --- | --- | --- |
+| Exact metadata and distinct raw intent / 2.1, 2.4 | `TestStructuredStoreRejectsNonUTF8RecordMetadata` | `metadata-red.log` → `metadata-green.log` |
+| Exact owner/record/operation identifiers / 2.1, 2.4 | `TestStructuredStoreRejectsNonUTF8Tokens` | `tokens-red.log` → `tokens-green.log` |
+| Invalid owner must not replay a receipt / 2.1, 2.4 | `TestStructuredStoreInvalidOwnerCannotReplayReceipt` | `owner-replay-red.log` → `owner-replay-green.log` |
+| Whole confirmed import rejected without partial records / 2.5 | `TestStructuredStoreRejectsNonUTF8LegacyImport` | `import-red.log` → `import-green.log` |
+| Corrupt persisted bytes must not become trusted canonical state / 2.1, 2.4 | `TestStructuredStoreRejectsNonUTF8PersistedState` | `state-red.log` → `state-green.log` |
+
+Permanent `TestStructuredStorePortableContract` now runs `memorytest.Run` against fresh real local stores. Its coverage is PROJECT 10 knowledge types × 4 layers, source/two evidence references, create/get/recall, two-project isolation, stable case-insensitive recall, RAW/no-invented-provenance defaults, and USER canceled/invalid writes. It does not claim every owner kind or standalone caller-mutation coverage. `TestStructuredStoreValidUnicodeRoundTrip` and `TestStructuredStoreInvalidMetadataMutationsLeaveCurrentRecord` add passing regression checks for valid Unicode, rejected Update/Supersede mutations, and reuse of an operation ID after rejection. These supplement the original seven M2 scenarios without modifying the approved capability scope.
+
+Final repair evidence lives at `/tmp/agent-manager-issue20-evidence/review-utf8`: `final-regressions.log`, `final-behaviors.log`, `go-test.log`, `go-race.log`, `go-vet.log`, `go-build.log`, `windows-compile.log`, `openspec-validate.log`, `openspec-doctor.log`, and `diff-check.log`. Full tests, memory race checks, vet, CLI build, Windows compilation, strict validation, doctor and diff checks were rerun after the repair. All passed. The uncached final behavior run contains 22 top-level store tests (14 original and eight additional regressions/contract checks). The roadmap's M2 status now records branch implementation/verification 7/9 and ongoing independent review, without claiming main delivery. Independent review acceptance (3.2) and final OCR (3.3) remain pending for controller verification.
