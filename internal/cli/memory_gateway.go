@@ -190,7 +190,11 @@ func newStructuredMutationCommand(rootOptions *rootOptions, operation memory.Ope
 		if len(args) > 0 {
 			id = memory.RecordID(args[0])
 		}
-		mutation := memory.Mutation{Operation: operation, ID: id, ExpectedVersion: expectedVersion, Record: memory.NewRecord{Owner: owner, Type: memory.KnowledgeType(kind), Content: content, Source: source, Evidence: evidence, Layer: memory.Layer(layer)}, OperationID: operationID}
+		record := memory.NewRecord{Owner: owner}
+		if operation == memory.OperationAdd || operation == memory.OperationUpdate || operation == memory.OperationSupersede {
+			record = memory.NewRecord{Owner: owner, Type: memory.KnowledgeType(kind), Content: content, Source: source, Evidence: evidence, Layer: memory.Layer(layer)}
+		}
+		mutation := memory.Mutation{Operation: operation, ID: id, ExpectedVersion: expectedVersion, Record: record, OperationID: operationID}
 		if operation == memory.OperationImport {
 			mutation.ID = ""
 			mutation.Import = memory.LegacyImportRequest{Path: args[0], Owner: owner, Source: source, Type: memory.KnowledgeType(kind), Layer: memory.Layer(layer), OperationID: operationID}
@@ -220,11 +224,15 @@ func newStructuredMutationCommand(rootOptions *rootOptions, operation memory.Ope
 		cmd.Flags().Uint64Var(&expectedVersion, "expected-version", 0, "exact active version to condition the mutation on")
 		_ = cmd.MarkFlagRequired("expected-version")
 	}
-	cmd.Flags().StringVar(&kind, "type", "", "canonical knowledge type")
-	cmd.Flags().StringVar(&content, "content", "", "inert knowledge content")
-	cmd.Flags().StringVar(&source, "source", "", "declared source attribution")
-	cmd.Flags().StringSliceVar(&evidence, "evidence", nil, "evidence reference (repeatable)")
-	cmd.Flags().StringVar(&layer, "layer", "RAW", "knowledge layer")
+	if operation != memory.OperationForget {
+		cmd.Flags().StringVar(&kind, "type", "", "canonical knowledge type")
+		cmd.Flags().StringVar(&source, "source", "", "declared source attribution")
+		cmd.Flags().StringVar(&layer, "layer", "RAW", "knowledge layer")
+	}
+	if operation == memory.OperationAdd || operation == memory.OperationUpdate || operation == memory.OperationSupersede {
+		cmd.Flags().StringVar(&content, "content", "", "inert knowledge content")
+		cmd.Flags().StringSliceVar(&evidence, "evidence", nil, "evidence reference (repeatable)")
+	}
 	cmd.Flags().StringVar(&operationID, "operation-id", "", "safe receipt retry identity")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm displayed exact owner and intent")
 	return cmd

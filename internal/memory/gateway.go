@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -91,11 +92,32 @@ type Preview struct {
 	intentID string
 }
 
+// MutationPlan contains only fields the selected operation applies. Owner is
+// always explicit; imports and retirement do not pretend to apply a record body.
+type MutationPlan struct {
+	Operation       Operation            `json:"operation"`
+	Owner           Owner                `json:"owner"`
+	ID              RecordID             `json:"id,omitempty"`
+	ExpectedVersion uint64               `json:"expectedVersion,omitempty"`
+	OperationID     string               `json:"operationId,omitempty"`
+	Record          *NewRecord           `json:"record,omitempty"`
+	Import          *LegacyImportRequest `json:"import,omitempty"`
+}
+
 func (p Preview) IntentID() string { return p.intentID }
-func (p Preview) Plan() Mutation {
+func (p Preview) Plan() MutationPlan {
 	m := p.mutation
-	m.Record.Evidence = append([]string(nil), m.Record.Evidence...)
-	return m
+	plan := MutationPlan{Operation: m.Operation, Owner: m.Record.Owner, ID: m.ID, ExpectedVersion: m.ExpectedVersion, OperationID: m.OperationID}
+	switch m.Operation {
+	case OperationAdd, OperationUpdate, OperationSupersede:
+		record := m.Record
+		record.Evidence = append([]string(nil), m.Record.Evidence...)
+		plan.Record = &record
+	case OperationImport:
+		input := m.Import
+		plan.Import = &input
+	}
+	return plan
 }
 
 type Confirmation struct {
@@ -111,6 +133,17 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 	}
 	if err := operationContext(ctx); err != nil {
 		return Preview{}, err
+	}
+	if m.Operation != OperationImport && m.Import != (LegacyImportRequest{}) {
+		return Preview{}, ErrInvalidInput
+	}
+	if (m.Operation == OperationAdd || m.Operation == OperationImport) && (m.ID != "" || m.ExpectedVersion != 0) {
+		return Preview{}, ErrInvalidInput
+	}
+	if m.Operation == OperationForget || m.Operation == OperationImport {
+		if m.Record.Type != "" || m.Record.Content != "" || m.Record.Source != "" || m.Record.Layer != "" || len(m.Record.Evidence) != 0 {
+			return Preview{}, ErrInvalidInput
+		}
 	}
 	switch m.Operation {
 	case OperationAdd:
@@ -148,7 +181,13 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 		if err := sample.validate(); err != nil {
 			return Preview{}, SafeError(err)
 		}
-		if m.Import.Source == "" {
+		if m.Import.OperationID != "" {
+			if m.OperationID != "" && m.OperationID != m.Import.OperationID {
+				return Preview{}, ErrInvalidInput
+			}
+			m.OperationID = m.Import.OperationID
+		}
+		if strings.TrimSpace(m.Import.Source) == "" {
 			return Preview{}, ErrInvalidInput
 		}
 		data, err := readImportPreview(m.Import.Path)
@@ -156,7 +195,11 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 			return Preview{}, err
 		}
 		digest := sha256.Sum256(data)
-		m.Import.ExpectedContentSHA256 = hex.EncodeToString(digest[:])
+		expected := hex.EncodeToString(digest[:])
+		if m.Import.ExpectedContentSHA256 != "" && m.Import.ExpectedContentSHA256 != expected {
+			return Preview{}, ErrConflict
+		}
+		m.Import.ExpectedContentSHA256 = expected
 	default:
 		return Preview{}, ErrUnsupported
 	}
@@ -174,12 +217,14 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 	if m.Operation == OperationImport {
 		m.Import.OperationID = m.OperationID
 	}
-	b, err := json.Marshal(m)
+	preview := Preview{gateway: g, mutation: m}
+	b, err := json.Marshal(preview.Plan())
 	if err != nil {
 		return Preview{}, ErrInvalidInput
 	}
 	digest := sha256.Sum256(b)
-	return Preview{gateway: g, mutation: m, intentID: hex.EncodeToString(digest[:])}, nil
+	preview.intentID = hex.EncodeToString(digest[:])
+	return preview, nil
 }
 func (g *Gateway) Commit(ctx context.Context, p Preview, c Confirmation) ([]Record, error) {
 	if p.gateway != g || p.intentID == "" || !c.Confirmed || c.IntentID != p.intentID || c.Owner != p.mutation.Record.Owner {
@@ -188,7 +233,8 @@ func (g *Gateway) Commit(ctx context.Context, p Preview, c Confirmation) ([]Reco
 	if p.mutation.Operation == OperationImport && c.Source != p.mutation.Import.Source {
 		return nil, ErrNotConfirmed
 	}
-	m := p.Plan()
+	m := p.mutation
+	m.Record.Evidence = append([]string(nil), m.Record.Evidence...)
 	if err := g.authorize(m.Record.Owner, true); err != nil {
 		return nil, err
 	}

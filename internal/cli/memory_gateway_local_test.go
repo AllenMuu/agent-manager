@@ -4,6 +4,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/AllenMuu/skill-manager/internal/memory"
@@ -261,5 +262,203 @@ func TestStructuredCLIStatusReportsImplementedOperations(t *testing.T) {
 		if agent.State != "unsupported" || len(agent.Capabilities) != 0 {
 			t.Fatalf("invented native agent mechanism: %+v", agent)
 		}
+	}
+}
+
+func TestMovedRegisteredProjectCannotAcquireIdentityThroughSymlinkSubstitution(t *testing.T) {
+	for _, substitution := range []string{"direct", "ancestor"} {
+		t.Run(substitution, func(t *testing.T) {
+			configuration, _, _ := structuredCLIConfig(t)
+			parent := t.TempDir()
+			originalParent := filepath.Join(parent, "original")
+			movedParent := filepath.Join(parent, "moved")
+			if err := os.Mkdir(originalParent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			original, moved := originalParent, movedParent
+			if substitution == "ancestor" {
+				original = filepath.Join(originalParent, "repository")
+				moved = filepath.Join(movedParent, "repository")
+				if err := os.Mkdir(original, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := executeStructuredMemory(t, configuration, "", "memory", "project", "register", "--project", original, "--yes")
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			registry, err := memory.OpenProjectRegistry(configuration + ".projects.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := registry.Lookup(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "memory", "add", "--project", original, "--type", "FACT", "--content", "owned knowledge", "--source", "source", "--yes")
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			if err = os.Rename(originalParent, movedParent); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.Symlink(movedParent, originalParent); err != nil {
+				t.Fatal(err)
+			}
+			if found, err := registry.Lookup(moved); !errors.Is(err, memory.ErrNotFound) {
+				t.Fatalf("implicit mapping relocation: %v %v", found, err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "memory", "search", "knowledge", "--project", moved)
+			if !errors.Is(err, memory.ErrNotFound) || out != "" {
+				t.Fatalf("unregistered relocated read allowed: %s %v", out, err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "n\n", "memory", "project", "relocate", identity.ID, "--project", moved)
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			if _, err = registry.Lookup(moved); !errors.Is(err, memory.ErrNotFound) {
+				t.Fatalf("unconfirmed mapping adopted: %v", err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "memory", "project", "relocate", identity.ID, "--project", moved, "--yes")
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			found, err := registry.Lookup(moved)
+			if err != nil || found.ID != identity.ID {
+				t.Fatalf("explicit relocation: %v %v", found, err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "memory", "search", "knowledge", "--project", moved)
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			var records []memory.Record
+			if err = json.Unmarshal([]byte(out), &records); err != nil || len(records) != 1 || records[0].Owner.ProjectID != identity.ID {
+				t.Fatalf("confirmed relocated read: %s %v", out, err)
+			}
+		})
+	}
+}
+
+func TestUnavailableProviderRootRetainsTrustedOwnerAndIndependentRoleResources(t *testing.T) {
+	for _, failure := range []string{"missing", "regular-file", "symlink"} {
+		t.Run(failure, func(t *testing.T) {
+			configuration, root, project := structuredCLIConfig(t)
+			library := t.TempDir()
+			skill := filepath.Join(library, "helper")
+			if err := os.Mkdir(skill, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: helper\ndescription: offline resource\n---\nRead local guidance."), 0600); err != nil {
+				t.Fatal(err)
+			}
+			out, err := executeStructuredMemory(t, configuration, "", "memory", "project", "register", "--project", project, "--yes")
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "task", "init", "--project", project, "--id", "root-outage", "--summary", "alpha")
+			if err != nil {
+				t.Fatal(out, err)
+			}
+			if err = os.Remove(root); err != nil {
+				t.Fatal(err)
+			}
+			switch failure {
+			case "regular-file":
+				if err = os.WriteFile(root, []byte("unavailable root"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err = os.Symlink(t.TempDir(), root); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err = executeStructuredMemory(t, configuration, "", "roles", "context", "root-outage", "--project", project, "--role", "planner", "--agent", "codex", "--library", library, "--skill", "helper")
+			if err != nil {
+				t.Fatalf("provider health blocked independent resources: %s %v", out, err)
+			}
+			var handoff struct {
+				Context taskcontext.Bundle `json:"context"`
+			}
+			if err = json.Unmarshal([]byte(out), &handoff); err != nil || handoff.Context.MemoryDiagnostic != "unavailable" || len(handoff.Context.Artifacts) != 1 || len(handoff.Context.Skills) != 1 {
+				t.Fatalf("outage context: %s %v", out, err)
+			}
+			registry, err := memory.OpenProjectRegistry(configuration+".projects.json", root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = registry.Lookup(project); err != nil {
+				t.Fatalf("trustworthy mapping unavailable: %v", err)
+			}
+			if failure != "missing" {
+				if _, err = registry.Register(context.Background(), t.TempDir(), true); !errors.Is(err, memory.ErrUnavailable) {
+					t.Fatalf("write skipped unavailable-root alias guard: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestStructuredMutationFlagsDescribeOnlyAppliedIntent(t *testing.T) {
+	configuration, _, _ := structuredCLIConfig(t)
+	legacy := filepath.Join(t.TempDir(), "legacy.txt")
+	if err := os.WriteFile(legacy, []byte("lesson\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ operation, flag string }{{"import", "--content"}, {"import", "--evidence"}, {"forget", "--type"}, {"forget", "--content"}, {"forget", "--source"}, {"forget", "--evidence"}, {"forget", "--layer"}} {
+		t.Run(test.operation+test.flag, func(t *testing.T) {
+			target := legacy
+			if test.operation == "forget" {
+				target = "neutral-id"
+			}
+			args := []string{"memory", test.operation, target, "--user", "operator", test.flag, "ignored-value", "--yes"}
+			if test.operation == "import" {
+				args = append(args, "--type", "EXPERIENCE", "--source", "declared")
+			} else {
+				args = append(args, "--expected-version", "1")
+			}
+			out, err := executeStructuredMemory(t, configuration, "", args...)
+			if err == nil || !strings.Contains(err.Error(), "unknown flag") || strings.Contains(out, "Memory mutation plan") {
+				t.Fatalf("ineffective flag accepted/displayed: %s %v", out, err)
+			}
+		})
+	}
+	out, err := executeStructuredMemory(t, configuration, "", "memory", "search", "--user", "operator")
+	if err != nil || strings.TrimSpace(out) != "[]" {
+		t.Fatalf("unsupported flags mutated provider: %s %v", out, err)
+	}
+	out, err = executeStructuredMemory(t, configuration, "", "memory", "import", legacy, "--user", "operator", "--type", "EXPERIENCE", "--source", "declared", "--layer", "ATOMIC", "--yes")
+	if err != nil {
+		t.Fatal(out, err)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatal(out)
+	}
+	var plan map[string]json.RawMessage
+	if err = json.Unmarshal([]byte(lines[1]), &plan); err != nil {
+		t.Fatal(out, err)
+	}
+	if _, present := plan["record"]; present {
+		t.Fatalf("import plan displays ineffective record metadata: %s", lines[1])
+	}
+	out, err = executeStructuredMemory(t, configuration, "", "memory", "search", "--user", "operator")
+	if err != nil {
+		t.Fatal(out, err)
+	}
+	var records []memory.Record
+	if err = json.Unmarshal([]byte(out), &records); err != nil || len(records) != 1 || records[0].Type != memory.TypeExperience || records[0].Source != "declared" || records[0].Layer != memory.LayerAtomic {
+		t.Fatalf("effective import intent lost: %s %v", out, err)
+	}
+	out, err = executeStructuredMemory(t, configuration, "", "memory", "forget", string(records[0].ID), "--user", "operator", "--expected-version", "1", "--yes")
+	if err != nil {
+		t.Fatal(out, err)
+	}
+	lines = strings.Split(out, "\n")
+	plan = map[string]json.RawMessage{}
+	if err = json.Unmarshal([]byte(lines[1]), &plan); err != nil {
+		t.Fatal(out, err)
+	}
+	if _, present := plan["record"]; present {
+		t.Fatalf("forget plan displays ineffective record metadata: %s", lines[1])
 	}
 }

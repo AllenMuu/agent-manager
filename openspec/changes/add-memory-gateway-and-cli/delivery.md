@@ -1,8 +1,8 @@
 # M3 / Issue #21 delivery evidence
 
 Status: implemented and verified on `feature/issue21-memory-gateway-and-cli`;
-7/9 OpenSpec tasks complete. Independent ordinary review and final read-only
-OCR remain controller tasks 3.2/3.3. No PR, push, merge or Issue close is claimed.
+7/9 OpenSpec tasks complete. Ordinary review repairs are implemented; independent
+repair acceptance and final read-only OCR remain controller tasks 3.2/3.3. No PR, push, merge or Issue close is claimed.
 Parent #7, Mem0/M4, shared native agent acceptance/M5 and runtime slices remain
 outside this delivery.
 
@@ -40,8 +40,8 @@ under `/tmp/agent-manager-issue21-evidence/`; named tests remain in the reposito
 | 4 / 2.4 | Shared read-only task-context path / Context handoff reads knowledge | `TestTaskContextReadsAttributedKnowledgeThroughSameGateway`, `TestRoleContextUsesConfiguredGatewayWithoutImplicitWrites`; `16`, `17` red/green logs | Same configured provider/Gateway/policy produces the same attributed records as CLI search. Canonical content appears once in `memoryRecords`; legacy text API stays compatible. Handoff has read-only authority and creates no implicit write/promotion. |
 | 5 / 2.5 | Independent failure and recovery semantics / Provider outage | `TestMemoryOutageLeavesOtherTaskContextResourcesAvailable`, `TestMemoryOutageReportsUnavailableAndSkillWorkflowStillWorks`; `18`, `19` red/green logs | Query reports unavailable with a safe category. Following real Skill inspection remains functional; role context retains selected Skills/artifacts and reports unavailable Memory. No canonical Memory record is placed in the Skill operation journal or promised filesystem undo. |
 
-The public test corpus adds 25 top-level tests executed on Darwin: 16 Gateway/
-registry tests, 7 CLI tests and 2 task-context tests (with additional table cases).
+The public test corpus adds 32 top-level tests executed on Darwin: 20 Gateway/
+registry tests, 10 CLI tests and 2 task-context tests (with additional table cases).
 Real structured-local/registry filesystem tests are in supported-Unix build-tagged
 files. Portable external-fixture/status tests remain available on other systems.
 An additional unsupported-platform discovery test is Windows-compiled, not
@@ -76,11 +76,36 @@ in the complete suite. Platform support constants only inform truthful M3
 discovery; M2 storage behavior is unchanged. Legacy file promotion/defaults,
 legacy task-context Searcher and unrelated Skill/SubAgent commands stay compatible.
 
+## Ordinary review repairs
+
+The controller's independent ordinary review at `4674e94` inspected all 38/38
+complete-PR entries and found three Important defects. Its report and original
+negative probes are `/tmp/agent-manager-issue21-quality-review.md` and
+`/tmp/agent-manager-issue21-quality-cli-overlay-test.go`. All three repairs use
+the already authorized public seams and actual temporary filesystem/CLI/store
+behavior. Logs below are in `review-repairs/` under the evidence directory.
+
+| Finding | Repair and public regression | Actual evidence |
+| --- | --- | --- |
+| I1 / stable project identity | Anchored no-follow traversal validates stored mappings before directory equivalence; stale mappings grant no owner lookup and allow explicit repair. `TestMovedRegisteredProjectCannotAcquireIdentityThroughSymlinkSubstitution` checks direct and ancestor substitutions, denied reads, unconfirmed zero mapping writes and confirmed relocation retaining records/ID. `TestProjectRegistryRecognizesRealCaseInsensitiveDirectoryAlias` preserves genuine filesystem case aliases. | `i1-symlink-red.log` → `i1-symlink-green.log`; real case alias PASS in `i2-first-write-and-guards-green.log` (compatibility check was green, no invented red). |
+| I2 / independent outage recovery | Registry reads separate optional provider health from trustworthy owner lookup; inspectable aliases remain denied. Strict writes repeat guard checks even before the first registry file exists. `TestUnavailableProviderRootRetainsTrustedOwnerAndIndependentRoleResources` covers missing/file/symlink roots and independent artifacts/Skills; `TestRegistryFirstMutationChecksUnavailableProviderRoots` covers file/symlink first-write guards. Existing Unicode/reserved-name/canonical-state/persistent-lock hardlink checks remain green. | `i2-root-health-red.log` → green; `i2-first-write-red.log` → `i2-first-write-and-guards-green.log`. |
+| I3 / faithful mutation intent | CLI exposes only effective flags; import content/evidence and forget record metadata are rejected before plan/provider mutation. Import type/source/layer survive. Gateway rejects unused direct inputs; import/forget plans omit record bodies and fingerprints bind the effective copied plan. Explicit import receipt IDs/content constraints are honored; contradictory IDs and blank sources are rejected. `TestStructuredMutationFlagsDescribeOnlyAppliedIntent`, `TestGatewayRejectsIneffectiveMutationInputBeforePreview`, `TestImportPreviewHonorsExplicitReceiptAndContentConstraints`. | `i3-cli-intent-red.log`, `i3-gateway-intent-red.log`, `i3-import-constraints-red.log` → respective green logs. |
+
+I3 intentionally rejects import `--evidence` rather than extending M2. The original
+reviewer's evidence-preservation probe therefore now fails at flag parsing as
+required by the controller-selected correction; it is not an all-green acceptance
+probe for this revised boundary. New repository regressions verify explicit
+rejection and zero writes, then supported import metadata. New M3 commands have
+no accepted release compatibility obligation yet. Fresh lifecycle receipt
+reconciliation still passes after forget inputs are restricted to effective fields.
+
 ## Final validation (2026-10-03 Asia/Shanghai)
 
-The first full suite/race/vet/build passed. After the justified fresh-receipt
-repair and platform test separation, the complete checks below passed again on
-the final source. No further broad test sweep is needed without a new change.
+The initial implementation suite/race/vet/build passed and remains historical
+evidence in the evidence root. After all ordinary review repairs, the final
+checks below passed on the repaired source; their logs are in `review-repairs/`.
+No extra broad sweep is needed without further source changes. Exit statuses
+are recorded in `review-repairs/check-exit-status.json`.
 
 | Check | Result | Evidence file |
 | --- | --- | --- |
@@ -102,7 +127,7 @@ real agent runtime, Windows runtime storage, network fetch or dependency install
 was validated or added. The optional scored fixture is not real semantic runtime
 acceptance.
 
-Ordinary independent complete-change review (3.2) and the required independent
+Ordinary independent repair acceptance (3.2) and the required independent
 `gpt-6.1-sol` / `high` read-only OCR (3.3) remain pending with the controller.
 Any actionable final OCR finding stops publication. M3 stays active until accepted
 implementation and authorized merge, followed by spec sync/archive.

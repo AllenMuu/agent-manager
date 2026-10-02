@@ -66,7 +66,7 @@ func (r *ProjectRegistry) directory() (*os.File, error) {
 	return dir, nil
 }
 func (r *ProjectRegistry) load(dir *os.File) ([]ProjectIdentity, error) {
-	if err := r.rejectStateAliases(dir); err != nil {
+	if err := r.rejectStateAliases(dir, false); err != nil {
 		return nil, err
 	}
 	data, err := readStoreFile(dir, r.name)
@@ -89,7 +89,7 @@ func (r *ProjectRegistry) load(dir *os.File) ([]ProjectIdentity, error) {
 		if validateStructuredToken("project ID", p.ID) != nil || !utf8.ValidString(p.Directory) || strings.ContainsAny(p.Directory, "\x00\n\r") || !filepath.IsAbs(p.Directory) || filepath.Clean(p.Directory) != p.Directory || ids[p.ID] || paths[p.Directory] {
 			return nil, ErrUnavailable
 		}
-		if info, err := os.Stat(p.Directory); err == nil {
+		if info, valid := mappedDirectoryInfo(p.Directory); valid {
 			for _, other := range directoryInfos {
 				if os.SameFile(info, other) {
 					return nil, ErrUnavailable
@@ -102,38 +102,74 @@ func (r *ProjectRegistry) load(dir *os.File) ([]ProjectIdentity, error) {
 	}
 	return projects, nil
 }
-func (r *ProjectRegistry) rejectStateAliases(dir *os.File) error {
+
+// Reads require trustworthy registry state, not an available optional provider.
+// Inspectable roots still reject inode aliases; unavailable provider roots may
+// be omitted for a read. Registry mutations repeat strict root/alias checks.
+func (r *ProjectRegistry) rejectStateAliases(dir *os.File, strict bool) error {
 	info, err := inspectStoreFile(dir, r.name)
 	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
+		if !strict {
+			return nil
+		}
+		info = nil
+	} else if err != nil {
 		return ErrUnavailable
 	}
-	for _, root := range r.canonicalRoots {
-		canonical, err := filepath.EvalSymlinks(root)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return ErrUnavailable
-		}
-		storage, err := openStoreDirectory(canonical)
-		if err != nil {
-			return ErrUnavailable
+	for index, root := range r.canonicalRoots {
+		storage := dir
+		closeStorage := false
+		if index > 0 {
+			rootInfo, rootErr := os.Lstat(root)
+			if rootErr != nil {
+				if os.IsNotExist(rootErr) {
+					continue
+				}
+				if strict {
+					return ErrUnavailable
+				}
+				continue
+			}
+			if info != nil && os.SameFile(info, rootInfo) {
+				return ErrInvalidInput
+			}
+			if strict && (!rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0) {
+				return ErrUnavailable
+			}
+			canonical, err := filepath.EvalSymlinks(root)
+			if err != nil {
+				if strict {
+					return ErrUnavailable
+				}
+				continue
+			}
+			storage, err = openStoreDirectory(canonical)
+			if err != nil {
+				if strict {
+					return ErrUnavailable
+				}
+				continue
+			}
+			closeStorage = true
 		}
 		for _, name := range []string{"memory.json", "memory.lock"} {
 			reserved, err := inspectStoreFile(storage, name)
-			if err == nil && os.SameFile(info, reserved) {
-				storage.Close()
+			if err == nil && info != nil && os.SameFile(info, reserved) {
+				if closeStorage {
+					storage.Close()
+				}
 				return ErrInvalidInput
 			}
-			if err != nil && !os.IsNotExist(err) {
-				storage.Close()
+			if err != nil && !os.IsNotExist(err) && strict {
+				if closeStorage {
+					storage.Close()
+				}
 				return ErrUnavailable
 			}
 		}
-		storage.Close()
+		if closeStorage {
+			storage.Close()
+		}
 	}
 	return nil
 }
@@ -241,12 +277,26 @@ func (r *ProjectRegistry) preview(ctx context.Context, id, path string) (Project
 	}
 	return preview, nil
 }
-func sameProjectDirectory(existing, path string, info os.FileInfo) bool {
-	if existing == path {
-		return true
+
+// Stored mappings were canonicalized at registration. Never follow a changed
+// final component or ancestor into a moved directory when comparing identities.
+// A stale mapping remains readable as metadata so explicit relocation can repair
+// it, but it grants no owner lookup at the replacement target.
+func mappedDirectoryInfo(path string) (os.FileInfo, bool) {
+	dir, err := openStoreDirectory(path)
+	if err != nil {
+		return nil, false
 	}
-	other, err := os.Stat(existing)
-	return err == nil && info != nil && os.SameFile(info, other)
+	defer dir.Close()
+	info, err := dir.Stat()
+	return info, err == nil
+}
+func sameProjectDirectory(existing, path string, info os.FileInfo) bool {
+	other, valid := mappedDirectoryInfo(existing)
+	if !valid {
+		return false
+	}
+	return existing == path || (info != nil && os.SameFile(info, other))
 }
 func (r *ProjectRegistry) Register(ctx context.Context, path string, confirmed bool) (ProjectIdentity, error) {
 	if !confirmed {
@@ -288,6 +338,9 @@ func (r *ProjectRegistry) CommitMapping(ctx context.Context, preview ProjectMapp
 		return ProjectIdentity{}, err
 	}
 	defer dir.Close()
+	if err := r.rejectStateAliases(dir, true); err != nil {
+		return ProjectIdentity{}, err
+	}
 	unlock, err := lockStore(ctx, dir)
 	if err != nil {
 		return ProjectIdentity{}, SafeError(err)
@@ -327,6 +380,9 @@ func (r *ProjectRegistry) CommitMapping(ctx context.Context, preview ProjectMapp
 	data, err := json.Marshal(projects)
 	if err != nil {
 		return ProjectIdentity{}, ErrNotCommitted
+	}
+	if err := r.rejectStateAliases(dir, true); err != nil {
+		return ProjectIdentity{}, err
 	}
 	if err = replaceStoreFile(ctx, dir, r.name, data, nil); err != nil {
 		return ProjectIdentity{}, SafeError(err)

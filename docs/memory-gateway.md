@@ -54,12 +54,23 @@ selects another registry. Same basenames create distinct identities; a moved
 project keeps its ID only through explicit `memory project relocate <project-id>
 --project <new-directory> --yes`. The mapping preview binds the displayed path
 and ID to the observed directory identity and prior mapping. The registry is
-separate from canonical state and its persistent lock.
+separate from canonical state and its persistent lock. A stored path whose final
+component or ancestor becomes a symlink grants no owner lookup at the moved
+target; explicit confirmed relocation repairs the stale mapping. Real case
+aliases for the same direct directory share one identity.
 
 Every add, update, supersede, forget or import prints its exact owner and intent
 before accepting interactive `y` or `--yes`. Without confirmation, no provider
 mutation occurs. Update, supersede and forget require `--expected-version`; stale
 versions return a conflict. `inspect --history` reads retired lineage explicitly.
+Add/update/supersede accept full record metadata. Import accepts only its declared
+type/source/layer, owner, operation ID and confirmation; `--content` and
+`--evidence` are rejected before a plan is printed. Forget accepts owner,
+expected version, operation ID and confirmation, and rejects record metadata
+flags. Import and forget plans contain no ineffective record body. Embedded
+Gateway previews likewise reject fields unused by the selected operation and
+fingerprint the effective immutable plan. This narrows the new M3 commands before
+their first accepted release; the existing M2 import evidence contract is unchanged.
 
 ```text
 agent-manager --config config.yaml memory update <record-id> --project /path/to/repo --expected-version 1 --type FACT --content 'Use scoped tests' --source issue:21 --yes
@@ -97,7 +108,13 @@ mapping registry. Canonical records appear once in `memoryRecords`, preserving
 IDs/source/evidence; legacy text `memory` remains source-compatible without
 invented provenance. Handoffs only have read authority and never promote or
 write Memory. A provider outage retains other artifacts and Skills with an
-output-safe `memoryDiagnostic` category and an unavailable Memory state.
+output-safe `memoryDiagnostic` category and an unavailable Memory state. Missing,
+regular-file and symlink provider roots do not prevent reading a valid owner
+registry for that handoff. Inspectable canonical/lock inode aliases and malformed
+registry state still fail closed. Registry writes repeat strict root and alias
+checks before mutation, including first registration; existing invalid roots
+are rejected. A missing optional provider root has no state inode to alias and
+does not implicitly create provider storage.
 
 Memory mutations use provider lifecycle semantics. They are outside the Skill
 filesystem operation journal and carry no filesystem-undo promise. Memory

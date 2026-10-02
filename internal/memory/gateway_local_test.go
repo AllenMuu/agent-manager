@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,9 @@ func TestOwnedMutationPreviewRequiresExactConfirmation(t *testing.T) {
 	if err != nil || len(results) != 0 {
 		t.Fatalf("preview mutated store: %v %v", results, err)
 	}
+	plan := preview.Plan()
+	plan.Record.Content = "swapped plan"
+	plan.Record.Evidence[0] = "swapped plan"
 	input.Record.Content = "swapped"
 	input.Record.Evidence[0] = "swapped"
 	confirmation := memory.Confirmation{Confirmed: true, IntentID: preview.IntentID(), Owner: owner}
@@ -358,6 +362,9 @@ func TestFreshGatewayConfirmedRetryReconcilesPersistedUncertainLifecycleReceipt(
 				t.Fatal(err)
 			}
 			intent := memory.Mutation{Operation: operation, ID: original.ID, ExpectedVersion: 1, OperationID: "uncertain-" + string(operation), Record: memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "v2", Source: "design"}}
+			if operation == memory.OperationForget {
+				intent.Record = memory.NewRecord{Owner: owner}
+			}
 			preview, err := gateway.Preview(ctx, intent)
 			if err != nil {
 				t.Fatal(err)
@@ -397,5 +404,154 @@ func TestFreshGatewayConfirmedRetryReconcilesPersistedUncertainLifecycleReceipt(
 				t.Fatalf("new stale mutation bypassed CAS: %v", err)
 			}
 		})
+	}
+}
+
+func TestGatewayRejectsIneffectiveMutationInputBeforePreview(t *testing.T) {
+	ctx := context.Background()
+	store, err := memory.OpenStructuredStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := memory.Owner{Kind: memory.OwnerUser, UserID: "operator"}
+	original, err := memory.Remember(ctx, store, memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "original", Source: "design"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := memory.NewGateway(store, memory.Access{ReadOwners: []memory.Owner{owner}, WriteOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "legacy.txt")
+	if err := os.WriteFile(source, []byte("lesson\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body := memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "unused", Source: "unused", Evidence: []string{"unused"}, Layer: memory.LayerAtomic}
+	imported := memory.LegacyImportRequest{Path: source, Owner: owner, Source: "declared", Type: memory.TypeExperience}
+	tests := []struct {
+		name   string
+		intent memory.Mutation
+	}{
+		{"forget-body", memory.Mutation{Operation: memory.OperationForget, Record: body, ID: original.ID, ExpectedVersion: 1}},
+		{"import-body", memory.Mutation{Operation: memory.OperationImport, Record: body, Import: imported}},
+		{"add-target", memory.Mutation{Operation: memory.OperationAdd, Record: body, ID: original.ID, ExpectedVersion: 1}},
+		{"update-import", memory.Mutation{Operation: memory.OperationUpdate, Record: body, ID: original.ID, ExpectedVersion: 1, Import: imported}},
+		{"import-target", memory.Mutation{Operation: memory.OperationImport, Record: memory.NewRecord{Owner: owner}, Import: imported, ID: original.ID, ExpectedVersion: 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := gateway.Preview(ctx, test.intent); !errors.Is(err, memory.ErrInvalidInput) {
+				t.Fatalf("ineffective input accepted: %v", err)
+			}
+		})
+	}
+	results, err := gateway.Search(ctx, memory.SearchRequest{Owner: owner})
+	if err != nil || len(results) != 1 || results[0].Content != "original" || results[0].Version != 1 {
+		t.Fatalf("invalid preview changed records: %v %v", results, err)
+	}
+}
+
+func TestImportPreviewHonorsExplicitReceiptAndContentConstraints(t *testing.T) {
+	ctx := context.Background()
+	store, err := memory.OpenStructuredStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := memory.Owner{Kind: memory.OwnerUser, UserID: "operator"}
+	gateway, err := memory.NewGateway(store, memory.Access{ReadOwners: []memory.Owner{owner}, WriteOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "legacy.txt")
+	if err := os.WriteFile(source, []byte("lesson\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	intent := memory.Mutation{Operation: memory.OperationImport, Record: memory.NewRecord{Owner: owner}, Import: memory.LegacyImportRequest{Path: source, Owner: owner, Source: "declared", Type: memory.TypeExperience, OperationID: "retained-import"}}
+	preview, err := gateway.Preview(ctx, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := preview.Plan()
+	if plan.OperationID != "retained-import" || plan.Import.OperationID != plan.OperationID {
+		t.Errorf("explicit receipt intent changed: %+v", plan)
+	}
+	intent.OperationID = "different-import"
+	if _, err := gateway.Preview(ctx, intent); !errors.Is(err, memory.ErrInvalidInput) {
+		t.Errorf("contradictory operation IDs: %v", err)
+	}
+	intent.OperationID = ""
+	intent.Import.ExpectedContentSHA256 = strings.Repeat("0", 64)
+	if _, err := gateway.Preview(ctx, intent); !errors.Is(err, memory.ErrConflict) {
+		t.Errorf("explicit content constraint ignored: %v", err)
+	}
+	intent.Import.ExpectedContentSHA256 = ""
+	intent.Import.Source = "  "
+	if _, err := gateway.Preview(ctx, intent); !errors.Is(err, memory.ErrInvalidInput) {
+		t.Errorf("blank source previewed: %v", err)
+	}
+	results, err := gateway.Search(ctx, memory.SearchRequest{Owner: owner})
+	if err != nil || len(results) != 0 {
+		t.Fatalf("preview mutated: %v %v", results, err)
+	}
+}
+
+func TestRegistryFirstMutationChecksUnavailableProviderRoots(t *testing.T) {
+	for _, replacement := range []string{"regular-file", "symlink"} {
+		t.Run(replacement, func(t *testing.T) {
+			providerRoot := filepath.Join(t.TempDir(), "store")
+			if replacement == "regular-file" {
+				if err := os.WriteFile(providerRoot, []byte("unavailable"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(t.TempDir(), providerRoot); err != nil {
+				t.Fatal(err)
+			}
+			registryPath := filepath.Join(t.TempDir(), "projects.json")
+			registry, err := memory.OpenProjectRegistry(registryPath, providerRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.Register(context.Background(), t.TempDir(), true); !errors.Is(err, memory.ErrUnavailable) {
+				t.Fatalf("first mutation bypassed strict root checks: %v", err)
+			}
+			if _, err := os.Stat(registryPath); !os.IsNotExist(err) {
+				t.Fatalf("failed mutation created registry: %v", err)
+			}
+		})
+	}
+}
+
+func TestProjectRegistryRecognizesRealCaseInsensitiveDirectoryAlias(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "CaseRepo")
+	alias := filepath.Join(root, "caserepo")
+	if err := os.Mkdir(original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(alias)
+	if os.IsNotExist(err) {
+		t.Skip("temporary filesystem is case-sensitive; case-insensitive runtime not available")
+	}
+	if err != nil || !os.SameFile(first, second) {
+		t.Fatalf("case alias identity: %v", err)
+	}
+	registry, err := memory.OpenProjectRegistry(filepath.Join(t.TempDir(), "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered, err := registry.Register(context.Background(), original, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := registry.Lookup(alias)
+	if err != nil || found.ID != registered.ID {
+		t.Fatalf("case alias lost registered identity: %v %v", found, err)
+	}
+	if _, err := registry.Register(context.Background(), alias, true); !errors.Is(err, memory.ErrConflict) {
+		t.Fatalf("case alias acquired second ID: %v", err)
 	}
 }
