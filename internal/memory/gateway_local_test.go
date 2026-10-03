@@ -555,3 +555,140 @@ func TestProjectRegistryRecognizesRealCaseInsensitiveDirectoryAlias(t *testing.T
 		t.Fatalf("case alias acquired second ID: %v", err)
 	}
 }
+
+// operationOnlyLocalProvider exposes the operation-aware write seam over the
+// real store without embedding its separate basic RecordWriter interface.
+type operationOnlyLocalProvider struct {
+	store    *memory.StructuredStore
+	declared bool
+}
+
+func (p operationOnlyLocalProvider) Capabilities() memory.StructuredCapabilities {
+	return memory.StructuredCapabilities{Remember: p.declared}
+}
+func (p operationOnlyLocalProvider) Health(ctx context.Context) (memory.HealthStatus, error) {
+	return p.store.Health(ctx)
+}
+func (p operationOnlyLocalProvider) RememberWithOperation(ctx context.Context, request memory.RememberRequest) (memory.Record, error) {
+	return p.store.RememberWithOperation(ctx, request)
+}
+
+func TestGatewayDiscoversOperationAwareOnlyConfirmedAdd(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := memory.OpenStructuredStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := memory.Owner{Kind: memory.OwnerUser, UserID: "operator"}
+	provider := operationOnlyLocalProvider{store: store, declared: true}
+	gateway, err := memory.NewGateway(provider, memory.Access{WriteOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "confirmed durable fact", Source: "report:F1"}
+	if _, err := memory.Remember(ctx, provider, input); !errors.Is(err, memory.ErrUnsupported) {
+		t.Fatalf("basic Remember acquired an operation-aware fallback: %v", err)
+	}
+	preview, err := gateway.Preview(ctx, memory.Mutation{Operation: memory.OperationAdd, Record: input, OperationID: "confirmed-add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.Commit(ctx, preview, memory.Confirmation{}); !errors.Is(err, memory.ErrNotConfirmed) {
+		t.Fatalf("unconfirmed write: %v", err)
+	}
+	records, err := memory.Recall(ctx, store, memory.Query{Owner: owner})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("unconfirmed add mutated: %v %v", records, err)
+	}
+	created, err := gateway.Commit(ctx, preview, memory.Confirmation{Confirmed: true, IntentID: preview.IntentID(), Owner: owner})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("operation-aware confirmed add: %v %v", created, err)
+	}
+	reopened, err := memory.OpenStructuredStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := memory.Get(ctx, reopened, owner, created[0].ID)
+	if err != nil || persisted.Content != input.Content {
+		t.Fatalf("durable record: %v %v", persisted, err)
+	}
+	report := gateway.Status(ctx, &memory.ProviderConfig{Provider: "operation-aware-only", Capabilities: []memory.Capability{memory.CapabilityWrite}})
+	if report.StructuredCapabilities == nil || !report.StructuredCapabilities.Remember || !reflect.DeepEqual(report.Capabilities, []memory.Capability{memory.CapabilityWrite}) || len(report.UnsupportedCapabilities) != 0 {
+		t.Fatalf("implemented confirmed add reported unsupported: %+v", report)
+	}
+}
+
+type declaredWriteOnlyLocalProvider struct{ store *memory.StructuredStore }
+
+func (p declaredWriteOnlyLocalProvider) Capabilities() memory.StructuredCapabilities {
+	return memory.StructuredCapabilities{Remember: true}
+}
+func (p declaredWriteOnlyLocalProvider) Health(ctx context.Context) (memory.HealthStatus, error) {
+	return p.store.Health(ctx)
+}
+
+func TestGatewayConfirmedAddDiscoveryRequiresInterfaceAndDeclaration(t *testing.T) {
+	for _, variant := range []string{"both-interfaces", "undeclared-operation-interface", "declaration-without-interface"} {
+		t.Run(variant, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := memory.OpenStructuredStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var provider memory.StructuredProvider = store
+			implemented := variant == "both-interfaces"
+			switch variant {
+			case "undeclared-operation-interface":
+				provider = operationOnlyLocalProvider{store: store, declared: false}
+			case "declaration-without-interface":
+				provider = declaredWriteOnlyLocalProvider{store: store}
+			}
+			owner := memory.Owner{Kind: memory.OwnerUser, UserID: "operator"}
+			gateway, err := memory.NewGateway(provider, memory.Access{WriteOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := gateway.Status(ctx, &memory.ProviderConfig{Provider: variant, Capabilities: []memory.Capability{memory.CapabilityWrite}})
+			hasWrite := false
+			for _, capability := range report.Capabilities {
+				if capability == memory.CapabilityWrite {
+					hasWrite = true
+				}
+			}
+			if report.StructuredCapabilities == nil || report.StructuredCapabilities.Remember != implemented || hasWrite != implemented || (len(report.UnsupportedCapabilities) == 0) != implemented {
+				t.Fatalf("interface/declaration status mismatch: %+v", report)
+			}
+			input := memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "confirmed fact", Source: "report:F1"}
+			preview, err := gateway.Preview(ctx, memory.Mutation{Operation: memory.OperationAdd, Record: input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gateway.Commit(ctx, preview, memory.Confirmation{}); !errors.Is(err, memory.ErrNotConfirmed) {
+				t.Fatalf("unconfirmed write: %v", err)
+			}
+			records, err := memory.Recall(ctx, store, memory.Query{Owner: owner})
+			if err != nil || len(records) != 0 {
+				t.Fatalf("unconfirmed mutation: %v %v", records, err)
+			}
+			created, err := gateway.Commit(ctx, preview, memory.Confirmation{Confirmed: true, IntentID: preview.IntentID(), Owner: owner})
+			if implemented {
+				if err != nil || len(created) != 1 || created[0].Content != input.Content {
+					t.Fatalf("both-interface store lost confirmed add: %v %v", created, err)
+				}
+				basic, err := memory.Remember(ctx, provider, input)
+				if err != nil || basic.Content != input.Content {
+					t.Fatalf("both-interface store lost basic Remember: %v %v", basic, err)
+				}
+			} else {
+				if !errors.Is(err, memory.ErrUnsupported) {
+					t.Fatalf("unsupported interface/declaration wrote: %v", err)
+				}
+				records, err := memory.Recall(ctx, store, memory.Query{Owner: owner})
+				if err != nil || len(records) != 0 {
+					t.Fatalf("unsupported add mutated: %v %v", records, err)
+				}
+			}
+		})
+	}
+}

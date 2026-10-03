@@ -29,7 +29,9 @@ func implementedStructured(p StructuredProvider) StructuredCapabilities {
 	}
 	declared := p.Capabilities()
 	c := declared
-	_, c.Remember = p.(RecordWriter)
+	// Gateway add dispatches the operation-aware seam; basic Remember alone
+	// does not implement its explicitly confirmed operation-ID contract.
+	_, c.Remember = p.(RecordOperationWriter)
 	c.Remember = c.Remember && declared.Remember
 	_, c.Get = p.(RecordReader)
 	c.Get = c.Get && declared.Get
@@ -89,7 +91,9 @@ func DiscoverConfiguredProvider(ctx context.Context, config ProviderConfig) (Pro
 	}
 }
 
-// Status reports actual optional interfaces as well as provider declarations.
+// ProviderStatus reports the operations dispatchable through this Gateway,
+// intersected with provider declarations. Remember/write means confirmed add
+// via RecordOperationWriter, separately from generic RecordWriter/Remember.
 // A provider cannot acquire capabilities by requesting them in configuration.
 func (g *Gateway) ProviderStatus(ctx context.Context) ProviderStatus {
 	status := ProviderStatus{}

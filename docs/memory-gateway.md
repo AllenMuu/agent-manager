@@ -32,6 +32,15 @@ confirmed append, so a configured request for text search is reported as
 unsupported. Claude Code, Codex and Pi native Memory integrations remain
 unsupported until verified runtime mechanisms are delivered.
 
+For embedded clients, `Gateway.ProviderStatus` / `Gateway.Status` describe
+operations that the Gateway can dispatch. Their structured `remember` / `write`
+entry means confirmed add through `RecordOperationWriter`, intersected with the
+provider's declared Remember capability. An operation-aware-only provider is
+supported; a basic-only `RecordWriter` is not advertised as a confirmed Gateway
+writer. The separate low-level `Remember` API still uses `RecordWriter` and its
+original declaration contract. Gateway adds do not fall back to that basic API,
+and discovery does not invent provider receipt or retry guarantees.
+
 The CLI operator explicitly selects exactly one `--user <stable-id>` or
 `--project <registered-directory>` context. An optional `--agent-id` or
 `--session-id` selects a partition within that owner. These labels select local

@@ -153,3 +153,41 @@ func TestGatewayRetainsUncertainWriteCategoryWhenCancellationIsACause(t *testing
 		t.Fatalf("lost uncertain recovery category: %v", err)
 	}
 }
+
+func TestGatewayDoesNotAdvertiseBasicRememberAsConfirmedAdd(t *testing.T) {
+	ctx := context.Background()
+	owner := memory.Owner{Kind: memory.OwnerUser, UserID: "operator"}
+	provider := memory.NewInMemoryProvider()
+	gateway, err := memory.NewGateway(provider, memory.Access{WriteOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := memory.NewRecord{Owner: owner, Type: memory.TypeFact, Content: "basic provider fact", Source: "report:F1"}
+	preview, err := gateway.Preview(ctx, memory.Mutation{Operation: memory.OperationAdd, Record: input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.Commit(ctx, preview, memory.Confirmation{}); !errors.Is(err, memory.ErrNotConfirmed) {
+		t.Fatalf("unconfirmed basic add: %v", err)
+	}
+	if _, err := gateway.Commit(ctx, preview, memory.Confirmation{Confirmed: true, IntentID: preview.IntentID(), Owner: owner}); !errors.Is(err, memory.ErrUnsupported) {
+		t.Fatalf("confirmed add silently fell back to basic Remember: %v", err)
+	}
+	records, err := memory.Recall(ctx, provider, memory.Query{Owner: owner})
+	if err != nil || len(records) != 0 {
+		t.Fatalf("unsupported add mutated: %v %v", records, err)
+	}
+	created, err := memory.Remember(ctx, provider, input)
+	if err != nil || created.Content != input.Content {
+		t.Fatalf("generic basic Remember compatibility: %v %v", created, err)
+	}
+	report := gateway.Status(ctx, &memory.ProviderConfig{Provider: "basic-only", Capabilities: []memory.Capability{memory.CapabilityWrite}})
+	for _, capability := range report.Capabilities {
+		if capability == memory.CapabilityWrite {
+			t.Errorf("unsupported confirmed add advertised as write: %+v", report)
+		}
+	}
+	if report.StructuredCapabilities == nil || report.StructuredCapabilities.Remember || len(report.UnsupportedCapabilities) != 1 || report.UnsupportedCapabilities[0] != memory.CapabilityWrite {
+		t.Fatalf("basic provider contract confused with Gateway writes: %+v", report)
+	}
+}

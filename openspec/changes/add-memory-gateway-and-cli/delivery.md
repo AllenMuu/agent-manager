@@ -1,8 +1,9 @@
 # M3 / Issue #21 delivery evidence
 
 Status: implemented and verified on `feature/issue21-memory-gateway-and-cli`;
-7/9 OpenSpec tasks complete. Ordinary review repairs are implemented; independent
-repair acceptance and final read-only OCR remain controller tasks 3.2/3.3. No PR, push, merge or Issue close is claimed.
+7/9 OpenSpec tasks complete. Ordinary review repairs and the explicitly authorized final-OCR F1 repair are
+implemented; fresh independent acceptance and final read-only OCR remain
+controller tasks 3.2/3.3. No PR, push, merge or Issue close is claimed.
 Parent #7, Mem0/M4, shared native agent acceptance/M5 and runtime slices remain
 outside this delivery.
 
@@ -40,7 +41,7 @@ under `/tmp/agent-manager-issue21-evidence/`; named tests remain in the reposito
 | 4 / 2.4 | Shared read-only task-context path / Context handoff reads knowledge | `TestTaskContextReadsAttributedKnowledgeThroughSameGateway`, `TestRoleContextUsesConfiguredGatewayWithoutImplicitWrites`; `16`, `17` red/green logs | Same configured provider/Gateway/policy produces the same attributed records as CLI search. Canonical content appears once in `memoryRecords`; legacy text API stays compatible. Handoff has read-only authority and creates no implicit write/promotion. |
 | 5 / 2.5 | Independent failure and recovery semantics / Provider outage | `TestMemoryOutageLeavesOtherTaskContextResourcesAvailable`, `TestMemoryOutageReportsUnavailableAndSkillWorkflowStillWorks`; `18`, `19` red/green logs | Query reports unavailable with a safe category. Following real Skill inspection remains functional; role context retains selected Skills/artifacts and reports unavailable Memory. No canonical Memory record is placed in the Skill operation journal or promised filesystem undo. |
 
-The public test corpus adds 32 top-level tests executed on Darwin: 20 Gateway/
+The public test corpus adds 35 top-level tests executed on Darwin: 23 Gateway/
 registry tests, 10 CLI tests and 2 task-context tests (with additional table cases).
 Real structured-local/registry filesystem tests are in supported-Unix build-tagged
 files. Portable external-fixture/status tests remain available on other systems.
@@ -99,13 +100,44 @@ rejection and zero writes, then supported import metadata. New M3 commands have
 no accepted release compatibility obligation yet. Fresh lifecycle receipt
 reconciliation still passes after forget inputs are restricted to effective fields.
 
+## Final OCR stop and explicitly authorized F1 repair
+
+The prescribed independent `gpt-6.1-sol` / `high` final read-only OCR at
+`5e4abd33da32b686c7ccab798f3bf49e162475f3` inspected all 38/38 changed entries
+and returned **STOP**, with one actionable Medium finding F1: Gateway write
+status tested `RecordWriter`, while confirmed add dispatches
+`RecordOperationWriter`. The original report/probes remain unchanged under
+`/tmp/agent-manager-issue21-final-ocr/`; that result did not authorize publication.
+The user subsequently explicitly instructed “根据报告修复”, authorizing this
+bounded repair. Fresh independent spec/quality acceptance and a new prescribed
+final read-only OCR are still required before publication.
+
+The repair changes only the Gateway implemented-capability projection: confirmed
+Remember/write requires the operation-aware interface plus the declared Remember
+flag. Generic low-level Remember and provider declarations are unchanged. No
+silent basic-write fallback or fabricated receipt guarantee is introduced.
+
+| Public behavior | Actual evidence in `ocr-repair/` |
+| --- | --- |
+| `TestGatewayDiscoversOperationAwareOnlyConfirmedAdd`: restricted wrapper of real StructuredStore confirms and durably persists add; unconfirmed add leaves zero records; Gateway advertises the callable operation; generic basic Remember stays unsupported for this interface shape. | `01-operation-aware-red.log` → `01-operation-aware-green.log` |
+| `TestGatewayDoesNotAdvertiseBasicRememberAsConfirmedAdd`: real InMemoryProvider still supports generic Remember; unconfirmed and unsupported confirmed Gateway adds leave zero records; requested Gateway write is reported unsupported. | `02-basic-only-red.log` → `02-basic-only-green.log` |
+| `TestGatewayConfirmedAddDiscoveryRequiresInterfaceAndDeclaration`: real both-interface local store preserves both APIs; operation-aware method without declaration and declaration without interface both remain unsupported with zero writes. Existing local discovery and exact-confirmation regressions remain green. | `03-compatibility-green.log` (existing compatibility behavior; no invented red) |
+
+The operation-aware wrapper forwards actual storage/health and hides only the
+separate basic interface; its success path uses real temporary canonical storage,
+including reopening the durable record. The basic-only path uses the existing
+real in-memory provider. False-interface/declaration wrappers cover unsupported
+external shapes. These tests do not validate any future remote integration.
+
 ## Final validation (2026-10-03 Asia/Shanghai)
 
-The initial implementation suite/race/vet/build passed and remains historical
-evidence in the evidence root. After all ordinary review repairs, the final
-checks below passed on the repaired source; their logs are in `review-repairs/`.
-No extra broad sweep is needed without further source changes. Exit statuses
-are recorded in `review-repairs/check-exit-status.json`.
+Initial implementation and ordinary-repair checks remain historical evidence in
+the evidence root and `review-repairs/`. After the user-authorized F1 source
+repair, the final checks below passed on the latest source; their logs and recorded
+exit statuses are in `ocr-repair/`. Prior passing checks do not override the
+original final OCR STOP. No extra broad sweep is needed without
+further source changes. Exit statuses are in `ocr-repair/check-exit-status.json`;
+the unchanged original OCR probes also pass in `original-ocr-probes-green.log`.
 
 | Check | Result | Evidence file |
 | --- | --- | --- |
