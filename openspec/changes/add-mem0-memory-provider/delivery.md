@@ -77,3 +77,36 @@ later authorized work. No global process/configuration was changed.
 Tasks are 8/10 complete: implementation and verification are complete on this
 branch, ordinary independent review and final OCR remain pending. No main
 acceptance, PR publication or Issue closure is inferred from this checklist.
+
+## Ordinary specification review F1 repair
+
+Independent specification review at `290db940eeb1ece927d82a8e17664321cbf577a9`
+returned REQUEST CHANGES for one Low configuration-policy mismatch: unknown
+nested fields in `secretReference`, including synthetic `apiKey`, were silently
+ignored. No credential disclosure was observed or claimed. The historical report
+is retained at `/tmp/agent-manager-issue22-spec-review.md`.
+
+The external Mem0 factory decoder now rejects unknown nested fields and trailing
+input, while preserving canonical Unicode checks, exact top-level field policy
+and existing documented opaque references. This is confined to external factory
+configuration; global `memory.ConfigReference` compatibility and remote adapter
+operations are unchanged. Public regression
+`TestExternalMem0ConfigurationRejectsNestedUnknownFieldsBeforeAccess` reproduced
+both nested raw-key and unrelated-field acceptance (RED), then passed (GREEN),
+including valid documented-reference compatibility, trailing-input rejection and
+zero service/auth/network requests during invalid construction.
+
+Repair evidence is retained separately under
+`/tmp/agent-manager-issue22-evidence/spec-repair/`. The remote provider and live
+harness source are byte-identical to the original live-validated commit; no live
+service was restarted for this factory-only decoder repair. Existing actual
+Go-adapter live smoke evidence remains applicable to that unchanged adapter;
+ordinary specification re-review, quality review and final OCR remain pending.
+
+After the final factory edit, affected factory/CLI tests, full
+`go test ./... -count=1`, relevant Memory/factory/CLI/task-context race checks,
+vet, CLI build, strict OpenSpec validation, doctor and diff checks all returned
+exit 0. Exact commands/logs are in `spec-repair/check-exit-status.json`. The three
+specific evaluation artifacts created by affected/full/race checks were inspected
+and removed individually. Task-owned Mem0 service/container remain stopped.
+Tasks 3.2/3.3 remain pending root review; no publication or merge is claimed.

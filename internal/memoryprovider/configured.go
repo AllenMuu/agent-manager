@@ -2,6 +2,7 @@
 package memoryprovider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -36,9 +37,16 @@ func Open(c memory.ProviderConfig) (memory.StructuredProvider, error) {
 	if memory.ValidateCanonicalJSON(data) != nil {
 		return nil, memory.ErrInvalidInput
 	}
-	if json.Unmarshal(data, &input) != nil {
+	// Strict decoding also rejects unknown fields inside the opaque reference.
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil {
 		return nil, memory.ErrInvalidInput
 	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, memory.ErrInvalidInput
+	}
+	// Preserve the exact documented top-level keys as well as recursive decoding.
 	// Unknown fields might be raw credentials; reject rather than silently retain.
 	var fields map[string]json.RawMessage
 	json.Unmarshal(data, &fields)

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -79,5 +80,40 @@ func TestNonSecretFileConfigurationAndJournalEvidence(t *testing.T) {
 	}
 	if _, err := memoryprovider.Open(memory.ProviderConfig{Version: "v1", ID: "shared", Provider: "mem0", Configuration: memory.ConfigReference{Kind: "file", Name: directory}, Scopes: []memory.Scope{memory.ScopeUser}}); err != memory.ErrInvalidInput {
 		t.Fatalf("nonregular config accepted: %v", err)
+	}
+}
+
+func TestExternalMem0ConfigurationRejectsNestedUnknownFieldsBeforeAccess(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(http.StatusUnauthorized) }))
+	defer server.Close()
+	t.Setenv("OPAQUE_MEM0_SECRET", "synthetic-not-resolved-at-construction")
+	c := memory.ProviderConfig{Version: "v1", ID: "shared", Provider: "mem0", Configuration: memory.ConfigReference{Kind: "env", Name: "AM_MEM0_CONFIG"}, Scopes: []memory.Scope{memory.ScopeUser}}
+	for _, field := range []string{"apiKey", "unknownOption"} {
+		t.Run(field, func(t *testing.T) {
+			data, _ := json.Marshal(map[string]any{"endpoint": server.URL, "contract": mem0.ContractVersion, "allowNetwork": true, "secretReference": map[string]string{"kind": "env", "name": "OPAQUE_MEM0_SECRET", field: "synthetic-undocumented-value"}})
+			t.Setenv("AM_MEM0_CONFIG", string(data))
+			if _, err := memoryprovider.Open(c); err != memory.ErrInvalidInput {
+				t.Fatalf("nested unknown field accepted: %v", err)
+			}
+			if requests.Load() != 0 {
+				t.Fatal("invalid configuration caused service/auth access")
+			}
+		})
+	}
+	// The documented opaque reference remains compatible with strict decoding.
+	data, _ := json.Marshal(map[string]any{"endpoint": server.URL, "contract": mem0.ContractVersion, "allowNetwork": true, "secretReference": map[string]string{"kind": "env", "name": "OPAQUE_MEM0_SECRET"}})
+	t.Setenv("AM_MEM0_CONFIG", string(data))
+	if _, err := memoryprovider.Open(c); err != nil {
+		t.Fatalf("documented reference rejected: %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("construction contacted service")
+	}
+	for _, trailing := range []string{" {}", " true", " invalid"} {
+		t.Setenv("AM_MEM0_CONFIG", string(data)+trailing)
+		if _, err := memoryprovider.Open(c); err != memory.ErrInvalidInput {
+			t.Fatalf("trailing input accepted: %v", err)
+		}
 	}
 }
