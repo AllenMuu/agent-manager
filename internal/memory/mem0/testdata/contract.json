@@ -1,0 +1,9 @@
+{
+  "contract": "mem0-oss-python-2.2.1-94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
+  "source": "https://github.com/mem0ai/mem0/blob/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd/server/main.py",
+  "create": {"results": [{"id": "backend-fixture", "memory": "Fixture content", "event": "ADD"}]},
+  "update": {"message": "Memory updated successfully!"},
+  "delete": {"message": "Memory deleted successfully"},
+  "emptySearch": {"results": []},
+  "openapiVersion": "1.0.0"
+}

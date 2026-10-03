@@ -80,3 +80,24 @@ available with safe diagnostic categories. Memory writes use provider lifecycle
 semantics and are outside the reversible Skill filesystem operation journal.
 No network provider, extraction/consolidation, executable knowledge, dependency
 installation or native agent Memory mechanism is introduced by this slice.
+
+## Explicit Mem0 OSS opt-in (Issue #22)
+
+The separately selected `mem0` provider enables network requests only when its
+non-secret external configuration explicitly sets `allowNetwork: true` and the
+tested OSS contract pin. Local defaults and managed-skill workflows remain
+offline: no skill execution, dependency installation, service startup or network
+access is added to their lifecycle. See [ticket #22](https://github.com/AllenMuu/agent-manager/issues/22)
+and [Mem0 capability](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md).
+
+Credentials are opaque references resolved only while building authenticated
+transport requests. Status, journals, canonical metadata and errors contain no
+credential values or raw HTTP diagnostics. Requests have bounded deadlines and
+bodies, reject redirects, and never automatically replay uncertain writes.
+
+The pinned OSS server does not guarantee conditional mutations, operation
+receipts, atomic supersession or canonical lineage history. Basic provider
+create and explicitly unconditional replacement/removal remain distinct from
+confirmed Gateway mutations; the CLI Gateway advertises read/search only.
+Versions are observable metadata counters, not compare-and-swap guarantees.
+No second canonical content mirror is maintained.

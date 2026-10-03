@@ -324,7 +324,7 @@ func SafeError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return ErrCanceled
 	}
-	for _, category := range []error{ErrCanceled, ErrOwnershipDenied, ErrInvalidInput, ErrUnsupported, ErrNotFound, ErrConflict, ErrNotConfirmed, ErrOutcomeUnknown, ErrNotCommitted, ErrUnavailable} {
+	for _, category := range []error{ErrAuthentication, ErrCanceled, ErrOwnershipDenied, ErrInvalidInput, ErrUnsupported, ErrNotFound, ErrConflict, ErrNotConfirmed, ErrOutcomeUnknown, ErrNotCommitted, ErrUnavailable} {
 		if errors.Is(err, category) {
 			return category
 		}

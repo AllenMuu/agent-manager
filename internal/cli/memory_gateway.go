@@ -9,6 +9,7 @@ import (
 
 	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/memoryprovider"
 	"github.com/spf13/cobra"
 )
 
@@ -91,7 +92,7 @@ func configuredGateway(rootOptions *rootOptions, o memoryOwnerOptions, write boo
 	if write {
 		access.WriteOwners = []memory.Owner{owner}
 	}
-	provider, err := memory.OpenConfiguredProvider(*loaded.Memory)
+	provider, err := memoryprovider.Open(*loaded.Memory)
 	if err != nil && !errors.Is(err, memory.ErrUnavailable) {
 		return nil, owner, memory.SafeError(err)
 	}

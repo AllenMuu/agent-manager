@@ -29,6 +29,9 @@ func implementedStructured(p StructuredProvider) StructuredCapabilities {
 	}
 	declared := p.Capabilities()
 	c := declared
+	// Explicit basic mutations are not Gateway-dispatched lifecycle operations.
+	c.BasicReplace = false
+	c.BasicRemove = false
 	// Gateway add dispatches the operation-aware seam; basic Remember alone
 	// does not implement its explicitly confirmed operation-ID contract.
 	_, c.Remember = p.(RecordOperationWriter)
