@@ -49,6 +49,7 @@ func (r ConfigReference) MarshalYAML() (any, error) {
 }
 
 type ProviderConfig struct {
+	Retrieval     RetrievalPolicy `json:"retrieval" yaml:"retrieval"`
 	Version       string          `json:"version" yaml:"version"`
 	ID            string          `json:"id" yaml:"id"`
 	Provider      string          `json:"provider" yaml:"provider"`
@@ -58,6 +59,9 @@ type ProviderConfig struct {
 }
 
 func (c ProviderConfig) Validate() error {
+	if _, err := c.Retrieval.normalized(); err != nil {
+		return fmt.Errorf("invalid Memory retrieval policy")
+	}
 	if c.Version != "v1" {
 		return fmt.Errorf("unsupported memory provider configuration version %q", c.Version)
 	}
@@ -180,6 +184,7 @@ func (c ProviderConfig) MarshalYAML() (any, error) {
 		"configuration": c.Redacted().Configuration,
 		"scopes":        c.Scopes,
 		"capabilities":  c.Capabilities,
+		"retrieval":     c.Retrieval,
 	}, nil
 }
 
@@ -200,11 +205,13 @@ type AgentAccess struct {
 // provider. Providers may discover this locally; the control plane never
 // assumes that a configured provider is reachable or available.
 type ProviderStatus struct {
-	Available    bool         `json:"available" yaml:"available"`
-	Unsupported  bool         `json:"unsupported,omitempty" yaml:"unsupported,omitempty"`
-	Reason       string       `json:"reason,omitempty" yaml:"reason,omitempty"`
-	Capabilities []Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	Scopes       []Scope      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	StructuredCapabilities *StructuredCapabilities `json:"structuredCapabilities,omitempty" yaml:"structuredCapabilities,omitempty"`
+	Ranking                string                  `json:"ranking,omitempty" yaml:"ranking,omitempty"`
+	Available              bool                    `json:"available" yaml:"available"`
+	Unsupported            bool                    `json:"unsupported,omitempty" yaml:"unsupported,omitempty"`
+	Reason                 string                  `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Capabilities           []Capability            `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Scopes                 []Scope                 `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 }
 
 // Provider is the narrow boundary between the control plane and a user-owned

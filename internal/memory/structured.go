@@ -153,6 +153,7 @@ type StructuredCapabilities struct {
 	Remember          bool `json:"remember"`
 	Get               bool `json:"get"`
 	Recall            bool `json:"recall"`
+	ScoredRecall      bool `json:"scoredRecall"`
 	Update            bool `json:"update"`
 	Forget            bool `json:"forget"`
 	Supersede         bool `json:"supersede"`

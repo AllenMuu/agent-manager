@@ -12,6 +12,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const structuredLocalSupported = true
+
 func lockStore(ctx context.Context, dir *os.File) (func(), error) {
 	f, err := openStoreFile(dir, "memory.lock", unix.O_RDWR|unix.O_CREAT)
 	if err != nil {

@@ -52,8 +52,8 @@ func TestMemoryStatusJSONReportsConfiguredAvailableProviderAndAgentMappings(t *t
 	if strings.Contains(output, store) {
 		t.Fatalf("status leaked provider reference %q: %s", store, output)
 	}
-	if len(status.Capabilities) != 2 || len(status.Scopes) != 2 {
-		t.Fatalf("provider mapping = %#v, want read/search and user/project", status)
+	if len(status.Capabilities) != 1 || status.Capabilities[0] != "write" || len(status.Scopes) != 2 {
+		t.Fatalf("provider mapping = %#v, want implemented append and user/project; text read/search are requests", status)
 	}
 	if agent := findMemoryAgent(status.Agents, "codex"); agent == nil || agent.State != "unsupported" || len(agent.Capabilities) != 0 || len(agent.Scopes) != 0 {
 		t.Fatalf("codex mapping = %#v, want unsupported with no access", agent)

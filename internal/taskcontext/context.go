@@ -3,6 +3,7 @@
 package taskcontext
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,8 @@ type Bundle struct {
 	Missing             []artifact.Kind                     `json:"missing"`
 	RepositoryKnowledge []KnowledgeFile                     `json:"repositoryKnowledge"`
 	Skills              []catalog.Skill                     `json:"skills"`
+	MemoryDiagnostic    string                              `json:"memoryDiagnostic,omitempty"`
+	MemoryRecords       []memory.Record                     `json:"memoryRecords,omitempty"`
 	Memory              []MemoryItem                        `json:"memory"`
 	MemoryState         memory.ProviderStatus               `json:"memoryState"`
 	Warnings            []string                            `json:"warnings"`
@@ -47,6 +50,9 @@ type Options struct {
 	Contract       role.Contract
 	Agent          string
 	SelectedSkills []string
+	MemoryGateway  *memory.Gateway
+	MemoryOwner    memory.Owner
+	MemoryType     memory.KnowledgeType
 	Memory         memory.Searcher
 	MemoryScopes   []memory.Scope
 }
@@ -141,6 +147,26 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 		}
 	} else if len(options.SelectedSkills) > 0 {
 		return Bundle{}, errors.New("a Skill library is required when selecting Skills")
+	}
+	if options.MemoryGateway != nil && options.Memory != nil {
+		return Bundle{}, errors.New("select exactly one canonical Gateway or legacy text Memory path")
+	}
+	if options.MemoryGateway != nil {
+		query := memoryQuery(bundle.Artifacts)
+		if query != "" {
+			records, searchErr := options.MemoryGateway.Search(context.Background(), memory.SearchRequest{Owner: options.MemoryOwner, Text: query, Type: options.MemoryType})
+			if searchErr != nil {
+				if errors.Is(searchErr, memory.ErrOwnershipDenied) || errors.Is(searchErr, memory.ErrInvalidInput) || errors.Is(searchErr, memory.ErrCanceled) {
+					return Bundle{}, memory.SafeError(searchErr)
+				}
+				bundle.MemoryDiagnostic = memory.DiagnosticCategory(searchErr)
+				bundle.MemoryState = memory.ProviderStatus{Reason: memory.SafeError(searchErr).Error(), Unsupported: errors.Is(searchErr, memory.ErrUnsupported)}
+				bundle.Warnings = append(bundle.Warnings, "Memory context unavailable: "+bundle.MemoryDiagnostic)
+			} else {
+				bundle.MemoryRecords = records
+				bundle.MemoryState = options.MemoryGateway.ProviderStatus(context.Background())
+			}
+		}
 	}
 	if options.Memory != nil {
 		bundle.MemoryState = options.Memory.Status()

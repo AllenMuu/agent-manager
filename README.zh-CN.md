@@ -283,3 +283,12 @@ Agent Manager 的本地任务工件和评估能力不会生成自主代理、同
 - **自主委派**：后续可使用版本化任务工件和角色契约，而无需绑定特定代理的任务状态格式。
 - **React WebUI**：CLI 之后的本地 Web 界面。
 - **Wails**：为 WebUI 提供桌面应用封装。
+
+
+## 结构化 Memory
+
+显式选择 `structured-local` 后，可注册稳定项目身份、确认新增/更新/替代/遗忘/导入，
+并通过同一 Gateway 检索有来源且受结果数和字节预算约束的知识。`roles context`
+只读使用相同路径，不隐式写入。详见 [Memory Gateway 使用说明](docs/memory-gateway.md)。
+旧 `file` provider 和显式 `memory promote` 保持兼容；状态分别报告请求、实际实现与可用性。
+Memory 生命周期不进入可撤销的 Skill 文件系统 operation journal。

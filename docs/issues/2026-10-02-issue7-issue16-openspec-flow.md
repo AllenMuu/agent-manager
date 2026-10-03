@@ -10,8 +10,8 @@
 | --- | --- | --- | --- | --- |
 | F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并；#18 已关闭，规格同步/归档已在本分支完成 |
 | M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/proposal.md) | 无 | 实现/审查 10/10；PR #32 已合并、#19 已关闭；本分支已同步/归档 |
-| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/add-structured-local-memory-store/proposal.md) | #19 | 本分支实现/验证 9/9；普通规格/质量复核及最终 OCR 已通过（26/26）；交付元数据增量审查后发布，尚未合并 |
-| M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | proposal/design/spec/tasks 已生成；实现 0 项 |
+| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/proposal.md) | #19 | 实现验收 9/9；PR #34 已合并主分支 `b388a67`，#20 CLOSED；本分支同步/归档已完成，随 #21 PR 交付 |
+| M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | 本分支实现验收 9/9；全部 5 requirements / 7 scenarios 有证据；规格、质量及最终只读 OCR 均 PASS（38/38）；F1 修复与原 STOP 历史保留；发布元数据增量审查待完成；未发布 PR/未合并 |
 | M4 | [#22](https://github.com/AllenMuu/agent-manager/issues/22) | [add-mem0-memory-provider](../../openspec/changes/add-mem0-memory-provider/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M5 | [#23](https://github.com/AllenMuu/agent-manager/issues/23) | [share-memory-across-codex-and-claude](../../openspec/changes/share-memory-across-codex-and-claude/proposal.md) | #21, #22 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | R1 | [#24](https://github.com/AllenMuu/agent-manager/issues/24) | [define-runtime-enforcement-capabilities](../../openspec/changes/define-runtime-enforcement-capabilities/proposal.md) | 无 | proposal/design/spec/tasks 已生成；实现 0 项 |
@@ -33,11 +33,11 @@ M1 与 R1 是不依赖其他 tickets 的 frontier；F0 优先修复现有基线�
 | #19 / 3 | 2.3 | [Honest optional capabilities and errors](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Unsupported recall versus unavailable storage；Canceled operation |
 | #19 / 4 | 2.4 | [Deterministic neutral contract implementation](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Portable contract suite |
 | #19 / 5 | 2.5 | [Text and Skill compatibility](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/specs/scoped-memory-contracts/spec.md) | Legacy promotion remains available |
-| #20 / 1 | 2.1 | [Durable owner and provenance](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Reopen owned record |
-| #20 / 2 | 2.2 | [Conditional serialized updates](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Competing version updates |
-| #20 / 3 | 2.3 | [Atomic lifecycle and history](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Supersede and forget；Supersession fails before commit |
-| #20 / 4 | 2.4 | [Recoverable local writes](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Failure and retry evidence |
-| #20 / 5 | 2.5 | [Explicit legacy import](../../openspec/changes/add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | No implicit conversion；Confirmed import |
+| #20 / 1 | 2.1 | [Durable owner and provenance](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Reopen owned record |
+| #20 / 2 | 2.2 | [Conditional serialized updates](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Competing version updates |
+| #20 / 3 | 2.3 | [Atomic lifecycle and history](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Supersede and forget；Supersession fails before commit |
+| #20 / 4 | 2.4 | [Recoverable local writes](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Failure and retry evidence |
+| #20 / 5 | 2.5 | [Explicit legacy import](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | No implicit conversion；Confirmed import |
 | #21 / 1 | 2.1 | [Truthful provider discovery](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Configured search is not implemented |
 | #21 / 2 | 2.2 | [Confirmed owned mutations](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Mutation is not confirmed；Stable project identity |
 | #21 / 3 | 2.3 | [Bounded deterministic retrieval](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Bounded attributed search；Wrong-owner query |

@@ -152,6 +152,7 @@ func TestBuildStatusSplitsUnavailableAndUnsupportedProviderGaps(t *testing.T) {
 		Scopes:       []memory.Scope{memory.ScopeUser, memory.ScopeProject},
 	}
 	report := memory.BuildStatus(config, memory.ProviderStatus{
+		Capabilities: []memory.Capability{memory.CapabilityRead}, Scopes: []memory.Scope{memory.ScopeUser},
 		Reason: "provider is unavailable",
 	}, []memory.AgentAccess{{
 		Agent:        "codex",

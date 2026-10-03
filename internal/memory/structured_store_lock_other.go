@@ -7,4 +7,6 @@ import (
 	"os"
 )
 
+const structuredLocalSupported = false
+
 func lockStore(context.Context, *os.File) (func(), error) { return nil, ErrUnsupported }
