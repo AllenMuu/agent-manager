@@ -190,8 +190,12 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
 			return plan, fmt.Errorf("managed path outside project: %s", path)
 		}
 		slashRel := filepath.ToSlash(rel)
-		lines = append(lines, "/"+slashRel)
-		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: "/" + slashRel})
+		if strings.ContainsAny(slashRel, "\r\n") {
+			return plan, fmt.Errorf("managed path cannot be represented by one Git ignore rule: %q", path)
+		}
+		rule := "/" + strings.NewReplacer("\\", "\\\\", "*", "\\*", "?", "\\?", "[", "\\[", "]", "\\]", " ", "\\ ").Replace(slashRel)
+		lines = append(lines, rule)
+		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: rule})
 	}
 	if existing, err := os.ReadFile(gitignore); err == nil {
 		kept := plan.Changes[:0]

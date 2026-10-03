@@ -400,6 +400,49 @@ func TestConcurrentJournalRecordsAreNotLost(t *testing.T) {
 	}
 }
 
+func TestJournalUndoPreservesRecordStartedDuringConfirmation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "journal.json")
+	journal := operation.New(path)
+	if err := journal.Record("previous", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	completedDuringConfirmation := false
+	err := journal.UndoLatest(func(operation.Plan) bool {
+		go func() {
+			close(started)
+			done <- operation.New(path).Record("concurrent", nil, nil)
+		}()
+		<-started
+		select {
+		case err := <-done:
+			completedDuringConfirmation = true
+			done <- err
+		case <-time.After(100 * time.Millisecond):
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent record did not finish after undo")
+	}
+	if completedDuringConfirmation {
+		t.Error("concurrent writer bypassed undo's journal lock")
+	}
+	latest, ok, err := journal.Latest()
+	if err != nil || !ok || latest.Operation != "concurrent" {
+		t.Fatalf("concurrent record lost: latest=%#v ok=%v err=%v", latest, ok, err)
+	}
+}
+
 func TestOperationLockSerializesProcesses(t *testing.T) {
 	if journalPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_JOURNAL"); journalPath != "" {
 		readyPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_READY")

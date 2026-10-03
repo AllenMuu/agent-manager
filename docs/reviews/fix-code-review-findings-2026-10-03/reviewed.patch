@@ -1,0 +1,566 @@
+diff --git a/internal/cli/recommend_test.go b/internal/cli/recommend_test.go
+index 4835a6f..bc52088 100644
+--- a/internal/cli/recommend_test.go
++++ b/internal/cli/recommend_test.go
+@@ -104,6 +104,52 @@ func TestRecommendJSONContractRecommendedScope(t *testing.T) {
+ 	}
+ }
+ 
++func TestRecommendIncludesNestedDeploymentEvidenceAndDatabaseSkill(t *testing.T) {
++	library, project, configPath := recommendFixture(t)
++	writeSkill(t, library, "postgres-helper", "Postgres helper", "helps with postgresql", "postgresql\n")
++	if err := os.MkdirAll(filepath.Join(project, "deploy"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(project, "deploy", "compose.yaml"), []byte("services:\n  db:\n    image: postgres:16\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	root := cli.NewRootCommand()
++	out := &bytes.Buffer{}
++	root.SetOut(out)
++	root.SetErr(out)
++	root.SetArgs([]string{"--config", configPath, "recommend", "--project", project, "--json"})
++	if err := root.Execute(); err != nil {
++		t.Fatal(err)
++	}
++	var doc struct {
++		ScanComplete bool `json:"scanComplete"`
++		Scopes       []struct {
++			Evidence        []struct{ Path, Technology string } `json:"evidence"`
++			Recommendations []struct{ Identifier string }       `json:"recommendations"`
++		} `json:"scopes"`
++	}
++	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
++		t.Fatal(err)
++	}
++	if !doc.ScanComplete || len(doc.Scopes) != 1 {
++		t.Fatalf("result=%s", out)
++	}
++	foundEvidence, foundRecommendation := false, false
++	for _, evidence := range doc.Scopes[0].Evidence {
++		if evidence.Technology == "postgresql" && evidence.Path == "deploy/compose.yaml" {
++			foundEvidence = true
++		}
++	}
++	for _, recommendation := range doc.Scopes[0].Recommendations {
++		if recommendation.Identifier == "postgres-helper" {
++			foundRecommendation = true
++		}
++	}
++	if !foundEvidence || !foundRecommendation {
++		t.Fatalf("nested evidence/recommendation missing: %s", out)
++	}
++}
++
+ func TestRecommendJSONInsufficientEvidenceIsEmptyState(t *testing.T) {
+ 	library := t.TempDir()
+ 	project := t.TempDir()
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 8dc687c..c1b559b 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 
+ 	"github.com/AllenMuu/skill-manager/internal/memory"
+ 	"gopkg.in/yaml.v3"
+@@ -44,7 +45,13 @@ func Load(path string) (Config, error) {
+ 		}
+ 		return Config{Version: version, LibraryPath: defaultPath, Memory: provider}, nil
+ 	}
+-	if !filepath.IsAbs(library) {
++	if library == "~" || strings.HasPrefix(library, "~/") {
++		home, err := os.UserHomeDir()
++		if err != nil {
++			return Config{}, fmt.Errorf("resolve configured library home: %w", err)
++		}
++		library = filepath.Join(home, strings.TrimPrefix(library, "~"))
++	} else if !filepath.IsAbs(library) {
+ 		library = filepath.Join(filepath.Dir(path), library)
+ 	}
+ 	library, err = filepath.Abs(library)
+diff --git a/internal/config/config_test.go b/internal/config/config_test.go
+index d6ad49a..6719575 100644
+--- a/internal/config/config_test.go
++++ b/internal/config/config_test.go
+@@ -85,6 +85,22 @@ func TestLoadExplicitConfigDoesNotRequireHomeDirectory(t *testing.T) {
+ 	}
+ }
+ 
++func TestLoadExpandsCurrentUserHomeRelativeLibrary(t *testing.T) {
++	home := t.TempDir()
++	t.Setenv("HOME", home)
++	configPath := filepath.Join(t.TempDir(), "config.yaml")
++	if err := os.WriteFile(configPath, []byte("library: ~/.agents/skills\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := config.Load(configPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if want := filepath.Join(home, ".agents", "skills"); loaded.LibraryPath != want {
++		t.Fatalf("LibraryPath=%q, want %q", loaded.LibraryPath, want)
++	}
++}
++
+ func TestLoadParsesVersionedMemoryProviderConfiguration(t *testing.T) {
+ 	root := t.TempDir()
+ 	configPath := filepath.Join(root, "config.yaml")
+diff --git a/internal/diagnostic/doctor.go b/internal/diagnostic/doctor.go
+index 8948d60..3676856 100644
+--- a/internal/diagnostic/doctor.go
++++ b/internal/diagnostic/doctor.go
+@@ -190,8 +190,12 @@ func AddGitignore(project string, paths []string, confirm func(operation.Plan) b
+ 			return plan, fmt.Errorf("managed path outside project: %s", path)
+ 		}
+ 		slashRel := filepath.ToSlash(rel)
+-		lines = append(lines, "/"+slashRel)
+-		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: "/" + slashRel})
++		if strings.ContainsAny(slashRel, "\r\n") {
++			return plan, fmt.Errorf("managed path cannot be represented by one Git ignore rule: %q", path)
++		}
++		rule := "/" + strings.NewReplacer("\\", "\\\\", "*", "\\*", "?", "\\?", "[", "\\[", "]", "\\]", " ", "\\ ").Replace(slashRel)
++		lines = append(lines, rule)
++		plan.Changes = append(plan.Changes, operation.Change{Path: gitignore, Action: "ignore managed link", Detail: rule})
+ 	}
+ 	if existing, err := os.ReadFile(gitignore); err == nil {
+ 		kept := plan.Changes[:0]
+diff --git a/internal/diagnostic/doctor_test.go b/internal/diagnostic/doctor_test.go
+index 52228ac..1594124 100644
+--- a/internal/diagnostic/doctor_test.go
++++ b/internal/diagnostic/doctor_test.go
+@@ -183,6 +183,53 @@ func TestAddGitignoreAcceptsPiManagedLink(t *testing.T) {
+ 	}
+ }
+ 
++func TestAddGitignoreTreatsManagedPathsLiterally(t *testing.T) {
++	for _, tc := range []struct{ identifier, neighbor string }{
++		{"demo*", "demo-other"}, {"demo?", "demox"}, {"demo[ab]", "demoa"}, {"demo ", "demo"},
++	} {
++		t.Run(tc.identifier, func(t *testing.T) {
++			project := t.TempDir()
++			target := filepath.Join(t.TempDir(), tc.identifier)
++			mustWrite(t, filepath.Join(target, "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
++			link := filepath.Join(project, ".codex", "skills", tc.identifier)
++			mustLink(t, target, link)
++			neighbor := filepath.Join(".codex", "skills", tc.neighbor, "SKILL.md")
++			mustWrite(t, filepath.Join(project, neighbor), "unmanaged")
++			runGit(t, project, "init")
++			if _, err := diagnostic.AddGitignore(project, []string{link}, func(operation.Plan) bool { return true }); err != nil {
++				t.Fatal(err)
++			}
++			runGit(t, project, "check-ignore", "-q", "--", filepath.Join(".codex", "skills", tc.identifier))
++			err := exec.Command("git", "-C", project, "check-ignore", "-q", "--", neighbor).Run()
++			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
++				t.Fatalf("neighbor was ignored by managed rule: %v", err)
++			}
++		})
++	}
++}
++
++func TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation(t *testing.T) {
++	for _, id := range []string{"demo\n*", "demo\r*"} {
++		t.Run(id, func(t *testing.T) {
++			project := t.TempDir()
++			target := filepath.Join(t.TempDir(), id)
++			mustWrite(t, filepath.Join(target, "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
++			link := filepath.Join(project, ".codex", "skills", id)
++			mustLink(t, target, link)
++			confirmed := false
++			_, err := diagnostic.AddGitignore(project, []string{link}, func(operation.Plan) bool { confirmed = true; return true })
++			if err == nil || confirmed {
++				t.Fatalf("line separator accepted or confirmation requested: confirmed=%v err=%v", confirmed, err)
++			}
++			for _, path := range []string{filepath.Join(project, ".gitignore"), filepath.Join(project, ".skill-manager")} {
++				if _, err := os.Lstat(path); !os.IsNotExist(err) {
++					t.Fatalf("refusal changed %s: %v", path, err)
++				}
++			}
++		})
++	}
++}
++
+ func TestDeleteRevalidatesConcurrentReplacementAndCatalogIO(t *testing.T) {
+ 	root := t.TempDir()
+ 	lib := filepath.Join(root, "library")
+diff --git a/internal/initcmd/init.go b/internal/initcmd/init.go
+index a68af52..2ba56d7 100644
+--- a/internal/initcmd/init.go
++++ b/internal/initcmd/init.go
+@@ -64,8 +64,25 @@ func (s *Service) Initialize() (operation.Plan, error) {
+ 			newAgentRoots = append(newAgentRoots, root)
+ 		}
+ 	}
++	type publication struct {
++		before operation.Snapshot
++		info   os.FileInfo
++		digest string
++	}
++	published := make([]publication, 0, len(before))
+ 	rollback := func(err error) error {
+-		restore := s.Journal.Restore(before)
++		var restore error
++		var owned []operation.Snapshot
++		for _, item := range published {
++			info, statErr := os.Lstat(item.before.Path)
++			digest, digestErr := operation.FingerprintPath(item.before.Path)
++			if statErr != nil || digestErr != nil || !os.SameFile(item.info, info) || digest != item.digest {
++				restore = errors.Join(restore, fmt.Errorf("preserving changed publication %s: %w", item.before.Path, operation.ErrUnexpectedState))
++				continue
++			}
++			owned = append(owned, item.before)
++		}
++		restore = errors.Join(restore, s.Journal.Restore(owned))
+ 		for _, root := range newAgentRoots {
+ 			if removeErr := removeEmptyDirectories(root); removeErr != nil {
+ 				restore = errors.Join(restore, removeErr)
+@@ -73,6 +90,21 @@ func (s *Service) Initialize() (operation.Plan, error) {
+ 		}
+ 		return errors.Join(err, restore)
+ 	}
++	publish := func(stage, path string, snapshot operation.Snapshot) error {
++		info, err := os.Lstat(stage)
++		if err != nil {
++			return err
++		}
++		digest, err := operation.FingerprintPath(stage)
++		if err != nil {
++			return err
++		}
++		if err := os.Rename(stage, path); err != nil {
++			return err
++		}
++		published = append(published, publication{snapshot, info, digest})
++		return nil
++	}
+ 	type staged struct{ skill, marker string }
+ 	stages := make([]staged, len(paths))
+ 	writeStage := func(directory, prefix string, contents []byte) (string, error) {
+@@ -126,24 +158,24 @@ func (s *Service) Initialize() (operation.Plan, error) {
+ 		if err := safeOperatorPath(filepath.Dir(path)); err != nil {
+ 			return plan, rollback(err)
+ 		}
+-		if err := os.Rename(stages[i].skill, path); err != nil {
++		if err := publish(stages[i].skill, path, before[2*i]); err != nil {
+ 			return plan, rollback(err)
+ 		}
+ 		stages[i].skill = ""
+-		if err := os.Rename(stages[i].marker, filepath.Join(filepath.Dir(path), ownershipMarker)); err != nil {
++		if err := publish(stages[i].marker, filepath.Join(filepath.Dir(path), ownershipMarker), before[2*i+1]); err != nil {
+ 			return plan, rollback(err)
+ 		}
+ 		stages[i].marker = ""
+ 	}
+ 	after, err := s.Journal.Capture(snapshotPaths)
+ 	if err != nil {
+-		return plan, errors.Join(err, s.Journal.Restore(before))
++		return plan, rollback(err)
+ 	}
+ 	if err := s.Journal.RecordPlan(plan, before, after); err != nil {
+ 		if errors.Is(err, operation.ErrJournalCommitted) {
+ 			return plan, err
+ 		}
+-		return plan, errors.Join(err, s.Journal.Restore(before))
++		return plan, rollback(err)
+ 	}
+ 	return plan, nil
+ }
+diff --git a/internal/initcmd/init_test.go b/internal/initcmd/init_test.go
+index c449064..6288954 100644
+--- a/internal/initcmd/init_test.go
++++ b/internal/initcmd/init_test.go
+@@ -79,6 +79,128 @@ func TestInitializeSecondTargetFailureRollsBack(t *testing.T) {
+ 	}
+ }
+ 
++func TestInitializeRollbackPreservesUnpublishedConcurrentFile(t *testing.T) {
++	home := t.TempDir()
++	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
++	var concurrentPath string
++	calls := 0
++	svc.BeforePublish = func(path string) error {
++		calls++
++		if calls == 2 {
++			concurrentPath = path
++			return os.WriteFile(path, []byte("concurrent user content"), 0o644)
++		}
++		return nil
++	}
++	if _, err := svc.Initialize(); err == nil {
++		t.Fatal("expected concurrent unmanaged file to be refused")
++	}
++	contents, err := os.ReadFile(concurrentPath)
++	if err != nil || string(contents) != "concurrent user content" {
++		t.Fatalf("concurrent file lost during rollback: %q %v", contents, err)
++	}
++	if _, err := os.Stat(filepath.Join(home, "j.json")); !os.IsNotExist(err) {
++		t.Fatalf("failed initialization recorded a journal: %v", err)
++	}
++}
++
++func TestInitializeRollbackPreservesReplacedPublishedFile(t *testing.T) {
++	home := t.TempDir()
++	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
++	var firstPath string
++	svc.BeforePublish = func(path string) error {
++		if firstPath == "" {
++			firstPath = path
++			return nil
++		}
++		if err := os.WriteFile(firstPath, []byte("concurrent replacement"), 0o600); err != nil {
++			return err
++		}
++		return errors.New("later publication failed")
++	}
++	if _, err := svc.Initialize(); err == nil {
++		t.Fatal("expected publication failure")
++	}
++	contents, err := os.ReadFile(firstPath)
++	if err != nil || string(contents) != "concurrent replacement" {
++		t.Fatalf("concurrent replacement lost during rollback: %q %v", contents, err)
++	}
++	if _, err := os.Stat(filepath.Join(filepath.Dir(firstPath), ".skill-manager-owner")); !os.IsNotExist(err) {
++		t.Fatalf("operation's marker was not rolled back: %v", err)
++	}
++}
++
++func TestInitializeRollbackPreservesIdenticalReplacementOwner(t *testing.T) {
++	home := t.TempDir()
++	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
++	var firstPath string
++	var replacement os.FileInfo
++	svc.BeforePublish = func(path string) error {
++		if firstPath == "" {
++			firstPath = path
++			return nil
++		}
++		contents, err := os.ReadFile(firstPath)
++		if err != nil {
++			return err
++		}
++		stage := firstPath + ".replacement"
++		if err := os.WriteFile(stage, contents, 0o600); err != nil {
++			return err
++		}
++		replacement, err = os.Lstat(stage)
++		if err != nil {
++			return err
++		}
++		if err := os.Rename(stage, firstPath); err != nil {
++			return err
++		}
++		return errors.New("later publication failed")
++	}
++	if _, err := svc.Initialize(); !errors.Is(err, operation.ErrUnexpectedState) {
++		t.Fatalf("Initialize()=%v", err)
++	}
++	info, err := os.Lstat(firstPath)
++	if err != nil || !os.SameFile(replacement, info) {
++		t.Fatalf("replacement owner lost: %v", err)
++	}
++}
++
++func TestInitializeRollbackRestoresPreviouslyOwnedContent(t *testing.T) {
++	home := t.TempDir()
++	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
++	if _, err := svc.Initialize(); err != nil {
++		t.Fatal(err)
++	}
++	var firstPath string
++	svc.BeforePublish = func(path string) error {
++		if path == firstPath {
++			return nil
++		}
++		return errors.New("later publication failed")
++	}
++	// Adapter iteration starts with Claude; keep an owned older version there.
++	firstPath = filepath.Join(home, ".claude", "skills", "skill-manager-operator", "SKILL.md")
++	if err := os.WriteFile(firstPath, []byte("older owned content"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	journalBefore, err := os.ReadFile(filepath.Join(home, "j.json"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := svc.Initialize(); err == nil {
++		t.Fatal("expected failure")
++	}
++	contents, err := os.ReadFile(firstPath)
++	if err != nil || string(contents) != "older owned content" {
++		t.Fatalf("old content lost: %q %v", contents, err)
++	}
++	journalAfter, err := os.ReadFile(filepath.Join(home, "j.json"))
++	if err != nil || string(journalBefore) != string(journalAfter) {
++		t.Fatalf("failed operation changed journal: %v", err)
++	}
++}
++
+ func TestInitializeRejectsSymlinkOperatorSkill(t *testing.T) {
+ 	home := t.TempDir()
+ 	path := filepath.Join(home, ".codex", "skills", "skill-manager-operator", "SKILL.md")
+diff --git a/internal/lifecycle/service_test.go b/internal/lifecycle/service_test.go
+index fed468b..713853d 100644
+--- a/internal/lifecycle/service_test.go
++++ b/internal/lifecycle/service_test.go
+@@ -233,6 +233,27 @@ func TestAddManyRejectsSourceEditedDuringConfirmation(t *testing.T) {
+ 	}
+ }
+ 
++func TestAddManyRejectsSourceDeletedDuringConfirmationWithoutOptionalFingerprints(t *testing.T) {
++	root, project, skill := fixture(t)
++	journal := operation.New(filepath.Join(root, "journal.json"))
++	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
++		if err := os.RemoveAll(skill.SourcePath); err != nil {
++			t.Fatal(err)
++		}
++		return true
++	})
++	if _, err := svc.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err == nil {
++		t.Fatal("deleted source accepted")
++	}
++	a, _ := adapter.For(adapter.Codex)
++	if _, err := os.Lstat(a.ProjectSkillPath(project, skill.Identifier)); !os.IsNotExist(err) {
++		t.Fatalf("dangling link published: %v", err)
++	}
++	if _, ok, err := journal.Latest(); err != nil || ok {
++		t.Fatalf("journal changed: %v %v", ok, err)
++	}
++}
++
+ func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
+ 	root, project, one := fixture(t)
+ 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
+diff --git a/internal/operation/operation_test.go b/internal/operation/operation_test.go
+index 415f267..a5d404a 100644
+--- a/internal/operation/operation_test.go
++++ b/internal/operation/operation_test.go
+@@ -400,6 +400,49 @@ func TestConcurrentJournalRecordsAreNotLost(t *testing.T) {
+ 	}
+ }
+ 
++func TestJournalUndoPreservesRecordStartedDuringConfirmation(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "journal.json")
++	journal := operation.New(path)
++	if err := journal.Record("previous", nil, nil); err != nil {
++		t.Fatal(err)
++	}
++	started := make(chan struct{})
++	done := make(chan error, 1)
++	completedDuringConfirmation := false
++	err := journal.UndoLatest(func(operation.Plan) bool {
++		go func() {
++			close(started)
++			done <- operation.New(path).Record("concurrent", nil, nil)
++		}()
++		<-started
++		select {
++		case err := <-done:
++			completedDuringConfirmation = true
++			done <- err
++		case <-time.After(100 * time.Millisecond):
++		}
++		return true
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case err := <-done:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("concurrent record did not finish after undo")
++	}
++	if completedDuringConfirmation {
++		t.Error("concurrent writer bypassed undo's journal lock")
++	}
++	latest, ok, err := journal.Latest()
++	if err != nil || !ok || latest.Operation != "concurrent" {
++		t.Fatalf("concurrent record lost: latest=%#v ok=%v err=%v", latest, ok, err)
++	}
++}
++
+ func TestOperationLockSerializesProcesses(t *testing.T) {
+ 	if journalPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_JOURNAL"); journalPath != "" {
+ 		readyPath := os.Getenv("AGENT_MANAGER_LOCK_HELPER_READY")
+diff --git a/internal/stack/scan.go b/internal/stack/scan.go
+index fff78ac..451693e 100644
+--- a/internal/stack/scan.go
++++ b/internal/stack/scan.go
+@@ -96,6 +96,17 @@ func Scan(root string) (Result, error) {
+ 	for _, dir := range scopeDirs {
+ 		scopeSet[dir] = true
+ 	}
++	// Non-boundary markers belong to their nearest enclosing project scope.
++	for dir, evidence := range state.evidence {
++		if scopeSet[dir] {
++			continue
++		}
++		scopeDir := closestScope(dir, scopeSet)
++		for _, item := range evidence {
++			item.Path = scopeRelative(scopeDir, filepath.Join(dir, item.Path))
++			state.evidence[scopeDir] = append(state.evidence[scopeDir], item)
++		}
++	}
+ 	// Bubbles every diagnostic up to its closest enclosing scope so skipped
+ 	// links and unreadable markers in non-scope directories stay visible.
+ 	for dir, diagnostics := range state.diagnostics {
+diff --git a/internal/stack/scan_test.go b/internal/stack/scan_test.go
+index 666a2b9..f3edf93 100644
+--- a/internal/stack/scan_test.go
++++ b/internal/stack/scan_test.go
+@@ -64,6 +64,50 @@ func TestScanDetectsDatabasesFromComposeAndDockerfile(t *testing.T) {
+ 	assertTechnologies(t, scope, "compose", "docker", "postgresql", "redis")
+ }
+ 
++func TestScanAttributesNestedMarkersToContainingScope(t *testing.T) {
++	root := t.TempDir()
++	write(t, filepath.Join(root, "go.mod"), "module example.com/root\n")
++	write(t, filepath.Join(root, "deploy", "compose.yaml"), "services:\n  db:\n    image: postgres:16\n")
++	result, err := stack.Scan(root)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !result.ScanComplete || len(result.Scopes) != 1 {
++		t.Fatalf("result=%#v", result)
++	}
++	assertTechnologies(t, result.Scopes[0], "compose", "docker", "go", "postgresql")
++	for _, evidence := range result.Scopes[0].Evidence {
++		if evidence.Technology != "go" && evidence.Path != "deploy/compose.yaml" {
++			t.Fatalf("nested marker has wrong evidence path: %#v", evidence)
++		}
++	}
++}
++
++func TestScanKeepsNestedMarkersInsideIndependentChildScope(t *testing.T) {
++	root := t.TempDir()
++	write(t, filepath.Join(root, "go.mod"), "module example.com/root\n")
++	write(t, filepath.Join(root, "web", "package.json"), `{"dependencies":{"react":"^18"}}`)
++	write(t, filepath.Join(root, "web", "deploy", "compose.yaml"), "services:\n  cache:\n    image: redis:7\n")
++	result, err := stack.Scan(root)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(result.Scopes) != 2 {
++		t.Fatalf("scopes=%#v", result.Scopes)
++	}
++	assertTechnologies(t, result.Scopes[0], "go")
++	child := result.Scopes[1]
++	if child.Path != "web" {
++		t.Fatalf("child scope=%q", child.Path)
++	}
++	assertTechnologies(t, child, "compose", "docker", "nodejs", "react", "redis")
++	for _, evidence := range child.Evidence {
++		if evidence.Technology == "redis" && evidence.Path != "deploy/compose.yaml" {
++			t.Fatalf("child evidence is not scope-relative: %#v", evidence)
++		}
++	}
++}
++
+ func TestScanDetectsJvmPythonAndRubyStacks(t *testing.T) {
+ 	root := t.TempDir()
+ 	write(t, filepath.Join(root, "pom.xml"), "<project><dependency>org.springframework.boot:spring-boot-starter</dependency></project>")

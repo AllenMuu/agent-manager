@@ -1,0 +1,72 @@
+=== RUN   TestInitializeSecondTargetFailureRollsBack
+--- PASS: TestInitializeSecondTargetFailureRollsBack (0.00s)
+=== RUN   TestInitializeRollbackPreservesUnpublishedConcurrentFile
+--- PASS: TestInitializeRollbackPreservesUnpublishedConcurrentFile (0.00s)
+=== RUN   TestInitializeRollbackPreservesReplacedPublishedFile
+--- PASS: TestInitializeRollbackPreservesReplacedPublishedFile (0.00s)
+=== RUN   TestInitializeRollbackPreservesIdenticalReplacementOwner
+--- PASS: TestInitializeRollbackPreservesIdenticalReplacementOwner (0.00s)
+=== RUN   TestInitializeRollbackRestoresPreviouslyOwnedContent
+--- PASS: TestInitializeRollbackRestoresPreviouslyOwnedContent (0.03s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/initcmd	0.670s
+=== RUN   TestScanTreatsPiAsSupportedLocation
+--- PASS: TestScanTreatsPiAsSupportedLocation (0.00s)
+=== RUN   TestAddGitignoreAcceptsPiManagedLink
+--- PASS: TestAddGitignoreAcceptsPiManagedLink (0.02s)
+=== RUN   TestAddGitignoreTreatsManagedPathsLiterally
+=== RUN   TestAddGitignoreTreatsManagedPathsLiterally/demo*
+=== RUN   TestAddGitignoreTreatsManagedPathsLiterally/demo?
+=== RUN   TestAddGitignoreTreatsManagedPathsLiterally/demo[ab]
+=== RUN   TestAddGitignoreTreatsManagedPathsLiterally/demo_
+--- PASS: TestAddGitignoreTreatsManagedPathsLiterally (0.28s)
+    --- PASS: TestAddGitignoreTreatsManagedPathsLiterally/demo* (0.08s)
+    --- PASS: TestAddGitignoreTreatsManagedPathsLiterally/demo? (0.06s)
+    --- PASS: TestAddGitignoreTreatsManagedPathsLiterally/demo[ab] (0.06s)
+    --- PASS: TestAddGitignoreTreatsManagedPathsLiterally/demo_ (0.08s)
+=== RUN   TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation
+=== RUN   TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation/demo_*
+=== RUN   TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation/demo_*#01
+--- PASS: TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation (0.01s)
+    --- PASS: TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation/demo_* (0.01s)
+    --- PASS: TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation/demo_*#01 (0.00s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/diagnostic	2.749s
+=== RUN   TestLoadExpandsCurrentUserHomeRelativeLibrary
+--- PASS: TestLoadExpandsCurrentUserHomeRelativeLibrary (0.00s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/config	3.044s
+=== RUN   TestScanAttributesNestedMarkersToContainingScope
+--- PASS: TestScanAttributesNestedMarkersToContainingScope (0.00s)
+=== RUN   TestScanKeepsNestedMarkersInsideIndependentChildScope
+--- PASS: TestScanKeepsNestedMarkersInsideIndependentChildScope (0.00s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/stack	1.332s
+=== RUN   TestAddManyRejectsSourceDeletedDuringConfirmationWithoutOptionalFingerprints
+--- PASS: TestAddManyRejectsSourceDeletedDuringConfirmationWithoutOptionalFingerprints (0.00s)
+=== RUN   TestAddManyRollbackRestoresReplacedPathWhenLaterPublicationFails
+--- PASS: TestAddManyRollbackRestoresReplacedPathWhenLaterPublicationFails (0.02s)
+=== RUN   TestRemoveRejectsProjectParentSwapBeforeAnchoredMutation
+--- PASS: TestRemoveRejectsProjectParentSwapBeforeAnchoredMutation (0.03s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/lifecycle	1.031s
+=== RUN   TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish
+=== RUN   TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish/create
+=== RUN   TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish/replace
+--- PASS: TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish (0.01s)
+    --- PASS: TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish/create (0.00s)
+    --- PASS: TestPlaceFilesystemDoesNotFollowParentSwappedBeforeFinalPublish/replace (0.00s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/adapter	2.114s
+=== RUN   TestConcurrentJournalRecordsAreNotLost
+--- PASS: TestConcurrentJournalRecordsAreNotLost (0.47s)
+=== RUN   TestJournalUndoPreservesRecordStartedDuringConfirmation
+--- PASS: TestJournalUndoPreservesRecordStartedDuringConfirmation (0.13s)
+=== RUN   TestOperationLockSerializesProcesses
+--- PASS: TestOperationLockSerializesProcesses (0.07s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/operation	3.390s
+=== RUN   TestRecommendIncludesNestedDeploymentEvidenceAndDatabaseSkill
+--- PASS: TestRecommendIncludesNestedDeploymentEvidenceAndDatabaseSkill (0.00s)
+PASS
+ok  	github.com/AllenMuu/skill-manager/internal/cli	3.276s

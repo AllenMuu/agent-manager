@@ -96,6 +96,17 @@ func Scan(root string) (Result, error) {
 	for _, dir := range scopeDirs {
 		scopeSet[dir] = true
 	}
+	// Non-boundary markers belong to their nearest enclosing project scope.
+	for dir, evidence := range state.evidence {
+		if scopeSet[dir] {
+			continue
+		}
+		scopeDir := closestScope(dir, scopeSet)
+		for _, item := range evidence {
+			item.Path = scopeRelative(scopeDir, filepath.Join(dir, item.Path))
+			state.evidence[scopeDir] = append(state.evidence[scopeDir], item)
+		}
+	}
 	// Bubbles every diagnostic up to its closest enclosing scope so skipped
 	// links and unreadable markers in non-scope directories stay visible.
 	for dir, diagnostics := range state.diagnostics {

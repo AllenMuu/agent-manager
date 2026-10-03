@@ -183,6 +183,53 @@ func TestAddGitignoreAcceptsPiManagedLink(t *testing.T) {
 	}
 }
 
+func TestAddGitignoreTreatsManagedPathsLiterally(t *testing.T) {
+	for _, tc := range []struct{ identifier, neighbor string }{
+		{"demo*", "demo-other"}, {"demo?", "demox"}, {"demo[ab]", "demoa"}, {"demo ", "demo"},
+	} {
+		t.Run(tc.identifier, func(t *testing.T) {
+			project := t.TempDir()
+			target := filepath.Join(t.TempDir(), tc.identifier)
+			mustWrite(t, filepath.Join(target, "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
+			link := filepath.Join(project, ".codex", "skills", tc.identifier)
+			mustLink(t, target, link)
+			neighbor := filepath.Join(".codex", "skills", tc.neighbor, "SKILL.md")
+			mustWrite(t, filepath.Join(project, neighbor), "unmanaged")
+			runGit(t, project, "init")
+			if _, err := diagnostic.AddGitignore(project, []string{link}, func(operation.Plan) bool { return true }); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, project, "check-ignore", "-q", "--", filepath.Join(".codex", "skills", tc.identifier))
+			err := exec.Command("git", "-C", project, "check-ignore", "-q", "--", neighbor).Run()
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+				t.Fatalf("neighbor was ignored by managed rule: %v", err)
+			}
+		})
+	}
+}
+
+func TestAddGitignoreRejectsLineSeparatorsBeforeConfirmation(t *testing.T) {
+	for _, id := range []string{"demo\n*", "demo\r*"} {
+		t.Run(id, func(t *testing.T) {
+			project := t.TempDir()
+			target := filepath.Join(t.TempDir(), id)
+			mustWrite(t, filepath.Join(target, "SKILL.md"), "---\nname: d\ndescription: d\n---\n")
+			link := filepath.Join(project, ".codex", "skills", id)
+			mustLink(t, target, link)
+			confirmed := false
+			_, err := diagnostic.AddGitignore(project, []string{link}, func(operation.Plan) bool { confirmed = true; return true })
+			if err == nil || confirmed {
+				t.Fatalf("line separator accepted or confirmation requested: confirmed=%v err=%v", confirmed, err)
+			}
+			for _, path := range []string{filepath.Join(project, ".gitignore"), filepath.Join(project, ".skill-manager")} {
+				if _, err := os.Lstat(path); !os.IsNotExist(err) {
+					t.Fatalf("refusal changed %s: %v", path, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDeleteRevalidatesConcurrentReplacementAndCatalogIO(t *testing.T) {
 	root := t.TempDir()
 	lib := filepath.Join(root, "library")

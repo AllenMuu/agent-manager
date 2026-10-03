@@ -233,6 +233,27 @@ func TestAddManyRejectsSourceEditedDuringConfirmation(t *testing.T) {
 	}
 }
 
+func TestAddManyRejectsSourceDeletedDuringConfirmationWithoutOptionalFingerprints(t *testing.T) {
+	root, project, skill := fixture(t)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool {
+		if err := os.RemoveAll(skill.SourcePath); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	})
+	if _, err := svc.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err == nil {
+		t.Fatal("deleted source accepted")
+	}
+	a, _ := adapter.For(adapter.Codex)
+	if _, err := os.Lstat(a.ProjectSkillPath(project, skill.Identifier)); !os.IsNotExist(err) {
+		t.Fatalf("dangling link published: %v", err)
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("journal changed: %v %v", ok, err)
+	}
+}
+
 func TestAddManyDeclineLeavesNoPartialLinks(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")

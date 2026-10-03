@@ -1,0 +1,198 @@
+{
+  "schema_version": "1",
+  "mode": "workspace",
+  "repository": "/Users/allenj/.codex/worktrees/fix-code-review-tdd/agent-manager",
+  "total_files": 27,
+  "reviewable_count": 5,
+  "excluded_count": 22,
+  "total_insertions": 1272,
+  "total_deletions": 8,
+  "reviewable_files": [
+    {
+      "path": "internal/config/config.go",
+      "status": "modified",
+      "insertions": 8,
+      "deletions": 1
+    },
+    {
+      "path": "internal/diagnostic/doctor.go",
+      "status": "modified",
+      "insertions": 6,
+      "deletions": 2
+    },
+    {
+      "path": "internal/initcmd/init.go",
+      "status": "modified",
+      "insertions": 37,
+      "deletions": 5
+    },
+    {
+      "path": "internal/stack/scan.go",
+      "status": "modified",
+      "insertions": 11,
+      "deletions": 0
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/.openspec.yaml",
+      "status": "added",
+      "insertions": 2,
+      "deletions": 0
+    }
+  ],
+  "excluded_files": [
+    {
+      "path": "internal/cli/recommend_test.go",
+      "status": "modified",
+      "insertions": 46,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "status": "modified",
+      "insertions": 16,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/diagnostic/doctor_test.go",
+      "status": "modified",
+      "insertions": 47,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/initcmd/init_test.go",
+      "status": "modified",
+      "insertions": 122,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/lifecycle/service_test.go",
+      "status": "modified",
+      "insertions": 21,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/operation/operation_test.go",
+      "status": "modified",
+      "insertions": 43,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "internal/stack/scan_test.go",
+      "status": "modified",
+      "insertions": 44,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/build.log",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/full-test.log",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/openspec.log",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/race.log",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/reviewed.patch",
+      "status": "added",
+      "insertions": 566,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/tdd-evidence.md",
+      "status": "added",
+      "insertions": 14,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/vet.log",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T010613.738598000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063455.884854000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063516.117129000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063652.585336000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/design.md",
+      "status": "added",
+      "insertions": 23,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/proposal.md",
+      "status": "added",
+      "insertions": 25,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/specs/guarded-skill-maintenance/spec.md",
+      "status": "added",
+      "insertions": 41,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/tasks.md",
+      "status": "added",
+      "insertions": 19,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    }
+  ]
+}
