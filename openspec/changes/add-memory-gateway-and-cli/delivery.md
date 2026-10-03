@@ -1,9 +1,10 @@
 # M3 / Issue #21 delivery evidence
 
-Status: implemented and verified on `feature/issue21-memory-gateway-and-cli`;
-7/9 OpenSpec tasks complete. Ordinary review repairs and the explicitly authorized final-OCR F1 repair are
-implemented; fresh independent acceptance and final read-only OCR remain
-controller tasks 3.2/3.3. No PR, push, merge or Issue close is claimed.
+Status: implemented, validated and independently accepted on
+`feature/issue21-memory-gateway-and-cli`; 9/9 OpenSpec tasks complete.
+Fresh specification, quality and prescribed read-only OCR reviews PASS at source
+HEAD `a53e7124767debaa433eb73a90ea26cf2dc9d86e`. Publication metadata is
+reviewed separately before delivery. No PR, push, merge or Issue close is claimed.
 Parent #7, Mem0/M4, shared native agent acceptance/M5 and runtime slices remain
 outside this delivery.
 
@@ -110,7 +111,7 @@ status tested `RecordWriter`, while confirmed add dispatches
 `/tmp/agent-manager-issue21-final-ocr/`; that result did not authorize publication.
 The user subsequently explicitly instructed “根据报告修复”, authorizing this
 bounded repair. Fresh independent spec/quality acceptance and a new prescribed
-final read-only OCR are still required before publication.
+final read-only OCR subsequently passed at the repaired source head below.
 
 The repair changes only the Gateway implemented-capability projection: confirmed
 Remember/write requires the operation-aware interface plus the declared Remember
@@ -160,6 +161,18 @@ was validated or added. The optional scored fixture is not real semantic runtime
 acceptance.
 
 Ordinary independent repair acceptance (3.2) and the required independent
-`gpt-6.1-sol` / `high` read-only OCR (3.3) remain pending with the controller.
+`gpt-6.1-sol` / `high` read-only OCR (3.3) are complete at repaired source HEAD
+`a53e7124767debaa433eb73a90ea26cf2dc9d86e`:
+
+- Specification: `/tmp/agent-manager-issue21-spec-ocr-repair-review.md`, PASS,
+  38/38 entries and all five requirements / seven scenarios.
+- Quality: `/tmp/agent-manager-issue21-quality-ocr-repair-review.md`, PASS,
+  38/38 entries; independent interface/declaration and health probes pass.
+- Final OCR: `/tmp/agent-manager-issue21-final-ocr-rereview/report.md`, PASS,
+  38/38 entries (16 selected, 22 supplemented), zero skipped; both original
+  probes and 28 additional targeted regressions pass. Original STOP retained.
+
+This review-metadata update and the proposed PR body receive supplemental
+read-only review before publication; source is unchanged from validated HEAD.
 Any actionable final OCR finding stops publication. M3 stays active until accepted
 implementation and authorized merge, followed by spec sync/archive.
