@@ -10,8 +10,8 @@
 | --- | --- | --- | --- | --- |
 | F0 | [#18](https://github.com/AllenMuu/agent-manager/issues/18) | [fix-approved-invocation-retry-lineage](../../openspec/changes/archive/2026-10-02-fix-approved-invocation-retry-lineage/proposal.md) | 无 | 实现/审查 7/7；[PR #30](https://github.com/AllenMuu/agent-manager/pull/30) 已合并；#18 已关闭，规格同步/归档已在本分支完成 |
 | M1 | [#19](https://github.com/AllenMuu/agent-manager/issues/19) | [define-scoped-memory-contracts](../../openspec/changes/archive/2026-10-02-define-scoped-memory-contracts/proposal.md) | 无 | 实现/审查 10/10；PR #32 已合并、#19 已关闭；本分支已同步/归档 |
-| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/proposal.md) | #19 | 实现验收 9/9；PR #34 已合并主分支 `b388a67`，#20 CLOSED；本分支同步/归档已完成，随 #21 PR 交付 |
-| M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/add-memory-gateway-and-cli/proposal.md) | #20 | 本分支实现验收 9/9；全部 5 requirements / 7 scenarios 有证据；规格、质量及最终只读 OCR 均 PASS（38/38）；F1 修复与原 STOP 历史保留；发布元数据增量审查待完成；未发布 PR/未合并 |
+| M2 | [#20](https://github.com/AllenMuu/agent-manager/issues/20) | [add-structured-local-memory-store](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/proposal.md) | #19 | 实现验收 9/9；PR #34 已合并主分支 `b388a67`，#20 CLOSED；同步/归档已随 #21 / PR #36 交付 |
+| M3 | [#21](https://github.com/AllenMuu/agent-manager/issues/21) | [add-memory-gateway-and-cli](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/proposal.md) | #20 | 实现验收 9/9；PR #36 已合并主分支 `ae1745a`，#21 CLOSED；5 requirements / 7 scenarios 已同步归档，本分支文档提交随 #22 PR 交付 |
 | M4 | [#22](https://github.com/AllenMuu/agent-manager/issues/22) | [add-mem0-memory-provider](../../openspec/changes/add-mem0-memory-provider/proposal.md) | #19 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | M5 | [#23](https://github.com/AllenMuu/agent-manager/issues/23) | [share-memory-across-codex-and-claude](../../openspec/changes/share-memory-across-codex-and-claude/proposal.md) | #21, #22 | proposal/design/spec/tasks 已生成；实现 0 项 |
 | R1 | [#24](https://github.com/AllenMuu/agent-manager/issues/24) | [define-runtime-enforcement-capabilities](../../openspec/changes/define-runtime-enforcement-capabilities/proposal.md) | 无 | proposal/design/spec/tasks 已生成；实现 0 项 |
@@ -38,11 +38,11 @@ M1 与 R1 是不依赖其他 tickets 的 frontier；F0 优先修复现有基线�
 | #20 / 3 | 2.3 | [Atomic lifecycle and history](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Supersede and forget；Supersession fails before commit |
 | #20 / 4 | 2.4 | [Recoverable local writes](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | Failure and retry evidence |
 | #20 / 5 | 2.5 | [Explicit legacy import](../../openspec/changes/archive/2026-10-02-add-structured-local-memory-store/specs/structured-local-memory-store/spec.md) | No implicit conversion；Confirmed import |
-| #21 / 1 | 2.1 | [Truthful provider discovery](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Configured search is not implemented |
-| #21 / 2 | 2.2 | [Confirmed owned mutations](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Mutation is not confirmed；Stable project identity |
-| #21 / 3 | 2.3 | [Bounded deterministic retrieval](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Bounded attributed search；Wrong-owner query |
-| #21 / 4 | 2.4 | [Shared read-only task-context path](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Context handoff reads knowledge |
-| #21 / 5 | 2.5 | [Independent failure and recovery semantics](../../openspec/changes/add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Provider outage |
+| #21 / 1 | 2.1 | [Truthful provider discovery](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Configured search is not implemented |
+| #21 / 2 | 2.2 | [Confirmed owned mutations](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Mutation is not confirmed；Stable project identity |
+| #21 / 3 | 2.3 | [Bounded deterministic retrieval](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Bounded attributed search；Wrong-owner query |
+| #21 / 4 | 2.4 | [Shared read-only task-context path](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Context handoff reads knowledge |
+| #21 / 5 | 2.5 | [Independent failure and recovery semantics](../../openspec/changes/archive/2026-10-03-add-memory-gateway-and-cli/specs/memory-gateway-and-cli/spec.md) | Provider outage |
 | #22 / 1 | 2.1 | [Canonical remote operation mapping](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md) | Remote canonical round trip |
 | #22 / 2 | 2.2 | [Honest remote semantic capabilities](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md) | Backend cannot atomically supersede |
 | #22 / 3 | 2.3 | [Bounded transport and uncertain writes](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md) | Write response times out；Authentication failure |

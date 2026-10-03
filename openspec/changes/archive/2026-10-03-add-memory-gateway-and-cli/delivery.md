@@ -176,3 +176,15 @@ This review-metadata update and the proposed PR body receive supplemental
 read-only review before publication; source is unchanged from validated HEAD.
 Any actionable final OCR finding stops publication. M3 stays active until accepted
 implementation and authorized merge, followed by spec sync/archive.
+
+## Accepted main delivery and archival
+
+PR #36 merged on 2026-10-03 at main
+`ae1745ac50e4ab6e645d7ef07bad66c61c2d8635`; Issue #21 is CLOSED.
+Source validation and independent gates above were completed before publication.
+All nine implementation tasks and five ticket acceptance items are satisfied by
+the accepted main implementation; parent #7 remains open for M4/M5.
+The accepted five requirements / seven scenarios were synchronized verbatim
+into the main capability (only title and Requirements header transformed), then
+this completed change was archived. This postmerge archive is branch-local
+until the following #22 PR delivers its separate documentation commit.
