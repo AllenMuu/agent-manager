@@ -1,5 +1,10 @@
 # Issue #22 implementation evidence
 
+Current status: implemented, validated and independently accepted, 10/10 tasks.
+Source HEAD `f07485fdb3d77b3d942a519cb9dea9661b1ddd2a`, integrated base
+`6fefae2bf02a4232b7c21d4475b3513bf9ef1401`. Publication metadata receives
+separate supplemental review; no PR, merge or Issue closure is claimed here.
+
 Scope: branch `feature/issue22-mem0-memory-provider`, starting HEAD `28b8875`,
 main prerequisite `ae1745ac50e4ab6e645d7ef07bad66c61c2d8635`. Native blocker #19
 is CLOSED; its canonical contracts are present on main. M3 PR #36 is merged.
@@ -201,3 +206,24 @@ returned exit 0. Exact commands/exit codes/logs are in
 artifacts were inspected and removed individually. No source changed after these
 checks. Current source identity/clean HEAD/base/complete scope and stopped backend
 observations are retained in `ocr-repair/manifest.json` for fresh review.
+
+## Repaired-source independent acceptance
+
+At source HEAD `f07485fdb3d77b3d942a519cb9dea9661b1ddd2a` on refreshed base
+`6fefae2bf02a4232b7c21d4475b3513bf9ef1401`, the required sequence completed:
+
+- Specification PASS: `/tmp/agent-manager-issue22-spec-ocr-repair-review.md`,
+  33/33 entries and all five requirements / seven scenarios.
+- Quality PASS: `/tmp/agent-manager-issue22-quality-ocr-repair-review.md`,
+  33/33 entries; original authentication probe and compatibility regressions pass.
+- Prescribed independent `gpt-6.1-sol` / `high` read-only OCR PASS:
+  `/tmp/agent-manager-issue22-final-ocr-rereview/report.md`, 33/33 entries
+  (11 selected, 22 manually supplemented), zero skipped and no actionable finding.
+  The original STOP and subsequent explicit repair authorization remain preserved.
+
+Tasks 3.2/3.3 now record those completed source gates. Earlier pending-task
+statements above describe their historical heads, not current acceptance.
+This three-file acceptance-metadata update and proposed PR body receive a
+supplemental read-only gate before publication. Go source is unchanged from the
+validated and reviewed source head. Mem0 wire/live-harness evidence retains its
+precise original tested-source scope. Parent #7 remains open for M5.
