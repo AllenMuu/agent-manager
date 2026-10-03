@@ -137,6 +137,7 @@ func operationContext(ctx context.Context) error {
 // uncertain write must not be retried blindly. Unavailable shares the legacy
 // provider category without changing legacy APIs.
 var (
+	ErrAuthentication  = errors.New("Memory authentication failed")
 	ErrUnsupported     = errors.New("Memory operation unsupported")
 	ErrUnavailable     = ErrProviderUnavailable
 	ErrOwnershipDenied = errors.New("Memory ownership denied")
@@ -150,6 +151,8 @@ var (
 // Update/Supersede describe operation support; ConditionalUpdate and
 // AtomicSupersede separately advertise the stronger concurrency guarantees.
 type StructuredCapabilities struct {
+	BasicReplace      bool `json:"basicReplace"`
+	BasicRemove       bool `json:"basicRemove"`
 	Remember          bool `json:"remember"`
 	Get               bool `json:"get"`
 	Recall            bool `json:"recall"`

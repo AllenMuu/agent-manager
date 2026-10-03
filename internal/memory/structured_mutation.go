@@ -25,8 +25,8 @@ func Update(ctx context.Context, p StructuredProvider, input UpdateRequest) (Rec
 	if p == nil {
 		return Record{}, ErrUnavailable
 	}
-	mutator, ok := p.(RecordUpdater)
-	if err := providerReady(ctx, p, ok && p.Capabilities().Update && p.Capabilities().ConditionalUpdate); err != nil {
+	mutator, _ := p.(RecordUpdater)
+	if err := providerReady(ctx, p, strongLifecycleSupported(p, OperationUpdate)); err != nil {
 		return Record{}, err
 	}
 	return mutator.Update(ctx, input)
@@ -53,8 +53,8 @@ func Supersede(ctx context.Context, p StructuredProvider, input UpdateRequest) (
 	if p == nil {
 		return Record{}, ErrUnavailable
 	}
-	m, ok := p.(RecordSuperseder)
-	if err := providerReady(ctx, p, ok && p.Capabilities().Supersede && p.Capabilities().AtomicSupersede); err != nil {
+	m, _ := p.(RecordSuperseder)
+	if err := providerReady(ctx, p, strongLifecycleSupported(p, OperationSupersede)); err != nil {
 		return Record{}, err
 	}
 	return m.Supersede(ctx, input)
@@ -63,8 +63,8 @@ func Forget(ctx context.Context, p StructuredProvider, input MutationRequest) (R
 	if p == nil {
 		return Record{}, ErrUnavailable
 	}
-	m, ok := p.(RecordForgetter)
-	if err := providerReady(ctx, p, ok && p.Capabilities().Forget); err != nil {
+	m, _ := p.(RecordForgetter)
+	if err := providerReady(ctx, p, strongLifecycleSupported(p, OperationForget)); err != nil {
 		return Record{}, err
 	}
 	return m.Forget(ctx, input)
@@ -112,4 +112,33 @@ func (input MutationRequest) validate() error {
 		return fmt.Errorf("%w: expected version required", ErrInvalidInput)
 	}
 	return nil
+}
+
+// strongLifecycleSupported is a pure interface/declaration intersection shared
+// by preview and dispatch. It never probes health, reads records or mutates.
+func strongLifecycleSupported(p StructuredProvider, operation Operation) bool {
+	if p == nil {
+		return false
+	}
+	switch operation {
+	case OperationUpdate:
+		if _, ok := p.(RecordUpdater); !ok {
+			return false
+		}
+		caps := p.Capabilities()
+		return caps.Update && caps.ConditionalUpdate
+	case OperationSupersede:
+		if _, ok := p.(RecordSuperseder); !ok {
+			return false
+		}
+		caps := p.Capabilities()
+		return caps.Supersede && caps.AtomicSupersede
+	case OperationForget:
+		if _, ok := p.(RecordForgetter); !ok {
+			return false
+		}
+		return p.Capabilities().Forget
+	default:
+		return false
+	}
 }

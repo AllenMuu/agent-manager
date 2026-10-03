@@ -159,6 +159,17 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 				return Preview{}, SafeError(err)
 			}
 		}
+		if m.OperationID != "" && validateStructuredToken("operation ID", m.OperationID) != nil {
+			return Preview{}, ErrInvalidInput
+		}
+		if g.provider == nil {
+			return Preview{}, ErrUnavailable
+		}
+		// Unsupported strong semantics must be rejected before target lookup or
+		// remote health. Use the same pure guarantees as the commit dispatch.
+		if !strongLifecycleSupported(g.provider, m.Operation) {
+			return Preview{}, ErrUnsupported
+		}
 		current, err := Get(ctx, g.provider, m.Record.Owner, m.ID)
 		if err != nil {
 			return Preview{}, SafeError(err)
@@ -324,7 +335,7 @@ func SafeError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return ErrCanceled
 	}
-	for _, category := range []error{ErrCanceled, ErrOwnershipDenied, ErrInvalidInput, ErrUnsupported, ErrNotFound, ErrConflict, ErrNotConfirmed, ErrOutcomeUnknown, ErrNotCommitted, ErrUnavailable} {
+	for _, category := range []error{ErrAuthentication, ErrCanceled, ErrOwnershipDenied, ErrInvalidInput, ErrUnsupported, ErrNotFound, ErrConflict, ErrNotConfirmed, ErrOutcomeUnknown, ErrNotCommitted, ErrUnavailable} {
 		if errors.Is(err, category) {
 			return category
 		}
@@ -366,6 +377,8 @@ func DiagnosticCategory(err error) string {
 	}
 	safe := SafeError(err)
 	switch safe {
+	case ErrAuthentication:
+		return "authentication"
 	case ErrCanceled:
 		return "canceled"
 	case ErrOwnershipDenied:

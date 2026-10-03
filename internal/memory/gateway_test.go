@@ -191,3 +191,21 @@ func TestGatewayDoesNotAdvertiseBasicRememberAsConfirmedAdd(t *testing.T) {
 		t.Fatalf("basic provider contract confused with Gateway writes: %+v", report)
 	}
 }
+
+func TestAuthenticationDiagnosticCategoryPreservesSafeWrappedErrors(t *testing.T) {
+	for _, err := range []error{memory.ErrAuthentication, fmt.Errorf("synthetic-private-backend-detail: %w", memory.ErrAuthentication), memory.SafeError(fmt.Errorf("synthetic-private-backend-detail: %w", memory.ErrAuthentication))} {
+		if got := memory.DiagnosticCategory(err); got != "authentication" {
+			t.Fatalf("rejected authentication diagnostic = %q", got)
+		}
+	}
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{nil, ""}, {memory.ErrCanceled, "canceled"}, {memory.ErrUnavailable, "unavailable"}, {memory.ErrUnsupported, "unsupported"}, {memory.ErrOwnershipDenied, "ownership-denied"}, {memory.ErrConflict, "conflict"}, {memory.ErrInvalidInput, "invalid-input"}, {memory.ErrNotFound, "not-found"}, {memory.ErrNotConfirmed, "not-confirmed"}, {memory.ErrOutcomeUnknown, "outcome-unknown"}, {memory.ErrNotCommitted, "not-committed"},
+	} {
+		if got := memory.DiagnosticCategory(test.err); got != test.want {
+			t.Fatalf("existing diagnostic changed: %q want %q", got, test.want)
+		}
+	}
+}

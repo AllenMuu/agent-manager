@@ -12,6 +12,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/artifact"
 	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/memoryprovider"
 	"github.com/AllenMuu/skill-manager/internal/taskcontext"
 	"github.com/spf13/cobra"
 )
@@ -160,7 +161,7 @@ func newMemoryStatusCommand(rootOptions *rootOptions) *cobra.Command {
 			}
 			providerStatus := memory.ProviderStatus{}
 			if loaded.Memory != nil {
-				providerStatus, err = discoverConfiguredMemoryProvider(*loaded.Memory)
+				providerStatus, err = discoverConfiguredMemoryProvider(cmd.Context(), *loaded.Memory)
 				if err != nil && providerStatus.Reason == "" {
 					return err
 				}
@@ -192,8 +193,8 @@ func newMemoryStatusCommand(rootOptions *rootOptions) *cobra.Command {
 	return command
 }
 
-func discoverConfiguredMemoryProvider(config memory.ProviderConfig) (memory.ProviderStatus, error) {
-	return memory.DiscoverConfiguredProvider(context.Background(), config)
+func discoverConfiguredMemoryProvider(ctx context.Context, config memory.ProviderConfig) (memory.ProviderStatus, error) {
+	return memoryprovider.Discover(ctx, config)
 }
 
 func writeMemoryStatus(cmd *cobra.Command, report memory.StatusReport) error {

@@ -366,3 +366,9 @@ no-network-default, journal, or provider-ownership rules.
   and role contracts without inventing a runtime-specific task-state format.
 - **React WebUI** — a post-CLI web interface over the same local services.
 - **Wails** — desktop packaging of the WebUI.
+
+
+The explicitly selected [Mem0 OSS Memory provider](docs/mem0-memory-provider.md)
+supports canonical basic remote operations and read/search through the CLI
+Gateway. Strong conditional lifecycle and lineage/history remain unsupported.
+Local defaults and managed-skill operations remain offline.

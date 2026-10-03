@@ -33,3 +33,24 @@ Add explicit provider kind/config selection with secret references. Keep local p
 Follow tasks.md as the only implementation checklist. Bind ticket acceptance item N to requirement N and task 2.N; run all scenarios of that requirement through confirmed public seams. Planning completion is not implementation completion. Offline fixtures, mock behavior and opt-in real-runtime evidence must remain distinct.
 
 Apply only after blocker delivery is verified and the public test seams are confirmed. Run Go tests/build/vet, related race checks, strict change validation and requirement/scenario verification. Ordinary independent review precedes the configured gpt-6.1-sol/high read-only OCR gate; any actionable OCR finding or unavailable reviewer prevents PR publication. Keep this change active until implementation acceptance and authorized merge, then sync and archive.
+
+## Implemented contract selection
+
+The selected pin is official Python 2.2.1 at commit
+94c3fe9f238f3dbf29c9ce98643bd71eb13077cd. Backend IDs remain inside HTTP mapping;
+canonical metadata uses an inert JSON envelope without content and exact owner/
+neutral-ID metadata filters. A JSON string preserves uint64 versions without
+Python float coercion. GET-by-ID 503 remains unavailable, never inferred absent.
+Bounded semantic search is not complete enumeration.
+
+The backend lacks CAS, conditional deletion, operation receipts, atomic
+supersession and canonical lineage/history. Existing strong interfaces remain
+unsupported. New explicit canonical Replace/Remove interfaces provide basic
+unconditional operations with separate basic capability flags; observed versions
+are not concurrency guarantees. Direct provider create exists independently of
+operation-aware confirmed Gateway create. The delivery factory selects external
+Mem0 without adding network dependencies to the domain core. CLI Gateway supports
+read/search/status only; native cross-agent confirmed mutation is later scope.
+
+[Operator/configuration/API/smoke guidance](../../../docs/mem0-memory-provider.md)
+explains the exact limits and opt-in real-service harness.
