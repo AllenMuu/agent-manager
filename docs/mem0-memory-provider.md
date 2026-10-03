@@ -85,6 +85,9 @@ verification returns outcome unknown without issuing a second write. Reconcile
 explicitly through read-only provider observations and external operation
 evidence; the adapter has no durable mutation receipt or blind retry mechanism.
 Errors never include raw URLs, headers, backend response text, or credentials.
+`memory.DiagnosticCategory` and injected Gateway task-context `memoryDiagnostic`
+report `authentication` for rejected credentials, retaining independent task
+artifacts and selected Skills with safe warnings.
 
 Ordinary tests require no installed Mem0 or service:
 

@@ -155,3 +155,49 @@ test/race evaluation artifacts were inspected and removed individually. No code
 changed after these final checks. Existing original real smoke is retained as
 executed evidence for the unchanged remote wire implementation, not a new live
 run of the repaired Gateway.
+
+## Final OCR F1 STOP and explicit authorized repair
+
+The prescribed final gpt-6.1-sol/high read-only OCR at
+`302a548e1cf7dbcecaed9ae5eb7173faa8c9f867` reviewed all 31 entries and returned
+STOP for one actionable Low authentication diagnostic projection gap. No repair
+or publication was performed in that review. Its original report/probe/log remain
+unchanged at `/tmp/agent-manager-issue22-final-ocr/`.
+
+The user subsequently explicitly authorized repair with “帮我修复”. Before this
+repair, the controller refreshed and cleanly merged latest main
+`6fefae2bf02a4232b7c21d4475b3513bf9ef1401` (PR #37) into the branch, producing
+clean merge HEAD `e7f3012e239b7666cb57c8e4aab8dd7a361805fb`. This new integration
+base does not rewrite the historical OCR range or accepted M3 archive history.
+
+`DiagnosticCategory` now explicitly returns `authentication` when SafeError
+preserves ErrAuthentication. Public direct/wrapped-error tests and the real Mem0
+adapter + httptest401 injected into exported taskcontext.ResolveWithOptions
+reproduced the previous `unavailable` projection (RED), then passed (GREEN).
+The task-context regression retains intent artifacts, repository guidance and
+selected Skills, checks safe serialized output, and verifies exactly one
+transport credential resolution/request without credential disclosure. The
+original independent public OCR overlay probe now passes unchanged. Existing
+canceled/unavailable/unsupported/ownership/conflict/invalid/receipt categories
+remain unchanged. This is an embedding task-context diagnostic fix; automatic
+CLI role selection is still structured-local and no native agent/M5 reachability
+is claimed.
+
+New repair evidence is separately retained under
+`/tmp/agent-manager-issue22-evidence/ocr-repair/`. The remote adapter and live
+harness wire source remain identical to the actual live-validated original
+commit; the historical Go smoke applies to those unchanged operations, not a
+fresh whole-head live run. No service/container restart is necessary or claimed.
+Tasks remain 8/10, with ordinary spec then quality re-review and fresh prescribed
+final read-only OCR pending controller execution. No publication, main delivery
+or Issue closure is inferred from the authorized repair.
+
+After final source edits on the refreshed-main integration, affected Memory/
+task-context suites, full `go test ./... -count=1` (including PR #37 integration
+coverage), Memory/factory/CLI/task-context races, vet, CLI build, strict OpenSpec
+validation, doctor, working-tree diff and complete-PR diff against new main all
+returned exit 0. Exact commands/exit codes/logs are in
+`ocr-repair/check-exit-status.json`. The two exact generated CLI evaluation
+artifacts were inspected and removed individually. No source changed after these
+checks. Current source identity/clean HEAD/base/complete scope and stopped backend
+observations are retained in `ocr-repair/manifest.json` for fresh review.

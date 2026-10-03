@@ -377,6 +377,8 @@ func DiagnosticCategory(err error) string {
 	}
 	safe := SafeError(err)
 	switch safe {
+	case ErrAuthentication:
+		return "authentication"
 	case ErrCanceled:
 		return "canceled"
 	case ErrOwnershipDenied:
