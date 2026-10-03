@@ -159,6 +159,17 @@ func (g *Gateway) Preview(ctx context.Context, m Mutation) (Preview, error) {
 				return Preview{}, SafeError(err)
 			}
 		}
+		if m.OperationID != "" && validateStructuredToken("operation ID", m.OperationID) != nil {
+			return Preview{}, ErrInvalidInput
+		}
+		if g.provider == nil {
+			return Preview{}, ErrUnavailable
+		}
+		// Unsupported strong semantics must be rejected before target lookup or
+		// remote health. Use the same pure guarantees as the commit dispatch.
+		if !strongLifecycleSupported(g.provider, m.Operation) {
+			return Preview{}, ErrUnsupported
+		}
 		current, err := Get(ctx, g.provider, m.Record.Owner, m.ID)
 		if err != nil {
 			return Preview{}, SafeError(err)

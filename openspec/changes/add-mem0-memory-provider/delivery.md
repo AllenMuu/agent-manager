@@ -110,3 +110,48 @@ exit 0. Exact commands/logs are in `spec-repair/check-exit-status.json`. The thr
 specific evaluation artifacts created by affected/full/race checks were inspected
 and removed individually. Task-owned Mem0 service/container remain stopped.
 Tasks 3.2/3.3 remain pending root review; no publication or merge is claimed.
+
+## Ordinary quality review F1 repair
+
+Independent quality review at `79b888467220000b6d191b2e64b0556affeacad8`
+returned REQUEST CHANGES for one Medium lifecycle-preview dispatch defect:
+unsupported Mem0 update/supersede/forget looked up targets through remote health
+before checking strong operation support, allowing auth/unavailable errors to
+mask unsupported. The historical report/probe remain unchanged at
+`/tmp/agent-manager-issue22-quality-review.md` and its external probe directory.
+No mutation or credential disclosure was observed.
+
+A shared pure strong lifecycle predicate now intersects the actual optional
+interface with its declared operation and exact guarantee flags. Update requires
+ConditionalUpdate; supersede requires AtomicSupersede; forget requires its
+conditional RecordForgetter contract. Preview applies this after owner/input/
+operation-ID validation and before target Get/Health, using the same predicate
+as commit dispatch. Add/import draft-plan compatibility is unchanged; Mem0
+basic Replace/Remove are neither downgraded nor routed through the Gateway.
+
+Public RED→GREEN tests reproduce all three CLI operations against 401 and 503
+endpoints and now assert unsupported, zero requests and no confirmation plan.
+Direct exported Preview tests cover declarations without interfaces, false
+operation declarations, missing CAS/atomic guarantees, and authorization/input
+validation before capability access. The original independent CLI overlay probe
+now passes. Local exact confirmation, lifecycle/history, fresh uncertain receipt
+reconciliation and effective-flag plans pass their focused compatibility tests.
+This extends the honest semantic capability scenario with actual CLI preview
+behavior, not only direct strong dispatch.
+
+Evidence is separate under `/tmp/agent-manager-issue22-evidence/quality-repair/`.
+The remote adapter and live harness remain byte-identical to the original
+real-service-validated source; no wire behavior changed or live service restarted.
+The task service/container remain stopped. Ordinary spec re-review, quality
+re-review and prescribed final read-only OCR remain pending root execution;
+tasks 3.2/3.3 are not marked complete and no delivery to main is claimed.
+
+After the final source edit, full `go test ./... -count=1`, related
+Memory/factory/CLI/task-context race tests, vet, CLI build, strict OpenSpec
+validation, doctor and diff checks all returned exit 0. Final focused preview/
+dispatch parity tests and the original reviewer probe passed. Exact commands,
+exit codes and logs are in `quality-repair/check-exit-status.json`; two generated
+test/race evaluation artifacts were inspected and removed individually. No code
+changed after these final checks. Existing original real smoke is retained as
+executed evidence for the unchanged remote wire implementation, not a new live
+run of the repaired Gateway.
