@@ -88,7 +88,7 @@ non-secret external configuration explicitly sets `allowNetwork: true` and the
 tested OSS contract pin. Local defaults and managed-skill workflows remain
 offline: no skill execution, dependency installation, service startup or network
 access is added to their lifecycle. See [ticket #22](https://github.com/AllenMuu/agent-manager/issues/22)
-and [Mem0 capability](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md).
+and [Mem0 capability](../../openspec/changes/archive/2026-10-03-add-mem0-memory-provider/specs/mem0-memory-provider/spec.md).
 
 Credentials are opaque references resolved only while building authenticated
 transport requests. Status, journals, canonical metadata and errors contain no
