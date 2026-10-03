@@ -10,7 +10,7 @@
 - 分支：codex/fix-code-review-tdd。
 - 工作树：/Users/allenj/.codex/worktrees/fix-code-review-tdd/agent-manager。
 - OpenSpec：fix-code-review-findings。用户“按推荐”确认采用公开服务接口与 CLI 测试边界。
-- 修复验收时状态：本地工作树已实现、验证；当时尚未提交、创建 PR 或合入 main。原主工作区的既有变更未修改。后续用户授权合并，交付证据见同目录 delivery.md。
+- 修复验收时状态：本地工作树已实现、验证；当时尚未提交、创建 PR 或合入 main。原主工作区的既有变更未修改。后续用户授权合并，后续基线验证见 [交付核验](fix-code-review-findings-2026-10-03/delivery.md)，最终合并状态以 GitHub PR 为准。
 
 ## 逐项验收矩阵
 
@@ -50,6 +50,6 @@ R2 行中的后续测试名均带 TestInitializeRollback 前缀。新生产代�
 
 最终另按 open-code-review-delegate 获取 preview/rule，完成 5/5 OCR 可审文件（4 个生产文件和 .openspec.yaml）检查；OCR 默认排除的七个测试文件、四个 Markdown 规格文档全部补审。因此代码/规格范围覆盖 16/16，skipped=0，coverage=100%。生成测试输出和报告证据不算产品代码；逐文件记录和排除原因见 [coverage.json](fix-code-review-findings-2026-10-03/coverage.json)。
 
-冻结代码 diff SHA-256：0b9af3440891e2e85faff9968ac2922a7c47082047a5f8944fa22cf7e04cbb99；审查后生产代码/测试未改。保存的 [reviewed.patch](fix-code-review-findings-2026-10-03/reviewed.patch) 可用于核对。
+冻结代码 diff SHA-256：0b9af3440891e2e85faff9968ac2922a7c47082047a5f8944fa22cf7e04cbb99；审查后生产代码/测试未改。保存的 [reviewed.patch.gz](fix-code-review-findings-2026-10-03/reviewed.patch.gz) 可用于核对。
 
 验证边界：回滚前检查了已发布文件的身份与内容；不协作的外部进程在恢复过程中再次写入的任意竞态，未由本次确定性测试证明安全。测试通过及审查无发现不代表全部可能并发情形均已覆盖。
