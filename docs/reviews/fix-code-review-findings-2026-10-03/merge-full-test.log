@@ -1,0 +1,30 @@
+?   	github.com/AllenMuu/skill-manager/cmd/agent-manager	[no test files]
+?   	github.com/AllenMuu/skill-manager/cmd/skill-manager	[no test files]
+ok  	github.com/AllenMuu/skill-manager/internal/adapter	1.450s
+ok  	github.com/AllenMuu/skill-manager/internal/artifact	1.359s
+ok  	github.com/AllenMuu/skill-manager/internal/catalog	1.749s
+ok  	github.com/AllenMuu/skill-manager/internal/cli	2.530s
+ok  	github.com/AllenMuu/skill-manager/internal/config	1.368s
+ok  	github.com/AllenMuu/skill-manager/internal/diagnostic	2.587s
+ok  	github.com/AllenMuu/skill-manager/internal/eval	2.212s
+ok  	github.com/AllenMuu/skill-manager/internal/governance	2.788s
+ok  	github.com/AllenMuu/skill-manager/internal/identity	2.988s
+ok  	github.com/AllenMuu/skill-manager/internal/initcmd	4.755s
+ok  	github.com/AllenMuu/skill-manager/internal/installation	5.897s
+ok  	github.com/AllenMuu/skill-manager/internal/invocation	6.472s
+ok  	github.com/AllenMuu/skill-manager/internal/lifecycle	7.289s
+ok  	github.com/AllenMuu/skill-manager/internal/memory	8.348s
+?   	github.com/AllenMuu/skill-manager/internal/memory/memorytest	[no test files]
+ok  	github.com/AllenMuu/skill-manager/internal/opcontext	6.526s
+ok  	github.com/AllenMuu/skill-manager/internal/operation	7.954s
+ok  	github.com/AllenMuu/skill-manager/internal/policy	6.912s
+ok  	github.com/AllenMuu/skill-manager/internal/recommend	6.003s
+ok  	github.com/AllenMuu/skill-manager/internal/resource	5.793s
+ok  	github.com/AllenMuu/skill-manager/internal/role	5.518s
+ok  	github.com/AllenMuu/skill-manager/internal/run	6.224s
+ok  	github.com/AllenMuu/skill-manager/internal/search	5.586s
+ok  	github.com/AllenMuu/skill-manager/internal/stack	5.603s
+ok  	github.com/AllenMuu/skill-manager/internal/subagent	5.226s
+ok  	github.com/AllenMuu/skill-manager/internal/taskcontext	5.561s
+ok  	github.com/AllenMuu/skill-manager/internal/webconsole	6.370s
+ok  	github.com/AllenMuu/skill-manager/internal/webui	6.034s

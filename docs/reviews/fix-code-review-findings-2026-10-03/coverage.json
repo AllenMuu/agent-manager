@@ -1,0 +1,261 @@
+{
+  "base": "b388a67ba79aa60a79106574f0d1d830ec918513",
+  "diff_sha256": "0b9af3440891e2e85faff9968ac2922a7c47082047a5f8944fa22cf7e04cbb99",
+  "ocr_reviewable": {
+    "total_files": 5,
+    "reviewed_files": 5,
+    "skipped_files": 0,
+    "coverage_rate": 1.0
+  },
+  "scoped_review": {
+    "total_files": 16,
+    "reviewed_files": 16,
+    "skipped_files": 0,
+    "coverage_rate": 1.0
+  },
+  "files": [
+    {
+      "path": "internal/cli/recommend_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/config/config.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/diagnostic/doctor.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/diagnostic/doctor_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/initcmd/init.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/initcmd/init_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/lifecycle/service_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/operation/operation_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/stack/scan.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "internal/stack/scan_test.go",
+      "status": "reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/.openspec.yaml",
+      "status": "reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/design.md",
+      "status": "reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/proposal.md",
+      "status": "reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/specs/guarded-skill-maintenance/spec.md",
+      "status": "reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/tasks.md",
+      "status": "reviewed"
+    }
+  ],
+  "findings": [],
+  "preview_excluded_files": [
+    {
+      "path": "internal/cli/recommend_test.go",
+      "status": "modified",
+      "insertions": 46,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/config/config_test.go",
+      "status": "modified",
+      "insertions": 16,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/diagnostic/doctor_test.go",
+      "status": "modified",
+      "insertions": 47,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/initcmd/init_test.go",
+      "status": "modified",
+      "insertions": 122,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/lifecycle/service_test.go",
+      "status": "modified",
+      "insertions": 21,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/operation/operation_test.go",
+      "status": "modified",
+      "insertions": 43,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "internal/stack/scan_test.go",
+      "status": "modified",
+      "insertions": 44,
+      "deletions": 0,
+      "exclude_reason": "default_path",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/build.log",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/full-test.log",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/openspec.log",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/race.log",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/reviewed.patch",
+      "status": "added",
+      "insertions": 566,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/tdd-evidence.md",
+      "status": "added",
+      "insertions": 14,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "docs/reviews/fix-code-review-findings-2026-10-03/vet.log",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T010613.738598000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063455.884854000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063516.117129000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "internal/cli/.agent-manager/evals/run-20261003T063652.585336000Z.yaml",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0,
+      "exclude_reason": "user_exclude",
+      "disposition": "excluded_generated_test_or_report_evidence"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/design.md",
+      "status": "added",
+      "insertions": 23,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/proposal.md",
+      "status": "added",
+      "insertions": 25,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/specs/guarded-skill-maintenance/spec.md",
+      "status": "added",
+      "insertions": 41,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext",
+      "disposition": "manually_reviewed"
+    },
+    {
+      "path": "openspec/changes/fix-code-review-findings/tasks.md",
+      "status": "added",
+      "insertions": 19,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext",
+      "disposition": "manually_reviewed"
+    }
+  ]
+}

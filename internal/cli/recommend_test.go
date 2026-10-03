@@ -104,6 +104,52 @@ func TestRecommendJSONContractRecommendedScope(t *testing.T) {
 	}
 }
 
+func TestRecommendIncludesNestedDeploymentEvidenceAndDatabaseSkill(t *testing.T) {
+	library, project, configPath := recommendFixture(t)
+	writeSkill(t, library, "postgres-helper", "Postgres helper", "helps with postgresql", "postgresql\n")
+	if err := os.MkdirAll(filepath.Join(project, "deploy"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "deploy", "compose.yaml"), []byte("services:\n  db:\n    image: postgres:16\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := cli.NewRootCommand()
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{"--config", configPath, "recommend", "--project", project, "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		ScanComplete bool `json:"scanComplete"`
+		Scopes       []struct {
+			Evidence        []struct{ Path, Technology string } `json:"evidence"`
+			Recommendations []struct{ Identifier string }       `json:"recommendations"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.ScanComplete || len(doc.Scopes) != 1 {
+		t.Fatalf("result=%s", out)
+	}
+	foundEvidence, foundRecommendation := false, false
+	for _, evidence := range doc.Scopes[0].Evidence {
+		if evidence.Technology == "postgresql" && evidence.Path == "deploy/compose.yaml" {
+			foundEvidence = true
+		}
+	}
+	for _, recommendation := range doc.Scopes[0].Recommendations {
+		if recommendation.Identifier == "postgres-helper" {
+			foundRecommendation = true
+		}
+	}
+	if !foundEvidence || !foundRecommendation {
+		t.Fatalf("nested evidence/recommendation missing: %s", out)
+	}
+}
+
 func TestRecommendJSONInsufficientEvidenceIsEmptyState(t *testing.T) {
 	library := t.TempDir()
 	project := t.TempDir()

@@ -64,14 +64,46 @@ func (s *Service) Initialize() (operation.Plan, error) {
 			newAgentRoots = append(newAgentRoots, root)
 		}
 	}
+	type publication struct {
+		before operation.Snapshot
+		info   os.FileInfo
+		digest string
+	}
+	published := make([]publication, 0, len(before))
 	rollback := func(err error) error {
-		restore := s.Journal.Restore(before)
+		var restore error
+		var owned []operation.Snapshot
+		for _, item := range published {
+			info, statErr := os.Lstat(item.before.Path)
+			digest, digestErr := operation.FingerprintPath(item.before.Path)
+			if statErr != nil || digestErr != nil || !os.SameFile(item.info, info) || digest != item.digest {
+				restore = errors.Join(restore, fmt.Errorf("preserving changed publication %s: %w", item.before.Path, operation.ErrUnexpectedState))
+				continue
+			}
+			owned = append(owned, item.before)
+		}
+		restore = errors.Join(restore, s.Journal.Restore(owned))
 		for _, root := range newAgentRoots {
 			if removeErr := removeEmptyDirectories(root); removeErr != nil {
 				restore = errors.Join(restore, removeErr)
 			}
 		}
 		return errors.Join(err, restore)
+	}
+	publish := func(stage, path string, snapshot operation.Snapshot) error {
+		info, err := os.Lstat(stage)
+		if err != nil {
+			return err
+		}
+		digest, err := operation.FingerprintPath(stage)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(stage, path); err != nil {
+			return err
+		}
+		published = append(published, publication{snapshot, info, digest})
+		return nil
 	}
 	type staged struct{ skill, marker string }
 	stages := make([]staged, len(paths))
@@ -126,24 +158,24 @@ func (s *Service) Initialize() (operation.Plan, error) {
 		if err := safeOperatorPath(filepath.Dir(path)); err != nil {
 			return plan, rollback(err)
 		}
-		if err := os.Rename(stages[i].skill, path); err != nil {
+		if err := publish(stages[i].skill, path, before[2*i]); err != nil {
 			return plan, rollback(err)
 		}
 		stages[i].skill = ""
-		if err := os.Rename(stages[i].marker, filepath.Join(filepath.Dir(path), ownershipMarker)); err != nil {
+		if err := publish(stages[i].marker, filepath.Join(filepath.Dir(path), ownershipMarker), before[2*i+1]); err != nil {
 			return plan, rollback(err)
 		}
 		stages[i].marker = ""
 	}
 	after, err := s.Journal.Capture(snapshotPaths)
 	if err != nil {
-		return plan, errors.Join(err, s.Journal.Restore(before))
+		return plan, rollback(err)
 	}
 	if err := s.Journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}
-		return plan, errors.Join(err, s.Journal.Restore(before))
+		return plan, rollback(err)
 	}
 	return plan, nil
 }

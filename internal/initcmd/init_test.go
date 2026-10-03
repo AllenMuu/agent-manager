@@ -79,6 +79,128 @@ func TestInitializeSecondTargetFailureRollsBack(t *testing.T) {
 	}
 }
 
+func TestInitializeRollbackPreservesUnpublishedConcurrentFile(t *testing.T) {
+	home := t.TempDir()
+	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
+	var concurrentPath string
+	calls := 0
+	svc.BeforePublish = func(path string) error {
+		calls++
+		if calls == 2 {
+			concurrentPath = path
+			return os.WriteFile(path, []byte("concurrent user content"), 0o644)
+		}
+		return nil
+	}
+	if _, err := svc.Initialize(); err == nil {
+		t.Fatal("expected concurrent unmanaged file to be refused")
+	}
+	contents, err := os.ReadFile(concurrentPath)
+	if err != nil || string(contents) != "concurrent user content" {
+		t.Fatalf("concurrent file lost during rollback: %q %v", contents, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "j.json")); !os.IsNotExist(err) {
+		t.Fatalf("failed initialization recorded a journal: %v", err)
+	}
+}
+
+func TestInitializeRollbackPreservesReplacedPublishedFile(t *testing.T) {
+	home := t.TempDir()
+	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
+	var firstPath string
+	svc.BeforePublish = func(path string) error {
+		if firstPath == "" {
+			firstPath = path
+			return nil
+		}
+		if err := os.WriteFile(firstPath, []byte("concurrent replacement"), 0o600); err != nil {
+			return err
+		}
+		return errors.New("later publication failed")
+	}
+	if _, err := svc.Initialize(); err == nil {
+		t.Fatal("expected publication failure")
+	}
+	contents, err := os.ReadFile(firstPath)
+	if err != nil || string(contents) != "concurrent replacement" {
+		t.Fatalf("concurrent replacement lost during rollback: %q %v", contents, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(firstPath), ".skill-manager-owner")); !os.IsNotExist(err) {
+		t.Fatalf("operation's marker was not rolled back: %v", err)
+	}
+}
+
+func TestInitializeRollbackPreservesIdenticalReplacementOwner(t *testing.T) {
+	home := t.TempDir()
+	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
+	var firstPath string
+	var replacement os.FileInfo
+	svc.BeforePublish = func(path string) error {
+		if firstPath == "" {
+			firstPath = path
+			return nil
+		}
+		contents, err := os.ReadFile(firstPath)
+		if err != nil {
+			return err
+		}
+		stage := firstPath + ".replacement"
+		if err := os.WriteFile(stage, contents, 0o600); err != nil {
+			return err
+		}
+		replacement, err = os.Lstat(stage)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(stage, firstPath); err != nil {
+			return err
+		}
+		return errors.New("later publication failed")
+	}
+	if _, err := svc.Initialize(); !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("Initialize()=%v", err)
+	}
+	info, err := os.Lstat(firstPath)
+	if err != nil || !os.SameFile(replacement, info) {
+		t.Fatalf("replacement owner lost: %v", err)
+	}
+}
+
+func TestInitializeRollbackRestoresPreviouslyOwnedContent(t *testing.T) {
+	home := t.TempDir()
+	svc := initcmd.New(home, filepath.Join(home, "j.json"), func(operation.Plan) bool { return true }, func() error { return nil })
+	if _, err := svc.Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	var firstPath string
+	svc.BeforePublish = func(path string) error {
+		if path == firstPath {
+			return nil
+		}
+		return errors.New("later publication failed")
+	}
+	// Adapter iteration starts with Claude; keep an owned older version there.
+	firstPath = filepath.Join(home, ".claude", "skills", "skill-manager-operator", "SKILL.md")
+	if err := os.WriteFile(firstPath, []byte("older owned content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journalBefore, err := os.ReadFile(filepath.Join(home, "j.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Initialize(); err == nil {
+		t.Fatal("expected failure")
+	}
+	contents, err := os.ReadFile(firstPath)
+	if err != nil || string(contents) != "older owned content" {
+		t.Fatalf("old content lost: %q %v", contents, err)
+	}
+	journalAfter, err := os.ReadFile(filepath.Join(home, "j.json"))
+	if err != nil || string(journalBefore) != string(journalAfter) {
+		t.Fatalf("failed operation changed journal: %v", err)
+	}
+}
+
 func TestInitializeRejectsSymlinkOperatorSkill(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".codex", "skills", "skill-manager-operator", "SKILL.md")
