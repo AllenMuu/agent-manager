@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/AllenMuu/skill-manager/internal/memory"
 	"gopkg.in/yaml.v3"
@@ -44,7 +45,13 @@ func Load(path string) (Config, error) {
 		}
 		return Config{Version: version, LibraryPath: defaultPath, Memory: provider}, nil
 	}
-	if !filepath.IsAbs(library) {
+	if library == "~" || strings.HasPrefix(library, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve configured library home: %w", err)
+		}
+		library = filepath.Join(home, strings.TrimPrefix(library, "~"))
+	} else if !filepath.IsAbs(library) {
 		library = filepath.Join(filepath.Dir(path), library)
 	}
 	library, err = filepath.Abs(library)

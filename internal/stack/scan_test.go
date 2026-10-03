@@ -64,6 +64,50 @@ func TestScanDetectsDatabasesFromComposeAndDockerfile(t *testing.T) {
 	assertTechnologies(t, scope, "compose", "docker", "postgresql", "redis")
 }
 
+func TestScanAttributesNestedMarkersToContainingScope(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "go.mod"), "module example.com/root\n")
+	write(t, filepath.Join(root, "deploy", "compose.yaml"), "services:\n  db:\n    image: postgres:16\n")
+	result, err := stack.Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ScanComplete || len(result.Scopes) != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+	assertTechnologies(t, result.Scopes[0], "compose", "docker", "go", "postgresql")
+	for _, evidence := range result.Scopes[0].Evidence {
+		if evidence.Technology != "go" && evidence.Path != "deploy/compose.yaml" {
+			t.Fatalf("nested marker has wrong evidence path: %#v", evidence)
+		}
+	}
+}
+
+func TestScanKeepsNestedMarkersInsideIndependentChildScope(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "go.mod"), "module example.com/root\n")
+	write(t, filepath.Join(root, "web", "package.json"), `{"dependencies":{"react":"^18"}}`)
+	write(t, filepath.Join(root, "web", "deploy", "compose.yaml"), "services:\n  cache:\n    image: redis:7\n")
+	result, err := stack.Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Scopes) != 2 {
+		t.Fatalf("scopes=%#v", result.Scopes)
+	}
+	assertTechnologies(t, result.Scopes[0], "go")
+	child := result.Scopes[1]
+	if child.Path != "web" {
+		t.Fatalf("child scope=%q", child.Path)
+	}
+	assertTechnologies(t, child, "compose", "docker", "nodejs", "react", "redis")
+	for _, evidence := range child.Evidence {
+		if evidence.Technology == "redis" && evidence.Path != "deploy/compose.yaml" {
+			t.Fatalf("child evidence is not scope-relative: %#v", evidence)
+		}
+	}
+}
+
 func TestScanDetectsJvmPythonAndRubyStacks(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "pom.xml"), "<project><dependency>org.springframework.boot:spring-boot-starter</dependency></project>")

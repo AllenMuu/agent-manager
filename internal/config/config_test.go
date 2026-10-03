@@ -85,6 +85,22 @@ func TestLoadExplicitConfigDoesNotRequireHomeDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadExpandsCurrentUserHomeRelativeLibrary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("library: ~/.agents/skills\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".agents", "skills"); loaded.LibraryPath != want {
+		t.Fatalf("LibraryPath=%q, want %q", loaded.LibraryPath, want)
+	}
+}
+
 func TestLoadParsesVersionedMemoryProviderConfiguration(t *testing.T) {
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yaml")
