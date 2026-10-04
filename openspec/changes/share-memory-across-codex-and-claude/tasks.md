@@ -1,6 +1,6 @@
 ## 1. Delivery prerequisites
 
-- [ ] 1.1 Re-read ticket #23 and its native blockers, verify prerequisite behavior is delivered, and confirm the new public test seams with the user before writing tests; record the selected boundaries and baseline.
+- [x] 1.1 Re-read ticket #23 and its native blockers, verify prerequisite behavior is delivered, and confirm the new public test seams with the user before writing tests; record the selected boundaries and baseline.
 
 ## 2. Observable behavior via TDD
 
@@ -12,7 +12,7 @@
 
 - [ ] 2.4 Implement “Per-agent tested capability status” through confirmed public boundaries, one failing behavior test then minimal implementation at a time; verify every scenario (“One integration lacks write support”) passes with its literal specified outcome and no private-helper assertions.
 
-- [ ] 2.5 Implement “One canonical source of truth” through confirmed public boundaries, one failing behavior test then minimal implementation at a time; verify every scenario (“Integration is enabled”) passes with its literal specified outcome and no private-helper assertions.
+- [x] 2.5 Implement “One canonical source of truth” through confirmed public boundaries, one failing behavior test then minimal implementation at a time; verify every scenario (“Integration is enabled”) passes with its literal specified outcome and no private-helper assertions.
 
 ## 3. Verification and publication
 
