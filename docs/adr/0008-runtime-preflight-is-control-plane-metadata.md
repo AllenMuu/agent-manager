@@ -26,4 +26,4 @@ remain compatible. Managed-skill operations remain guarded, reversible and
 non-executing; this metadata boundary adds no network access, dependency
 installation, credential resolution or service startup to Skill workflows.
 
-See [runtime-enforcement-preflight](../../openspec/changes/define-runtime-enforcement-capabilities/specs/runtime-enforcement-preflight/spec.md).
+See [runtime-enforcement-preflight](../../openspec/specs/runtime-enforcement-preflight/spec.md).
