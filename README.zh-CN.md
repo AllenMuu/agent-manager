@@ -292,3 +292,5 @@ Agent Manager 的本地任务工件和评估能力不会生成自主代理、同
 只读使用相同路径，不隐式写入。详见 [Memory Gateway 使用说明](docs/memory-gateway.md)。
 旧 `file` provider 和显式 `memory promote` 保持兼容；状态分别报告请求、实际实现与可用性。
 Memory 生命周期不进入可撤销的 Skill 文件系统 operation journal。
+
+另见 [离线运行时权限与保护检查](docs/runtime-enforcement-preflight.md)：R1 新增声明格式、分维度能力和执行前检查，不启动或证明真实运行时保护。

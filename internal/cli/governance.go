@@ -25,6 +25,7 @@ func newGovernanceCommands() []*cobra.Command {
 func newPoliciesCommand() *cobra.Command {
 	var jsonOutput bool
 	command := &cobra.Command{Use: "policies", Short: "Validate and inspect local AgentPolicy files"}
+	command.AddCommand(newEnforcementCommand("inspect", &jsonOutput), newEnforcementCommand("preflight", &jsonOutput))
 	command.PersistentFlags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
 	command.AddCommand(&cobra.Command{Use: "validate <path>", Short: "Strictly parse and validate a versioned AgentPolicy", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := loadPolicyFile(args[0])

@@ -372,3 +372,5 @@ The explicitly selected [Mem0 OSS Memory provider](docs/mem0-memory-provider.md)
 supports canonical basic remote operations and read/search through the CLI
 Gateway. Strong conditional lifecycle and lineage/history remain unsupported.
 Local defaults and managed-skill operations remain offline.
+
+See [Offline runtime enforcement preflight](docs/runtime-enforcement-preflight.md) for the additive R1 declaration format and truthful protection boundaries.
