@@ -107,7 +107,8 @@ content. `.openspec.yaml` is retained in the archive. Main-spec strict validatio
 passed 5/5 after sync. Archive instructions had no optional context/guidance;
 the valid specs-instruction snapshot had no artifact rules.
 
-The synchronization/archive and this acceptance-record update are branch-local
-documentation on the #25 branch until its separately reviewed PR is merged.
+The synchronization/archive and acceptance record entered main through
+[PR #41](https://github.com/AllenMuu/agent-manager/pull/41), merge commit
+`27697c56d1754631da1dfe2724b24431d5313019`, on 2026-10-06.
 They add no Go code or live enforcement evidence. The earlier prepublication
 section is retained as the historical review snapshot, not current delivery state.

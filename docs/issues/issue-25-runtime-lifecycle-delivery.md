@@ -1,4 +1,4 @@
-# R2 / Issue #25 branch evidence
+# R2 / Issue #25 accepted delivery and archive
 
 Scope: [Issue #25](https://github.com/AllenMuu/agent-manager/issues/25), active
 change `add-runtime-enforcement-lifecycle`. Branch:
@@ -110,7 +110,7 @@ unchanged Go source to the separately reported repair commit; the frozen-head
 metadata is `q1-final-head.json`. Only this delivery record changes after those
 source checks. At this implementation checkpoint, tasks remained 7/9 and ordinary rereviews/final OCR were pending. The subsequent review outcome is recorded below.
 
-## Delivery boundary
+## Historical prepublication delivery boundary
 
 Implementation and review tasks are now 9/9. Ordinary specification and quality
 rereviews of Q1 passed, followed by the required independent final read-only OCR
@@ -166,3 +166,32 @@ R1 archive documentation is included in this proposed delivery. R2 remains activ
 until its authorized merge and actual main acceptance; #25 and parent #16 remain
 OPEN at this snapshot. M5 remains on its separate local branch awaiting confirmed
 restoration of the current Claude service subscription.
+
+
+## Accepted main and specification archive
+
+[PR #41](https://github.com/AllenMuu/agent-manager/pull/41) merged on
+2026-10-06 at `27697c56d1754631da1dfe2724b24431d5313019`. The fetched main tree
+is byte-identical to accepted publication head
+`9a31958843788a13d55515189f280b65ea32007b`; its Go source remains identical to
+reviewed source `64a02b31c482e8e5ea0f3bd8442ef7ce1225d373`. The supplementary
+read-only OCR gate passed 3/3 metadata paths and the exact PR body 1/1, preserving
+full 26/26 unique coverage with zero skipped and no actionable findings.
+#25 is CLOSED; all five acceptance items were updated with main delivery evidence
+and read back. Parent #16 remains OPEN, with #26 the next dependent increment.
+
+On 2026-10-06 the complete 9/9-task change was synchronously synced and archived
+at `openspec/changes/archive/2026-10-06-add-runtime-enforcement-lifecycle/`.
+The new [main lifecycle specification](../../openspec/specs/runtime-enforcement-lifecycle/spec.md)
+retains the accepted Purpose and all five requirements/six scenarios, changing
+only the title and delta heading. All five original artifacts, including
+`.openspec.yaml`, are preserved. Main-spec strict validation passed 6/6 after
+sync. Archive instructions contained no optional context/guidance; the valid
+specs instruction snapshot had no artifact rules.
+
+This synchronization/archive and current delivery-state documentation are local
+on the #26 branch until its separately reviewed PR is merged. No Go source or
+live enforcement evidence is added. The prepublication sections above describe
+the historical frozen review snapshots; they do not override this accepted
+state. M5 service restoration remains unconfirmed and its separate branch is
+preserved.
