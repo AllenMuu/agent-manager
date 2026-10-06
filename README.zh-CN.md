@@ -294,3 +294,5 @@ Agent Manager 的本地任务工件和评估能力不会生成自主代理、同
 Memory 生命周期不进入可撤销的 Skill 文件系统 operation journal。
 
 另见 [离线运行时权限与保护检查](docs/runtime-enforcement-preflight.md)：R1 新增声明格式、分维度能力和执行前检查，不启动或证明真实运行时保护。
+
+另见 [可恢复运行时生命周期](docs/runtime-enforcement-lifecycle.md)：R2 新增中立 provider/coordinator 边界、持久化操作恢复和离线 mock 证据，不启动真实模型，也不建立沙箱保护。

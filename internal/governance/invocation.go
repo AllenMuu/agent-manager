@@ -57,7 +57,7 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 	if err != nil {
 		return InvocationOutcome{}, err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return InvocationOutcome{}, fmt.Errorf("run %q is %s and cannot dispatch an invocation", runRecord.ID, runRecord.Status)
 	}
 	if request.Event.ApprovalID != "" {
@@ -82,7 +82,7 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 	if err != nil {
 		return outcome, err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return outcome, fmt.Errorf("run %q is %s and cannot dispatch an invocation", runRecord.ID, runRecord.Status)
 	}
 	lineage := invocation.Lineage{RunID: runRecord.ID, PolicySnapshotHash: runRecord.Policy.Hash}
@@ -119,6 +119,21 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 			return outcome, errors.Join(err, fmt.Errorf("record canceled invocation: %w", auditErr))
 		}
 		return outcome, err
+	}
+	// Adapter preflight may overlap an independent lifecycle mutation. Authorize
+	// dispatch against current durable readiness after it completes; approval
+	// consumption below retains its additional atomic readiness/single-use check.
+	dispatchRecord, dispatchErr := i.Runs.Store.Get(request.RunID)
+	if dispatchErr == nil && !dispatchRecord.ExecutionReady() {
+		dispatchErr = fmt.Errorf("run %q execution is unavailable before dispatch", request.RunID)
+	}
+	if dispatchErr != nil {
+		completionAudit, auditErr := i.recordCompletion(request, requestAudit, authorizedDecision, run.InvocationBlocked)
+		outcome.CompletionAudit = completionAudit
+		if auditErr != nil {
+			return outcome, errors.Join(dispatchErr, fmt.Errorf("record unavailable invocation: %w", auditErr))
+		}
+		return outcome, dispatchErr
 	}
 	if request.Event.ApprovalID != "" {
 		if _, err := i.Runs.Store.ConsumeApprovalForInvocation(request.Event.ApprovalID, request.RunID, requestAudit.ID, request.At); err != nil {
@@ -180,7 +195,7 @@ func (i Invoker) validateApproval(request *InvocationRequest) error {
 	if err != nil {
 		return err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return fmt.Errorf("run %q is %s and cannot dispatch an approved invocation", runRecord.ID, runRecord.Status)
 	}
 	events, err := i.Runs.Store.Events(request.RunID)

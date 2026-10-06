@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/enforcement"
 	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 )
@@ -44,6 +45,8 @@ type Status string
 
 const (
 	Active     Status = "active"
+	Pending    Status = "pending"
+	Prepared   Status = "prepared"
 	Paused     Status = "paused"
 	Completed  Status = "completed"
 	Failed     Status = "failed"
@@ -51,6 +54,7 @@ const (
 )
 
 type Record struct {
+	ExternalRuntime    *ExternalRuntime   `json:"external_runtime,omitempty"`
 	ID                 string             `json:"id"`
 	ProjectRoot        string             `json:"project_root"`
 	Runtime            string             `json:"runtime"`
@@ -172,6 +176,10 @@ func NewStore(root string) (*Store, error) {
 func (s *Store) Root() string { return s.root }
 
 func (s *Store) Start(snapshot policy.Snapshot, runtime, project string, identitySelection identity.Selection, capabilities map[policy.Control]bool, now time.Time) (Record, policy.CapabilityReport, error) {
+	return s.create(snapshot, runtime, project, identitySelection, capabilities, now, nil)
+}
+
+func (s *Store) create(snapshot policy.Snapshot, runtime, project string, identitySelection identity.Selection, capabilities map[policy.Control]bool, now time.Time, external *ExternalRuntime) (Record, policy.CapabilityReport, error) {
 	if err := snapshot.Validate(); err != nil {
 		return Record{}, policy.CapabilityReport{}, err
 	}
@@ -218,11 +226,19 @@ func (s *Store) Start(snapshot policy.Snapshot, runtime, project string, identit
 		identitySnapshot = identity.NamedSelection(actor, delegation)
 	}
 	record := Record{ID: id, ProjectRoot: project, Runtime: runtime, Status: Active, Policy: snapshot, Identity: identitySnapshot, CapabilityWarnings: append([]policy.Control(nil), report.Warnings...), CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	if external != nil {
+		record.Status = Pending
+		record.ExternalRuntime = external
+		external.Operations[0].Request = lifecycleRequest(record, external.Operations[0].ID, "prepare")
+	}
 	err = s.update(func(db *database) error {
 		if _, exists := db.Runs[id]; exists {
 			return fmt.Errorf("run %q already exists", id)
 		}
 		db.Runs[id] = record
+		if external != nil {
+			return nil
+		}
 		event := policy.Event{Category: policy.AgentRunStarted, RunID: id, Timestamp: now.UTC()}
 		audit, err := auditFor(record, event, policy.Decision{Outcome: policy.Allow}, "")
 		if err != nil {
@@ -428,7 +444,7 @@ func (s *Store) ConsumeApprovalForInvocation(approvalID, runID, requestAuditID s
 			return fmt.Errorf("approval %q has already been consumed", approvalID)
 		}
 		runRecord, ok := db.Runs[runID]
-		if !ok || runRecord.Status != Active {
+		if !ok || !runRecord.ExecutionReady() {
 			return fmt.Errorf("run %q is not active for invocation", runID)
 		}
 		approvedRequest, err := validateApprovalRequestAudit(*db, approval)
@@ -591,6 +607,9 @@ func (s *Store) confirmTermination(id, reason string, now time.Time) (Record, er
 		if !ok {
 			return fmt.Errorf("run %q not found", id)
 		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external termination requires correlated lifecycle acknowledgement")
+		}
 		if record.Status != Active && record.Status != Paused {
 			return fmt.Errorf("run %q is %s and cannot be terminated", id, record.Status)
 		}
@@ -617,6 +636,9 @@ func (s *Store) ConfirmApprovalResolution(runID string, now time.Time) error {
 		if !ok {
 			return fmt.Errorf("run %q not found", runID)
 		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external resume requires correlated lifecycle acknowledgement")
+		}
 		if record.Status != Paused {
 			return fmt.Errorf("run %q is %s, expected paused", runID, record.Status)
 		}
@@ -634,6 +656,9 @@ func (s *Store) confirmPause(runID string, now time.Time) error {
 		record, ok := db.Runs[runID]
 		if !ok {
 			return fmt.Errorf("run %q not found", runID)
+		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external pause requires correlated lifecycle acknowledgement")
 		}
 		if record.Status != Active {
 			return fmt.Errorf("run %q is %s and cannot be paused", runID, record.Status)
@@ -661,6 +686,7 @@ type RuntimeController interface {
 
 type Manager struct {
 	Store       *Store
+	coordinator *Coordinator
 	controllers map[string]RuntimeController
 	mu          sync.Mutex
 }
@@ -728,6 +754,9 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 	runRecord, err := m.Store.Get(runID)
 	if err != nil {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
+	}
+	if runRecord.ExternalRuntime != nil && (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested) && !runRecord.ExecutionReady() {
+		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, enforcement.ErrUnknown
 	}
 	event.RunID = runID
 	engine := policy.Engine{}
@@ -888,8 +917,10 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 	if !confirmed {
 		return Approval{}, errors.New("runtime did not confirm pause; action remains unapproved")
 	}
-	if err := m.Store.confirmPause(run.ID, now); err != nil {
-		return Approval{}, fmt.Errorf("runtime paused but run state could not be updated: %w", err)
+	if run.ExternalRuntime == nil {
+		if err := m.Store.confirmPause(run.ID, now); err != nil {
+			return Approval{}, fmt.Errorf("runtime paused but run state could not be updated: %w", err)
+		}
 	}
 	request, err = m.Store.CreateApproval(request, now)
 	if err != nil {
@@ -934,8 +965,10 @@ func (m *Manager) DecideApproval(ctx context.Context, id string, status Approval
 	if !confirmed {
 		return updated, fmt.Errorf("approval recorded as %s but runtime did not confirm resolution", status)
 	}
-	if err := m.Store.ConfirmApprovalResolution(run.ID, now); err != nil {
-		return updated, fmt.Errorf("approval recorded as %s and runtime confirmed, but run state update failed: %w", status, err)
+	if run.ExternalRuntime == nil {
+		if err := m.Store.ConfirmApprovalResolution(run.ID, now); err != nil {
+			return updated, fmt.Errorf("approval recorded as %s and runtime confirmed, but run state update failed: %w", status, err)
+		}
 	}
 	return updated, nil
 }
@@ -962,12 +995,22 @@ func (m *Manager) Kill(ctx context.Context, id, reason string, now time.Time) (R
 	if !confirmed {
 		return Record{}, errors.New("runtime did not confirm termination; run remains active")
 	}
+	if run.ExternalRuntime != nil {
+		return m.Store.Get(id)
+	}
 	return m.Store.confirmTermination(id, reason, now)
 }
 
 func (m *Manager) controller(id string) RuntimeController {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	record, err := m.Store.Get(id)
+	if err == nil && record.ExternalRuntime != nil {
+		if m.coordinator == nil {
+			return nil
+		}
+		return lifecycleController{coordinator: m.coordinator}
+	}
 	return m.controllers[id]
 }
 
@@ -1192,13 +1235,16 @@ func validateDatabase(db database) error {
 }
 
 func validateRecord(record Record) error {
+	if err := validateExternal(record); err != nil {
+		return err
+	}
 	if err := validateID("run", record.ID); err != nil {
 		return err
 	}
 	if record.Runtime == "" || !safeLabel.MatchString(record.Runtime) {
 		return fmt.Errorf("run %q has invalid runtime label", record.ID)
 	}
-	if record.Status != Active && record.Status != Paused && record.Status != Completed && record.Status != Failed && record.Status != Terminated {
+	if record.Status != Pending && record.Status != Prepared && record.Status != Active && record.Status != Paused && record.Status != Completed && record.Status != Failed && record.Status != Terminated {
 		return fmt.Errorf("run %q has invalid status %q", record.ID, record.Status)
 	}
 	if err := record.Policy.Validate(); err != nil {
