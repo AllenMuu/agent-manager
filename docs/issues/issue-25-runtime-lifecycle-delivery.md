@@ -108,13 +108,18 @@ matching logs. The focused regression and prior managed invocation lineage
 tests also pass (`q1-final-focused.log`). `q1-source-fingerprint.json` binds the
 unchanged Go source to the separately reported repair commit; the frozen-head
 metadata is `q1-final-head.json`. Only this delivery record changes after those
-source checks. Tasks remain 7/9; ordinary rereviews and final OCR are pending.
+source checks. At this implementation checkpoint, tasks remained 7/9 and ordinary rereviews/final OCR were pending. The subsequent review outcome is recorded below.
 
 ## Delivery boundary
 
-Implementation/verification tasks are 7/9. Independent specification/quality
-rereviews of the Q1 repair and required final read-only OCR remain pending under the controller;
-3.2 and 3.3 remain unchecked. The change remains active and unarchived. The
+Implementation and review tasks are now 9/9. Ordinary specification and quality
+rereviews of Q1 passed, followed by the required independent final read-only OCR
+using `gpt-6.1-sol` / `high` at source commit
+`64a02b31c482e8e5ea0f3bd8442ef7ce1225d373`. The final gate reviewed all 26 unique
+entries: nine OCR-selected and 17 excluded entries manually supplemented, with
+zero skipped and no actionable findings. Tasks 3.2 and 3.3 are checked on that
+evidence. Publication metadata and the exact proposed PR body still require
+the supplementary read-only gate before publication. The change remains active and unarchived. The
 implementer made no GitHub writes, pushed nothing, and changed no native agent,
 account, Memory provider, DB or service. Publication, merge, main acceptance,
 Issue checkbox updates and later specification synchronization/archive remain
@@ -128,3 +133,36 @@ preflight is declaration admission; execution providers remain responsible for
 real mediation. Missing query support requires manual recovery rather than a
 blind retry. Policy application/revision, event retrieval, kernel/container
 isolation, secret management, checkpoint and watchdog remain outside R2.
+
+
+## Independent review completion
+
+The ordinary specification review covered 26/26 entries and all five requirements
+and six literal scenarios. D1 was corrected and its doc-only rereview passed.
+After Q1, the specification rereview covered the three changed paths and retained
+unchanged full coverage; fresh regression and affected race checks passed. The
+quality rereview independently copied its original probe byte-for-byte into a
+frozen source export and observed exit 0, with no remaining actionable findings.
+
+The final OCR used actual CLI 1.12.12 preview/rules, an exact source export, and
+fresh full Go tests, five-package race checks, vet, CLI build, strict active-change
+and all five main-spec validation, doctor and diff checks; all exited 0. It also
+reran the original Q1 probe and independently tested lost start acknowledgement
+and external start success followed by local confirmation failure. Both recover
+the original operation/handle/generation without relaunch or duplicate start
+audit. The five carried R1 archive pairs are byte-identical and the synchronized
+main spec is normatively equivalent. No real model or runtime starts.
+
+Local reports: `/tmp/agent-manager-issue25-spec-review.md`,
+`/tmp/agent-manager-issue25-spec-rereview.md`,
+`/tmp/agent-manager-issue25-spec-q1-rereview.md`,
+`/tmp/agent-manager-issue25-quality-review.md`,
+`/tmp/agent-manager-issue25-quality-q1-rereview.md`, and
+`/tmp/agent-manager-issue25-final-ocr/report.md`. Their source/head and scope
+records distinguish historical findings from accepted rereviews. This metadata
+update changes no Go source, capability requirements or scenario content.
+
+R1 archive documentation is included in this proposed delivery. R2 remains active
+until its authorized merge and actual main acceptance; #25 and parent #16 remain
+OPEN at this snapshot. M5 remains on its separate local branch awaiting confirmed
+restoration of the current Claude service subscription.
