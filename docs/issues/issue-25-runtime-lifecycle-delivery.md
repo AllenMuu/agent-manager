@@ -26,7 +26,7 @@ claimed human approvals.
 | 2 / 2.2 | Restart after uncertain start | `TestUncertainStartBlocksGovernanceAfterRestart`: persisted unknown start retains prepared observed state and blocks governance after restart; query stays unknown until explicit correlated outcome evidence arrives, then confirms the same resource without another start. |
 | 3 / 2.3 | Termination is not acknowledged | `TestTerminationUnknownAndRefusedKeepConfirmedState`: deadline/refusal retains active confirmed state, no termination reason and inspectable unknown/failed operation. `TestManagedTerminationPreservesSupportedReason` checks a positively acknowledged termination and its supported reason through Manager. |
 | 4 / 2.4 | Provider cannot pause | `TestUnsupportedPauseAndQueryStayExplicit`: missing optional ports return unsupported without a paused confirmation; no query support keeps uncertain mutation unavailable. `TestOptionalProviderRejectionRemainsExplicit`: a present port returning unsupported records an explicit unsupported outcome without changing confirmed state. |
-| 5 / 2.5 | Mock lifecycle and invocation | `TestMockLifecycleAndApprovedInvocationThenControlReconciliation`: prepares/starts a named mock run, approves and dispatches once, records succeeded/ALLOW request/completion/approver lineage, refuses reuse, reopens the Store and reconciles a lost pause acknowledgement, then resumes and confirms audited termination. `TestManagedLifecycleRetainsApprovedInvocationLineage` additionally retains consumed authorization after a dispatched adapter error. |
+| 5 / 2.5 | Mock lifecycle and invocation | `TestMockLifecycleAndApprovedInvocationThenControlReconciliation`: prepares/starts a named mock run, approves and dispatches once, records succeeded/ALLOW request/completion/approver lineage, refuses reuse, reopens the Store and reconciles a lost pause acknowledgement, then resumes and confirms audited termination. `TestManagedLifecycleRetainsApprovedInvocationLineage` additionally retains consumed authorization after a dispatched adapter error. `TestLifecycleUnknownDuringPreflightBlocksDispatch` holds adapter preflight while an independent pause becomes durably unknown; both ordinary ALLOW and approved attempts remain undispatched with blocked completion lineage and unused approval. |
 
 Additional public tests cover intent persistence failure before external prepare
 or start, concurrent coordinators starting only once, foreign/malformed/stale
@@ -58,11 +58,11 @@ variable. That wrapper is not exit-0 evidence. A separate frozen export of
 `ce523d450fd0e82e32d114787ec9bd7ca8219ec9` ran uncached full tests with captured
 exit 0 (`baseline-frozen.json` and `baseline-frozen.log`).
 
-The following commands all completed after the final source fixes. Actual exits
-are captured in `final-source-*.exit`; logs have matching names. The final Go
-source fingerprint is retained separately for binding the unchanged source to
-the reported implementation commit. Subsequent edits only add this evidence
-record and update the task checkboxes.
+The following table records the original implementation-source checks for
+`e4ac8e163c9f7b22a816072f3681c481a6534a4c`. Actual exits are captured in
+`final-source-*.exit`; logs have matching names. That historical fingerprint
+still binds the original implementation, not the later Q1 source repair.
+The ordinary-review repair section below records the new final-source checks.
 
 | Command | Actual exit / result |
 | --- | --- |
@@ -80,10 +80,40 @@ artifact validation. Only the three exact task-generated CLI eval YAML files
 were removed; the existing CLI fixture now supplies an explicit temporary
 project so subsequent tests do not write eval artifacts into the checkout.
 
+## Ordinary-review repair Q1
+
+Ordinary specification review covered 26/26 entries and accepted all five
+requirements/six scenarios; its roadmap documentation finding D1 was corrected
+in doc-only commit `e8926019df152d7206476d0e4a4b380a7d5908fd`. Ordinary quality
+review at that head found Q1: a durable unknown lifecycle transition occurring
+inside adapter capability preflight could still be followed by ordinary ALLOW
+dispatch. This is a control-plane dispatch authorization boundary, not a claim
+of sandbox interception.
+
+`TestLifecycleUnknownDuringPreflightBlocksDispatch` was added first through
+public provider/coordinator/Invoker seams. `11-q1-red.log` captured actual exit 1:
+the ordinary ALLOW subcase dispatched one call despite persisted unknown pause;
+the approved subcase already blocked through atomic approval consumption.
+`11-q1-green.log` captured exit 0 after the minimal common post-preflight durable
+readiness check. Both paths now leave a correlated blocked completion, zero
+adapter calls, and the approved path's authority remains unconsumed. The
+existing atomic approval-consumption check is retained. The gate authorizes
+dispatch at its current durable read; it does not promise interception of a
+later external transition after dispatch has been authorized.
+
+After the final source edit, full `go test -count=1 ./...`, the same five-package
+race command above, vet, CLI build, strict change validation, doctor, working and
+full base-relative diff checks all captured exit 0 in `q1-final-*.exit` and
+matching logs. The focused regression and prior managed invocation lineage
+tests also pass (`q1-final-focused.log`). `q1-source-fingerprint.json` binds the
+unchanged Go source to the separately reported repair commit; the frozen-head
+metadata is `q1-final-head.json`. Only this delivery record changes after those
+source checks. Tasks remain 7/9; ordinary rereviews and final OCR are pending.
+
 ## Delivery boundary
 
 Implementation/verification tasks are 7/9. Independent specification/quality
-review and required final read-only OCR remain pending under the controller;
+rereviews of the Q1 repair and required final read-only OCR remain pending under the controller;
 3.2 and 3.3 remain unchecked. The change remains active and unarchived. The
 implementer made no GitHub writes, pushed nothing, and changed no native agent,
 account, Memory provider, DB or service. Publication, merge, main acceptance,

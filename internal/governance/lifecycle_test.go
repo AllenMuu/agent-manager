@@ -215,3 +215,124 @@ func TestMockLifecycleAndApprovedInvocationThenControlReconciliation(t *testing.
 		t.Fatal("offline lifecycle duplicated a resource")
 	}
 }
+
+func TestLifecycleUnknownDuringPreflightBlocksDispatch(t *testing.T) {
+	for _, requiresApproval := range []bool{false, true} {
+		name := "ordinary_allow"
+		if requiresApproval {
+			name = "approved"
+		}
+		t.Run(name, func(t *testing.T) {
+			configuredYAML := "version: v2\nkind: agent-policy\nid: preflight-readiness\nname: Preflight Readiness\ntools:\n  allow: [github.read]\nidentity:\n  rules:\n    - action_id: github.read\n      actor_kinds: [human]\n      roles: [developer]\n      required_scopes: [github:read]\n"
+			if requiresApproval {
+				configuredYAML += "approval:\n  required_for: [read_repository]\n"
+			}
+			configured, err := policy.Load(strings.NewReader(configuredYAML))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC()
+			snapshot, err := policy.Resolve(configured, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := run.NewStore(filepath.Join(t.TempDir(), "runs"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			actor := identity.ActorIdentity{ID: "reader", Kind: identity.Human, Subject: "reader@local", Roles: []string{"developer"}}
+			delegation := identity.Delegation{ID: "read-authority", ActorID: actor.ID, Scopes: []string{"github:read"}, ExpiresAt: now.Add(time.Hour)}
+			provider := enforcement.NewMockProvider("offline")
+			coordinator, err := run.NewCoordinator(store, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := coordinator.Prepare(context.Background(), snapshot, t.TempDir(), identity.NamedSelection(actor, delegation), enforcement.Request{Version: "v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started, err := coordinator.Start(context.Background(), prepared.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager, err := run.NewManager(store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager.SetCoordinator(coordinator)
+			mock := invocation.NewMockAdapter(true, "read completed")
+			request := governance.InvocationRequest{RunID: started.ID, Event: policy.Event{Category: policy.ToolCallRequested, Tool: "github.read", ActionType: "read_repository", ActionID: "github.read"}, Requirement: policy.IdentityRequirement{ActionID: "github.read", Required: true}, At: now.Add(time.Second)}
+			var approvalID string
+			if requiresApproval {
+				first, err := (governance.Invoker{Runs: manager, Adapter: mock}).Invoke(context.Background(), request)
+				if err != nil || first.Decision.Outcome != policy.RequireApproval {
+					t.Fatalf("approval request: %#v %v", first, err)
+				}
+				approval, err := manager.RequestApproval(context.Background(), run.Approval{RunID: started.ID, RequestAuditID: first.RequestAudit.ID, Category: request.Event.Category, Tool: request.Event.Tool, ActionType: request.Event.ActionType, ReasonCode: first.Decision.ReasonCode}, now.Add(2*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+				approver := identity.ActorIdentity{ID: "reviewer", Kind: identity.Human, Subject: "reviewer@local"}
+				if _, err = manager.DecideApproval(context.Background(), approval.ID, run.ApprovalApproved, "approved", approver, now.Add(3*time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				approvalID = approval.ID
+				request.Event.ApprovalID = approval.ID
+				request.Event.TraceID = first.RequestAudit.TraceID
+				request.At = now.Add(4 * time.Second)
+			}
+			barrier := &capabilityBarrierAdapter{delegate: mock, arrived: make(chan struct{}, 1), release: make(chan struct{})}
+			defer func() {
+				select {
+				case <-barrier.release:
+				default:
+					close(barrier.release)
+				}
+			}()
+			type invocationResult struct {
+				outcome governance.InvocationOutcome
+				err     error
+			}
+			done := make(chan invocationResult, 1)
+			go func() {
+				outcome, err := (governance.Invoker{Runs: manager, Adapter: barrier}).Invoke(context.Background(), request)
+				done <- invocationResult{outcome, err}
+			}()
+			select {
+			case <-barrier.arrived:
+			case result := <-done:
+				t.Fatalf("invocation ended before preflight: %#v", result)
+			case <-time.After(5 * time.Second):
+				t.Fatal("preflight barrier not reached")
+			}
+			provider.FailNext("pause", enforcement.ErrUnknown, false)
+			if _, err = coordinator.Pause(context.Background(), started.ID); err == nil {
+				t.Fatal("unknown pause was acknowledged")
+			}
+			persisted, err := store.Get(started.ID)
+			if err != nil || persisted.ExecutionReady() {
+				t.Fatalf("unknown pause readiness: %#v %v", persisted, err)
+			}
+			close(barrier.release)
+			var result invocationResult
+			select {
+			case result = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("invocation did not finish")
+			}
+			if len(mock.Calls()) != 0 {
+				t.Fatalf("dispatched %d invocation despite durable unknown pause; err=%v", len(mock.Calls()), result.err)
+			}
+			completion := result.outcome.CompletionAudit
+			if result.err == nil || completion == nil || completion.Result != policy.Outcome(run.InvocationBlocked) || completion.Decision != policy.Allow || completion.RequestAuditID != result.outcome.RequestAudit.ID || completion.TraceID != result.outcome.RequestAudit.TraceID || completion.PolicyHash != snapshot.Hash || completion.ActorID != actor.ID || completion.DelegationID != delegation.ID {
+				t.Fatalf("blocked completion lineage: %#v %v", result.outcome, result.err)
+			}
+			if requiresApproval {
+				approval, err := store.GetApproval(approvalID)
+				if err != nil || !approval.ConsumedAt.IsZero() || approval.ConsumedByAuditID != "" || completion.ApprovalID != approvalID || completion.ApproverID != "reviewer" {
+					t.Fatalf("unused approval lineage: %#v completion=%#v err=%v", approval, completion, err)
+				}
+			}
+		})
+	}
+}

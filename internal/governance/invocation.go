@@ -120,6 +120,21 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 		}
 		return outcome, err
 	}
+	// Adapter preflight may overlap an independent lifecycle mutation. Authorize
+	// dispatch against current durable readiness after it completes; approval
+	// consumption below retains its additional atomic readiness/single-use check.
+	dispatchRecord, dispatchErr := i.Runs.Store.Get(request.RunID)
+	if dispatchErr == nil && !dispatchRecord.ExecutionReady() {
+		dispatchErr = fmt.Errorf("run %q execution is unavailable before dispatch", request.RunID)
+	}
+	if dispatchErr != nil {
+		completionAudit, auditErr := i.recordCompletion(request, requestAudit, authorizedDecision, run.InvocationBlocked)
+		outcome.CompletionAudit = completionAudit
+		if auditErr != nil {
+			return outcome, errors.Join(dispatchErr, fmt.Errorf("record unavailable invocation: %w", auditErr))
+		}
+		return outcome, dispatchErr
+	}
 	if request.Event.ApprovalID != "" {
 		if _, err := i.Runs.Store.ConsumeApprovalForInvocation(request.Event.ApprovalID, request.RunID, requestAudit.ID, request.At); err != nil {
 			consumeErr := fmt.Errorf("consume invocation approval: %w", err)
