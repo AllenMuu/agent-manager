@@ -108,3 +108,21 @@ An exact USER or PROJECT owner, or an AGENT/SESSION partition within exactly one
 owning user or project. The identifiers partition data; they do not authenticate
 or authorize a caller. GLOBAL is not currently supported.
 _Avoid_: ambient owner, authority inferred from labels
+
+**Permission proposal**:
+An expiring request for one exact runtime capability difference, linked to a
+persisted permission denial, initiating actor/delegation, run and immutable base
+policy snapshot. A proposal decision does not apply a policy revision or resume
+execution, and remains separate from one-action approval.
+
+**Network delegation scope**:
+R3's additive mapping from an exact canonical hostname to `network:<hostname>`.
+The entire identifier must fit the existing canonical scope syntax and 128-byte
+limit. Exact equality grants one destination; wildcards, prefixes, URLs and IP
+addresses grant no authority through this mapping.
+
+**Trusted operator decision boundary**:
+A host-configured port that establishes an authorized human independently of
+runtime-supplied identity/kind/roles labels and returns proposal-bound authority
+evidence. Runtime requests cannot select or install this port. The domain
+contract does not implement live human authentication.
