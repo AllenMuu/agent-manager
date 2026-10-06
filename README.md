@@ -374,3 +374,5 @@ Gateway. Strong conditional lifecycle and lineage/history remain unsupported.
 Local defaults and managed-skill operations remain offline.
 
 See [Offline runtime enforcement preflight](docs/runtime-enforcement-preflight.md) for the additive R1 declaration format and truthful protection boundaries.
+
+See [Recoverable runtime lifecycle](docs/runtime-enforcement-lifecycle.md) for the additive R2 provider/coordinator ports, durable operation recovery, and offline mock evidence. This boundary does not start a real model or establish sandbox protection.

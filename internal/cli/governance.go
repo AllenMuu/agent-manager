@@ -159,6 +159,16 @@ func newRunsCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
+		if external := record.ExternalRuntime; external != nil {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "provider: %s\nexternal_handle: %s\ngeneration: %s\nobserved_state: %s\nexecution_ready: %t\n", external.ProviderID, external.Handle, external.Generation, external.ObservedState, record.ExecutionReady()); err != nil {
+				return err
+			}
+			for _, operation := range external.Operations {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "lifecycle: %s\t%s\t%s\treconciled=%t\n", operation.ID, operation.Request.Action, operation.Outcome, operation.Reconciled); err != nil {
+					return err
+				}
+			}
+		}
 		for _, approval := range approvals {
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "approval: %s\t%s\t%s\n", approval.ID, approval.Status, approval.ActionType); err != nil {
 				return err

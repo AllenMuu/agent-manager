@@ -57,7 +57,7 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 	if err != nil {
 		return InvocationOutcome{}, err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return InvocationOutcome{}, fmt.Errorf("run %q is %s and cannot dispatch an invocation", runRecord.ID, runRecord.Status)
 	}
 	if request.Event.ApprovalID != "" {
@@ -82,7 +82,7 @@ func (i Invoker) Invoke(ctx context.Context, request InvocationRequest) (Invocat
 	if err != nil {
 		return outcome, err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return outcome, fmt.Errorf("run %q is %s and cannot dispatch an invocation", runRecord.ID, runRecord.Status)
 	}
 	lineage := invocation.Lineage{RunID: runRecord.ID, PolicySnapshotHash: runRecord.Policy.Hash}
@@ -180,7 +180,7 @@ func (i Invoker) validateApproval(request *InvocationRequest) error {
 	if err != nil {
 		return err
 	}
-	if runRecord.Status != run.Active {
+	if !runRecord.ExecutionReady() {
 		return fmt.Errorf("run %q is %s and cannot dispatch an approved invocation", runRecord.ID, runRecord.Status)
 	}
 	events, err := i.Runs.Store.Events(request.RunID)
