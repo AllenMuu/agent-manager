@@ -110,7 +110,7 @@ func (d *PermissionProposalDecider) withCurrent(ctx context.Context, p Permissio
 	if err != nil {
 		return err
 	}
-	return apply(r.Policy)
+	return apply(r.AppliedPolicy())
 }
 func (d *PermissionProposalDecider) Decide(ctx context.Context, id string, status ProposalStatus) (PermissionProposal, error) {
 	if status != ProposalApproved && status != ProposalRejected {
@@ -133,6 +133,9 @@ func (d *PermissionProposalDecider) Decide(ctx context.Context, id string, statu
 			if current.Status != ProposalPending {
 				return errors.New("proposal already decided")
 			}
+			if d.current == nil {
+				base = db.Runs[current.RunID].AppliedPolicy()
+			}
 			receipt, authorityErr := d.authority.ResolveOperator(ctx, operatorRequest(current, status))
 			if err := ctx.Err(); err != nil {
 				return err
@@ -152,7 +155,11 @@ func (d *PermissionProposalDecider) Decide(ctx context.Context, id string, statu
 			} else {
 				receipt.Actor = receipt.Actor.Normalized()
 				audit.Operator = &receipt
-				if decisionErr = validateLiveProposal(current, db.Runs[current.RunID], base, now); decisionErr != nil {
+				decisionErr = validateLiveProposal(current, db.Runs[current.RunID], base, now)
+				if !samePolicySnapshot(base, db.Runs[current.RunID].AppliedPolicy()) {
+					decisionErr = ErrProposalStaleBase
+				}
+				if decisionErr != nil {
 					audit.Outcome = decisionErr.Error()
 				} else {
 					current.Status = status
@@ -246,9 +253,15 @@ func (d *PermissionProposalDecider) ValidateUse(ctx context.Context, id string) 
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if d.current == nil {
+				base = db.Runs[p.RunID].AppliedPolicy()
+			}
 			now := d.clock().UTC()
 			if now.IsZero() || now.Before(p.CreatedAt) {
 				return errors.New("invalid proposal use clock")
+			}
+			if !samePolicySnapshot(base, db.Runs[p.RunID].AppliedPolicy()) {
+				return ErrProposalStaleBase
 			}
 			return validateLiveProposal(p, db.Runs[p.RunID], base, now)
 		})

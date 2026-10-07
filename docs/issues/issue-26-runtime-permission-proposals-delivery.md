@@ -1,6 +1,6 @@
-# Runtime permission proposals: Issue #26
+# Runtime permission proposals: accepted Issue #26 delivery and archive
 
-R3 is implemented and verified on `feature/issue26-runtime-permission-proposals`
+The historical reviewed branch snapshot records R3 implemented and verified on `feature/issue26-runtime-permission-proposals`
 in `/Users/allenj/.codex/worktrees/b9dc/agent-manager`. This is branch evidence:
 ordinary independent specification/quality review and final gpt-6.1-sol/high
 read-only OCR have passed at source commit
@@ -107,7 +107,7 @@ with path and file bytes separated by NUL. Aggregate SHA-256:
 `90a11bda10e40525129e3e1778e171f8e13820478ff3454408c7da1005fc582d`.
 The committed-source comparison is recorded in `committed-source-check.log`.
 
-## Scope and remaining gates
+## Historical prepublication scope and gates
 
 The authority, current-policy and clock fixtures are offline contract evidence.
 No real human authentication, model, provider policy change, OpenShell, native
@@ -151,3 +151,34 @@ publication head/body require the supplementary read-only gate; review-task
 completion does not establish main acceptance, Issue closure or live operator
 authentication. The accepted R2 specification/archive carry will enter main
 through this separately reviewed delivery.
+
+
+## Accepted main and specification archive
+
+[PR #42](https://github.com/AllenMuu/agent-manager/pull/42) merged on 2026-10-07
+at `490bff8472d86039b13f83f726e332e66bb9ba81`. The fetched main tree is
+byte-identical to reviewed publication head
+`df7ec8885a1746970f8dd60ff76e45b8361cbe41`; its Go source is unchanged from
+`737211bc48e422d0379693facca939b57b09874b`. The supplementary required read-only
+gate passed three metadata paths and the exact PR body, preserving complete
+17/17 unique coverage with zero skipped and no actionable findings. #26 is
+CLOSED and all five accepted items were updated and read back. Parent #16 remains
+OPEN, with #27 confirmed policy revisions the next increment. The create/merge
+CLI responses encountered transient GraphQL EOF after remote effects succeeded;
+live PR/Issue and fetched-main identity verified those effects before proceeding,
+without duplicate requests or authentication changes.
+
+On 2026-10-07 the complete 9/9-task change was synchronously synced and archived
+at `openspec/changes/archive/2026-10-07-add-runtime-permission-proposals/`.
+The new [main permission-proposal specification](../../openspec/specs/runtime-permission-proposals/spec.md)
+retains Purpose verbatim and all five requirements/six scenarios. Only the title
+and delta heading changed; all five original artifacts and `.openspec.yaml` are
+preserved. Strict main-spec validation passed 7/7 after sync. The archive lookup
+had no optional context/guidance, and the valid specs snapshot had no artifact
+rules.
+
+This sync/archive and current acceptance record are local on the #27 branch
+until its separately reviewed PR enters main. They add no Go source or live
+authentication/enforcement claim. The earlier prepublication sections describe
+frozen historical snapshots and do not override this accepted delivery state.
+M5 remains separately preserved pending confirmed current-service restoration.

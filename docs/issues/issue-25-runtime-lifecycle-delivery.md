@@ -189,8 +189,9 @@ only the title and delta heading. All five original artifacts, including
 sync. Archive instructions contained no optional context/guidance; the valid
 specs instruction snapshot had no artifact rules.
 
-This synchronization/archive and current delivery-state documentation are local
-on the #26 branch until its separately reviewed PR is merged. No Go source or
+This synchronization/archive and delivery-state documentation entered main
+through [PR #42](https://github.com/AllenMuu/agent-manager/pull/42), merge commit
+`490bff8472d86039b13f83f726e332e66bb9ba81`, on 2026-10-07. No Go source or
 live enforcement evidence is added. The prepublication sections above describe
 the historical frozen review snapshots; they do not override this accepted
 state. M5 service restoration remains unconfirmed and its separate branch is

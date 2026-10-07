@@ -68,7 +68,7 @@ func (m *Manager) RequestPermissionProposal(request PermissionProposalRequest, n
 		if !ok {
 			return errors.New("persisted denial not found")
 		}
-		result = PermissionProposal{ID: id, RunID: record.ID, Denial: denial, Identity: record.Identity, BasePolicy: record.Policy, Difference: request.Difference, CreatedAt: now.UTC(), ExpiresAt: request.ExpiresAt.UTC(), Status: ProposalPending}
+		result = PermissionProposal{ID: id, RunID: record.ID, Denial: denial, Identity: record.Identity, BasePolicy: record.AppliedPolicy(), Difference: request.Difference, CreatedAt: now.UTC(), ExpiresAt: request.ExpiresAt.UTC(), Status: ProposalPending}
 		if err := validatePermissionProposal(*db, result); err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func validatePermissionProposal(db database, p PermissionProposal) error {
 	if !ok || !safeID.MatchString(p.ID) || p.CreatedAt.IsZero() || !p.CreatedAt.Before(p.ExpiresAt) || (p.Status != ProposalPending && p.Status != ProposalApproved && p.Status != ProposalRejected) {
 		return errors.New("invalid permission proposal")
 	}
-	if r.Identity.Mode != identity.ModeNamed || !reflect.DeepEqual(p.Identity, r.Identity) || !reflect.DeepEqual(p.BasePolicy, r.Policy) {
+	if r.Identity.Mode != identity.ModeNamed || !reflect.DeepEqual(p.Identity, r.Identity) || !auditResolvesPolicy(r, p.Denial) || !samePolicySnapshot(p.BasePolicy, snapshotForAudit(r, p.Denial)) {
 		return errors.New("proposal authority does not match run")
 	}
 	a, ok := auditRecordByID(db.Events, p.Denial.ID)
@@ -159,10 +159,10 @@ func validateDifferenceCeiling(p PermissionProposal, r Record, now time.Time) er
 		return ErrProposalCeiling
 	}
 	if p.Difference.Category == policy.ToolCallRequested {
-		if r.Policy.Policy.Identity == nil {
+		if p.BasePolicy.Policy.Identity == nil {
 			return ErrProposalCeiling
 		}
-		for _, rule := range r.Policy.Policy.Identity.Rules {
+		for _, rule := range p.BasePolicy.Policy.Identity.Rules {
 			if rule.ActionID != p.Difference.ActionID {
 				continue
 			}

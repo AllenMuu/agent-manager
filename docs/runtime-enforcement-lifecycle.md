@@ -20,7 +20,7 @@ Run the executable public-boundary example with:
 go test ./internal/run -run ExampleCoordinator -count=1 -v
 ```
 
-It prepares and starts an offline mock, loses a termination acknowledgement, reopens the local store, and reconciles the same operation. The mock keeps deterministic receipts while its fixture instance is retained; it is not a durable external service. Tests exercise confirmation-storage failure, unknown starts, provider refusal, unsupported ports, invalid receipts, concurrent coordinators, and governed approved invocations. This is fixture evidence, not live filesystem/process/network/credential protection. Policy application, event retrieval, policy revisions, OpenShell, container/kernel isolation, checkpoint and watchdog remain future work.
+It prepares and starts an offline mock, loses a termination acknowledgement, reopens the local store, and reconciles the same operation. The mock keeps deterministic receipts while its fixture instance is retained; it is not a durable external service. Tests exercise confirmation-storage failure, unknown starts, provider refusal, unsupported ports, invalid receipts, concurrent coordinators, and governed approved invocations. This is fixture evidence, not live filesystem/process/network/credential protection. R4 adds offline policy revision application and event adapter contracts described below. Live event retrieval, OpenShell, container/kernel isolation, checkpoint and watchdog remain future work.
 
 ## Denial-bound permission proposals (R3)
 
@@ -67,10 +67,10 @@ cannot approve a proposal.
 An optional `CurrentPolicyBoundary.WithCurrentPolicy` holds the authoritative
 base stable throughout its callback. Lock order is that boundary, then Store
 transaction, then operator resolution. Neither boundary nor operator resolver
-may re-enter Store. Without this port, R3 reads the persisted immutable initial
-run snapshot before the transaction; no applied revision setter exists. A later
-revision workflow must supply authoritative coordination, rather than treating a
-past validation result as an application authorization.
+may re-enter Store. Without this port, the Store reads the persisted confirmed applied policy inside
+the transaction (the immutable initial snapshot until R4 confirms a revision).
+Proposal decision, revision application and retry authorization each revalidate
+against that current base; a past validation result does not authorize application.
 
 `ValidateUse` re-establishes the original operator identity and authority,
 including current authorization, and rechecks expiry/ceiling/base in the same
@@ -84,3 +84,38 @@ Run the public R3 contract tests with:
 ```sh
 go test ./internal/run -run 'Test.*Proposal|Test.*Operator' -count=1
 ```
+
+## Confirmed policy revisions (R4 / #27)
+
+A trusted host may configure revision event and exact-action retry adapters once
+on Coordinator. ApplyPolicyRevision accepts only an approved denial-bound
+proposal within the current delegation ceiling and a provider declaring verified
+live-update support for its dimension. It persists the exact update intent before
+calling the selected provider. PolicyApplier/PolicyRevisionQuerier are optional;
+unsupported updates stay explicit. The offline MockProvider implements these
+contracts without launching a runtime or installing protection.
+
+Record.Policy and original R2 lifecycle policy authority remain immutable.
+Record.PolicyRevisions separately contains desired/applied snapshots, mutation,
+acceptance/confirmation evidence, source/trust diagnostics and exact retry IDs.
+Provider acceptance does not advance applied. Pending, failed, unknown or
+awaiting-retry state blocks ordinary execution and pause/resume routes after
+restart. ReconcilePolicyRevision queries the same operation; it never replays an
+unknown mutation. Exact confirmation persists applied while keeping the action
+paused until a newly revalidated retry.
+
+RetryPolicyAction prepares the exact original denied action through the configured
+adapter, rechecks current policy, trusted operator authority, delegation, expiry
+and budget, confirms provider resume, then atomically claims dispatch. Tool retry
+uses Invoker.Prepare and the existing invocation preflight. If policy still
+requires one-action approval, RequestPolicyRetryApproval creates its separate F0
+request; the approved ID must accompany retry and is consumed together with the
+revision retry. Completion retains both authorization references. Unknown effects
+remain consumed; known NotDispatched attempts may be revalidated without losing
+previous evidence. ReceivePolicyEvent trusts only the configured adapter's
+established source evidence, never raw origin/trusted labels.
+
+Store v3 reads v1/v2 fixed-snapshot records and resolves historical snapshot
+references without rewriting old audit. Rollback readers reject revision-aware
+state rather than discarding history. See the [R4 delivery matrix](issues/issue-27-confirmed-policy-revisions-delivery.md)
+for exact tests, offline limitations and pending review/publication gates.
