@@ -678,3 +678,123 @@ func TestHistoricalActionApprovalCannotAuthorizeNewRevisionThroughDirectStore(t 
 		t.Fatalf("historical audits unreadable: %v", err)
 	}
 }
+
+type qualityChangingAdapter struct {
+	before func()
+	target *exactRetryAdapter
+}
+
+func (a qualityChangingAdapter) Prepare(_ context.Context, e policy.Event, _ invocation.InvocationContext) (run.PreparedPolicyRetry, error) {
+	a.before()
+	return &exactPreparedRetry{a.target, e}, nil
+}
+func TestQualityRetryDoesNotAuthorizeDifferentPreparedRevision(t *testing.T) {
+	ctx := context.Background()
+	f := newRevisionFixtureFor(t, "version: v1\nkind: agent-policy\nid: review-race\nname: Review race\ntools:\n  allow: [read]\nnetwork:\n  allowed_domains: [existing.example]\n", policy.Event{Category: policy.NetworkAccessRequested, Domain: "api.example", ActionID: "network.connect", TraceID: "first-trace"}, "network:api.example,network:second.example")
+	first := &exactRetryAdapter{}
+	_ = f.coordinator.ConfigurePolicyRevisions(f.decider, nil, first)
+	applied, err := f.coordinator.ApplyPolicyRevision(ctx, f.proposal.ID, f.decider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.coordinator.RetryPolicyAction(ctx, applied.ID, policy.BudgetState{}); err != nil {
+		t.Fatal(err)
+	}
+	actor := identity.ActorIdentity{ID: "human-1", Kind: identity.Human, Subject: "operator"}
+	d, _ := run.NewPermissionProposalDecider(f.store, &operatorFixture{actor: actor, authorized: true}, nil, func() time.Time { return f.at.Add(6 * time.Second) })
+	outer, _ := run.NewCoordinator(f.store, f.provider)
+	observed := &exactRetryAdapter{}
+	hook := func() { qualityApplySecondRevision(t, f, d) }
+	_ = outer.ConfigurePolicyRevisions(d, nil, qualityChangingAdapter{hook, observed})
+	got, err := outer.RetryPolicyAction(ctx, applied.ID, policy.BudgetState{})
+	if err == nil || observed.effects != 0 {
+		chain, inspectErr := f.store.InspectPolicyRevision(applied.ID)
+		if inspectErr != nil {
+			t.Fatal(inspectErr)
+		}
+		t.Fatalf("stale prepared action dispatched: err=%v effects=%d dispatched=%s latest_retry_audit=%s latest_state=%s", err, observed.effects, observed.event.Domain, chain[1].RetryRequest.Domain, got.PolicyRevisions.Mutations[1].Retry.State)
+	}
+	qualityAssertStaleRetry(t, got, err, observed)
+	qualityRetryFreshRevision(t, f, d)
+}
+
+func qualityApplySecondRevision(t *testing.T, f revisionFixture, d *run.PermissionProposalDecider) {
+	t.Helper()
+	ctx := context.Background()
+	applied := f.original
+	e := policy.Event{Category: policy.NetworkAccessRequested, Domain: "second.example", ActionID: "network.connect", TraceID: "second-trace"}
+	verdict, _, denial, err := f.manager.EvaluateAndRecord(applied.ID, e, policy.BudgetState{}, f.at.Add(4*time.Second))
+	if err != nil || verdict.Outcome != policy.Deny {
+		t.Fatalf("second deny %v %v", verdict, err)
+	}
+	p, err := f.manager.RequestPermissionProposal(run.PermissionProposalRequest{RunID: applied.ID, DenialAuditID: denial.ID, Difference: run.PermissionDifference{Category: e.Category, Domain: e.Domain, ActionID: e.ActionID}, ExpiresAt: f.at.Add(10 * time.Minute)}, f.at.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Decide(ctx, p.ID, run.ProposalApproved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.coordinator.Pause(ctx, applied.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.coordinator.ApplyPolicyRevision(ctx, p.ID, d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Another coordinator may finish the first retry after resume, then apply a new
+// revision before the original coordinator claims dispatch.
+type qualityDispatchStore struct {
+	*run.Store
+	before func()
+}
+
+func (s *qualityDispatchStore) BeginPolicyRetryDispatch(ctx context.Context, id string, budget policy.BudgetState, d *run.PermissionProposalDecider, binding run.PolicyRetryBinding) (run.Record, error) {
+	s.before()
+	return s.Store.BeginPolicyRetryDispatch(ctx, id, budget, d, binding)
+}
+func TestPolicyRetryRejectsRevisionChangedAfterResume(t *testing.T) {
+	ctx := context.Background()
+	f := newRevisionFixtureFor(t, "version: v1\nkind: agent-policy\nid: review-resume-race\nname: Review race\ntools:\n  allow: [read]\nnetwork:\n  allowed_domains: [existing.example]\n", policy.Event{Category: policy.NetworkAccessRequested, Domain: "api.example", ActionID: "network.connect", TraceID: "first-trace"}, "network:api.example,network:second.example")
+	actor := identity.ActorIdentity{ID: "human-1", Kind: identity.Human, Subject: "operator"}
+	d, _ := run.NewPermissionProposalDecider(f.store, &operatorFixture{actor: actor, authorized: true}, nil, func() time.Time { return f.at.Add(6 * time.Second) })
+	other := &exactRetryAdapter{}
+	_ = f.coordinator.ConfigurePolicyRevisions(d, nil, other)
+	if _, err := f.coordinator.ApplyPolicyRevision(ctx, f.proposal.ID, d); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := &qualityDispatchStore{Store: f.store}
+	wrapper.before = func() {
+		if _, err := f.coordinator.RetryPolicyAction(ctx, f.original.ID, policy.BudgetState{}); err != nil {
+			t.Fatal(err)
+		}
+		qualityApplySecondRevision(t, f, d)
+	}
+	outer, _ := run.NewCoordinator(wrapper, f.provider)
+	observed := &exactRetryAdapter{}
+	_ = outer.ConfigurePolicyRevisions(d, nil, observed)
+	got, err := outer.RetryPolicyAction(ctx, f.original.ID, policy.BudgetState{})
+	qualityAssertStaleRetry(t, got, err, observed)
+	if other.effects != 1 {
+		t.Fatalf("other retry effects=%d", other.effects)
+	}
+	qualityRetryFreshRevision(t, f, d)
+}
+func qualityAssertStaleRetry(t *testing.T, got run.Record, err error, observed *exactRetryAdapter) {
+	t.Helper()
+	if !errors.Is(err, run.ErrPolicyRetryStalePreparation) || observed.effects != 0 || got.Status != run.Paused || got.PolicyRevisions.Mutations[1].Retry != nil {
+		t.Fatalf("stale preparation changed runtime/retry: err=%v effects=%d record=%+v", err, observed.effects, got)
+	}
+}
+func qualityRetryFreshRevision(t *testing.T, f revisionFixture, d *run.PermissionProposalDecider) {
+	t.Helper()
+	fresh, _ := run.NewCoordinator(f.store, f.provider)
+	adapter := &exactRetryAdapter{}
+	_ = fresh.ConfigurePolicyRevisions(d, nil, adapter)
+	if _, err := fresh.RetryPolicyAction(context.Background(), f.original.ID, policy.BudgetState{}); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.effects != 1 || adapter.event.Domain != "second.example" {
+		t.Fatalf("fresh retry: effects=%d event=%+v", adapter.effects, adapter.event)
+	}
+}

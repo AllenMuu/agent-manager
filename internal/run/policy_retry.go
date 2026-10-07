@@ -25,9 +25,20 @@ type PolicyRetry struct {
 	RequestAuditID    string `json:"request_audit_id,omitempty"`
 	CompletionAuditID string `json:"completion_audit_id,omitempty"`
 }
+
+// PolicyRetryBinding captures what the host adapter prepared. Both claims compare
+// it with persisted authority inside the transaction before making any change.
+type PolicyRetryBinding struct {
+	Mutation enforcement.PolicyMutation
+	Action   policy.Event
+	Lineage  invocation.Lineage
+}
+
+var ErrPolicyRetryStalePreparation = errors.New("policy retry preparation is stale")
+
 type PolicyRetryStore interface {
-	BeginPolicyRetryResume(context.Context, string, policy.BudgetState, *PermissionProposalDecider, ...string) (Record, bool, error)
-	BeginPolicyRetryDispatch(context.Context, string, policy.BudgetState, *PermissionProposalDecider, ...string) (Record, error)
+	BeginPolicyRetryResume(context.Context, string, policy.BudgetState, *PermissionProposalDecider, PolicyRetryBinding) (Record, bool, error)
+	BeginPolicyRetryDispatch(context.Context, string, policy.BudgetState, *PermissionProposalDecider, PolicyRetryBinding) (Record, error)
 	FinishPolicyRetry(string, string, string) (Record, error)
 }
 
@@ -111,7 +122,7 @@ func (d *PermissionProposalDecider) validateRetryLocked(ctx context.Context, db 
 	}
 	return p, event, nil
 }
-func (s *Store) withRetryAuthority(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, approvalID string, requestingApproval bool, apply func(*database, *Record, policy.Event) error) (Record, error) {
+func (s *Store) withRetryAuthority(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, approvalID string, requestingApproval bool, binding *PolicyRetryBinding, apply func(*database, *Record, policy.Event) error) (Record, error) {
 	if d == nil || d.store != s {
 		return Record{}, errors.New("trusted retry decider does not own store")
 	}
@@ -125,6 +136,17 @@ func (s *Store) withRetryAuthority(ctx context.Context, id string, budget policy
 			result = r
 			if external != nil && !samePolicySnapshot(*external, r.AppliedPolicy()) {
 				return ErrProposalStaleBase
+			}
+			if binding != nil {
+				if r.PolicyRevisions == nil || len(r.PolicyRevisions.Mutations) == 0 {
+					return ErrPolicyRetryStalePreparation
+				}
+				m := r.PolicyRevisions.Mutations[len(r.PolicyRevisions.Mutations)-1]
+				p, found := db.Proposals[m.Request.ProposalID]
+				lineage := invocation.Lineage{ApprovalID: approvalID, RunID: r.ID, ActorID: r.Identity.Actor.ID, DelegationID: r.Identity.Delegation.ID, PolicySnapshotHash: r.AppliedPolicy().Hash}
+				if !found || !samePolicyMutation(binding.Mutation, m.Request) || !samePolicySnapshot(binding.Mutation.Target, r.AppliedPolicy()) || !reflect.DeepEqual(binding.Action, policyRetryEvent(p)) || !reflect.DeepEqual(binding.Lineage, lineage) {
+					return ErrPolicyRetryStalePreparation
+				}
 			}
 			_, event, err := d.validateRetryLocked(ctx, db, r, budget, approvalID, requestingApproval)
 			if err != nil {
@@ -146,13 +168,10 @@ func (s *Store) withRetryAuthority(ctx context.Context, id string, budget policy
 	}
 	return result, err
 }
-func (s *Store) BeginPolicyRetryResume(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, approvalIDs ...string) (Record, bool, error) {
-	approvalID, err := policyRetryApprovalID(approvalIDs)
-	if err != nil {
-		return Record{}, false, err
-	}
+func (s *Store) BeginPolicyRetryResume(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, binding PolicyRetryBinding) (Record, bool, error) {
+	approvalID := binding.Lineage.ApprovalID
 	created := false
-	r, err := s.withRetryAuthority(ctx, id, budget, d, approvalID, false, func(db *database, r *Record, event policy.Event) error {
+	r, err := s.withRetryAuthority(ctx, id, budget, d, approvalID, false, &binding, func(db *database, r *Record, event policy.Event) error {
 		m := &r.PolicyRevisions.Mutations[len(r.PolicyRevisions.Mutations)-1]
 		if m.Retry != nil {
 			if m.Retry.State == "not_dispatched" && r.Status == Active && !unresolved(*r) {
@@ -188,14 +207,11 @@ func (s *Store) BeginPolicyRetryResume(ctx context.Context, id string, budget po
 	})
 	return r, created, err
 }
-func (s *Store) BeginPolicyRetryDispatch(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, approvalIDs ...string) (Record, error) {
-	approvalID, err := policyRetryApprovalID(approvalIDs)
-	if err != nil {
-		return Record{}, err
-	}
-	return s.withRetryAuthority(ctx, id, budget, d, approvalID, false, func(db *database, r *Record, event policy.Event) error {
+func (s *Store) BeginPolicyRetryDispatch(ctx context.Context, id string, budget policy.BudgetState, d *PermissionProposalDecider, binding PolicyRetryBinding) (Record, error) {
+	approvalID := binding.Lineage.ApprovalID
+	return s.withRetryAuthority(ctx, id, budget, d, approvalID, false, &binding, func(db *database, r *Record, event policy.Event) error {
 		m := &r.PolicyRevisions.Mutations[len(r.PolicyRevisions.Mutations)-1]
-		if m.Retry == nil || m.Retry.State != "resuming" || r.Status != Active || r.ExternalRuntime.ObservedState != "active" || unresolved(*r) {
+		if m.Retry == nil || m.Retry.State != "resuming" || m.Retry.ApprovalID != approvalID || r.Status != Active || r.ExternalRuntime.ObservedState != "active" || unresolved(*r) {
 			return enforcement.ErrUnknown
 		}
 		audit, err := auditFor(*r, event, policy.Decision{Outcome: event.ObservedDecision, ReasonCode: event.ReasonCode}, "")
@@ -323,6 +339,11 @@ func (c *Coordinator) RetryPolicyAction(ctx context.Context, id string, budget p
 	if err != nil {
 		return r, err
 	}
+	mutation, err := clonePolicyMutation(m.Request)
+	if err != nil {
+		return r, err
+	}
+	binding := PolicyRetryBinding{Mutation: mutation, Action: event, Lineage: lineage}
 	prepared, err := adapter.Prepare(ctx, event, callContext)
 	if err != nil {
 		return r, err
@@ -340,7 +361,7 @@ func (c *Coordinator) RetryPolicyAction(ctx context.Context, id string, budget p
 	if _, ok := provider.(enforcement.PauseResumer); !ok {
 		return r, enforcement.ErrUnsupported
 	}
-	r, created, err := store.BeginPolicyRetryResume(ctx, id, budget, d, approvalID)
+	r, created, err := store.BeginPolicyRetryResume(ctx, id, budget, d, binding)
 	if err != nil {
 		return r, err
 	}
@@ -350,7 +371,7 @@ func (c *Coordinator) RetryPolicyAction(ctx context.Context, id string, budget p
 			return r, err
 		}
 	}
-	r, err = store.BeginPolicyRetryDispatch(ctx, id, budget, d, approvalID)
+	r, err = store.BeginPolicyRetryDispatch(ctx, id, budget, d, binding)
 	if err != nil {
 		return r, err
 	}
@@ -397,7 +418,7 @@ func (c *Coordinator) RequestPolicyRetryApproval(ctx context.Context, id string,
 		return Approval{}, enforcement.ErrUnsupported
 	}
 	var result Approval
-	_, err := d.store.withRetryAuthority(ctx, id, budget, d, "", true, func(db *database, r *Record, event policy.Event) error {
+	_, err := d.store.withRetryAuthority(ctx, id, budget, d, "", true, nil, func(db *database, r *Record, event policy.Event) error {
 		if r.Status != Paused || unresolved(*r) {
 			return errors.New("approval requires confirmed paused retry")
 		}

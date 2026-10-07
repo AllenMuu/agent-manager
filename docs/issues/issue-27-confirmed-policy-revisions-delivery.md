@@ -120,3 +120,26 @@ Ordinary independent specification/quality review (task 3.2), required final
 read-only gpt-6.1-sol/high OCR (task 3.3), PR publication, merge/main acceptance,
 Issue closure and R4 synchronization/archive remain pending. The root controller
 owns those review and delivery gates; this implementation does not mark them done.
+
+## Ordinary quality review repairs
+
+The first 28-entry quality review found a prepared-action race and stale R3
+current-base documentation. Both were repaired; independent rereview remains
+pending and tasks 3.2/3.3 remain unchecked.
+
+`TestQualityRetryDoesNotAuthorizeDifferentPreparedRevision` preserves the reviewer
+scenario: Prepare applies a second approved revision. Both atomic resume and
+dispatch claims now require the captured exact mutation operation, proposal,
+base/target snapshot, denied action, identity lineage and action approval ID.
+Stale preparation creates no resume intent, retry consumption or dispatch; a
+fresh preparation dispatches the new exact action once.
+`TestPolicyRetryRejectsRevisionChangedAfterResume` completes a competing retry and
+applies a new revision between resume and dispatch, proving the second claim
+checks the same binding. The lifecycle guide now describes the transactional
+confirmed-applied default and the delivered offline R4 contracts.
+
+`quality-repair/original-probe.go` and its SHA256 preserve the unchanged reviewer
+probe. On frozen `6fdbb3aa4b0cd83575efa7c0095f588f7af32966` its RED exit was 1;
+the unchanged probe GREEN exit is 0. Permanent regression RED/GREEN and the
+second claim binding RED/GREEN are recorded in `quality-repair/`, along with
+fresh final verification logs and a source fingerprint bound to the repair commit.

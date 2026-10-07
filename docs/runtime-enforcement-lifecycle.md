@@ -20,7 +20,7 @@ Run the executable public-boundary example with:
 go test ./internal/run -run ExampleCoordinator -count=1 -v
 ```
 
-It prepares and starts an offline mock, loses a termination acknowledgement, reopens the local store, and reconciles the same operation. The mock keeps deterministic receipts while its fixture instance is retained; it is not a durable external service. Tests exercise confirmation-storage failure, unknown starts, provider refusal, unsupported ports, invalid receipts, concurrent coordinators, and governed approved invocations. This is fixture evidence, not live filesystem/process/network/credential protection. Policy application, event retrieval, policy revisions, OpenShell, container/kernel isolation, checkpoint and watchdog remain future work.
+It prepares and starts an offline mock, loses a termination acknowledgement, reopens the local store, and reconciles the same operation. The mock keeps deterministic receipts while its fixture instance is retained; it is not a durable external service. Tests exercise confirmation-storage failure, unknown starts, provider refusal, unsupported ports, invalid receipts, concurrent coordinators, and governed approved invocations. This is fixture evidence, not live filesystem/process/network/credential protection. R4 adds offline policy revision application and event adapter contracts described below. Live event retrieval, OpenShell, container/kernel isolation, checkpoint and watchdog remain future work.
 
 ## Denial-bound permission proposals (R3)
 
@@ -67,10 +67,10 @@ cannot approve a proposal.
 An optional `CurrentPolicyBoundary.WithCurrentPolicy` holds the authoritative
 base stable throughout its callback. Lock order is that boundary, then Store
 transaction, then operator resolution. Neither boundary nor operator resolver
-may re-enter Store. Without this port, R3 reads the persisted immutable initial
-run snapshot before the transaction; no applied revision setter exists. A later
-revision workflow must supply authoritative coordination, rather than treating a
-past validation result as an application authorization.
+may re-enter Store. Without this port, the Store reads the persisted confirmed applied policy inside
+the transaction (the immutable initial snapshot until R4 confirms a revision).
+Proposal decision, revision application and retry authorization each revalidate
+against that current base; a past validation result does not authorize application.
 
 `ValidateUse` re-establishes the original operator identity and authority,
 including current authorization, and rechecks expiry/ceiling/base in the same
