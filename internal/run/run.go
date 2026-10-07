@@ -123,6 +123,7 @@ type AuditRecord struct {
 	Tool              string               `json:"tool,omitempty"`
 	ActionType        string               `json:"action_type,omitempty"`
 	Domain            string               `json:"domain,omitempty"`
+	CredentialScope   string               `json:"credential_scope,omitempty"`
 	PolicyID          string               `json:"policy_id"`
 	PolicyVersion     string               `json:"policy_version"`
 	PolicyHash        string               `json:"policy_hash"`
@@ -134,10 +135,11 @@ type AuditRecord struct {
 }
 
 type database struct {
-	Version   string              `json:"version"`
-	Runs      map[string]Record   `json:"runs"`
-	Approvals map[string]Approval `json:"approvals"`
-	Events    []AuditRecord       `json:"events"`
+	Version   string                        `json:"version"`
+	Runs      map[string]Record             `json:"runs"`
+	Approvals map[string]Approval           `json:"approvals"`
+	Events    []AuditRecord                 `json:"events"`
+	Proposals map[string]PermissionProposal `json:"permission_proposals,omitempty"`
 }
 
 type Store struct {
@@ -1226,6 +1228,14 @@ func validateDatabase(db database) error {
 			}
 		}
 	}
+	for id, proposal := range db.Proposals {
+		if id != proposal.ID {
+			return errors.New("proposal key does not match id")
+		}
+		if err := validatePermissionProposal(db, proposal); err != nil {
+			return err
+		}
+	}
 	for _, approval := range db.Approvals {
 		if err := validateApprovalConsumption(db, approval); err != nil {
 			return fmt.Errorf("approval %q has invalid consumption: %w", approval.ID, err)
@@ -1543,8 +1553,13 @@ func (event AuditRecord) Validate() error {
 	if event.ReasonCode != "" && !policy.IsKnownReasonCode(event.ReasonCode) {
 		return fmt.Errorf("audit event has invalid reason code %q", event.ReasonCode)
 	}
-	credentialScope := ""
-	if event.Category == policy.CredentialAccessRequested || event.Category == policy.EventCredentialAccess {
+	credentialScope := event.CredentialScope
+	if credentialScope != "" {
+		if err := identity.ValidateScopes("audit credential scope", []string{credentialScope}); err != nil {
+			return err
+		}
+	}
+	if (event.Category == policy.CredentialAccessRequested || event.Category == policy.EventCredentialAccess) && credentialScope == "" {
 		credentialScope = "redacted"
 	}
 	if event.ActorID != "" && !identity.IsSafeReference(event.ActorID) || event.DelegationID != "" && !identity.IsSafeReference(event.DelegationID) {
@@ -1559,6 +1574,11 @@ func auditFor(run Record, event policy.Event, decision policy.Decision, terminat
 	}
 	if err := decision.Validate(); err != nil {
 		return AuditRecord{}, fmt.Errorf("invalid policy decision: %w", err)
+	}
+	if event.CredentialScope != "" {
+		if err := identity.ValidateScopes("audit credential scope", []string{event.CredentialScope}); err != nil {
+			return AuditRecord{}, err
+		}
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
@@ -1591,7 +1611,13 @@ func auditFor(run Record, event policy.Event, decision policy.Decision, terminat
 		}
 	}
 	reason := sanitizeReason(terminationReason)
-	return AuditRecord{Version: auditVersion, ID: id, RunID: run.ID, RequestAuditID: event.RequestAuditID, Timestamp: event.Timestamp.UTC(), Category: event.Category, Actor: actor, ActorID: actorID, DelegationID: delegationID, ActionID: event.ActionID, ApprovalID: event.ApprovalID, ApproverID: event.ApproverID, TraceID: traceID, Runtime: run.Runtime, Tool: event.Tool, ActionType: event.ActionType, Domain: domain, PolicyID: run.Policy.PolicyID, PolicyVersion: run.Policy.Version, PolicyHash: run.Policy.Hash, PolicyResolvedAt: run.Policy.ResolvedAt, Decision: decision.Outcome, Result: decision.Outcome, ReasonCode: decision.ReasonCode, TerminationReason: reason}, nil
+	// Retain safe scope identifiers only for attributable permission denials.
+	// Ordinary/anonymous credential events keep the historical omission contract.
+	credentialScope := ""
+	if run.Identity.Mode == identity.ModeNamed && event.Category == policy.CredentialAccessRequested && decision.Outcome == policy.Deny && event.ActionID != "" {
+		credentialScope = event.CredentialScope
+	}
+	return AuditRecord{Version: auditVersion, ID: id, RunID: run.ID, RequestAuditID: event.RequestAuditID, Timestamp: event.Timestamp.UTC(), Category: event.Category, Actor: actor, ActorID: actorID, DelegationID: delegationID, ActionID: event.ActionID, ApprovalID: event.ApprovalID, ApproverID: event.ApproverID, TraceID: traceID, Runtime: run.Runtime, Tool: event.Tool, ActionType: event.ActionType, Domain: domain, CredentialScope: credentialScope, PolicyID: run.Policy.PolicyID, PolicyVersion: run.Policy.Version, PolicyHash: run.Policy.Hash, PolicyResolvedAt: run.Policy.ResolvedAt, Decision: decision.Outcome, Result: decision.Outcome, ReasonCode: decision.ReasonCode, TerminationReason: reason}, nil
 }
 
 func validateRequestAuditLink(events []AuditRecord, runID string, event policy.Event, strict bool) error {
