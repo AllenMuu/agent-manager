@@ -114,18 +114,18 @@ recorded in their named logs and `.exit` files. Final results: `go test -count=1
 exit 0; `go vet ./...` exit 0; CLI build exit 0;
 `openspec validate apply-confirmed-policy-revisions --strict` exit 0;
 `openspec doctor` exit 0. Complete base diff and staged-new-file checks exit 0.
-Tasks 1.1, 2.1–2.5 and 3.1 are complete (7/9); review tasks remain unchecked.
+At the original implementation checkpoint, tasks 1.1, 2.1–2.5 and 3.1 were complete (7/9); independent review was still pending.
 
-Ordinary independent specification/quality review (task 3.2), required final
-read-only gpt-6.1-sol/high OCR (task 3.3), PR publication, merge/main acceptance,
-Issue closure and R4 synchronization/archive remain pending. The root controller
-owns those review and delivery gates; this implementation does not mark them done.
+Ordinary independent specification/quality review (task 3.2) and final read-only
+gpt-6.1-sol/high OCR (task 3.3) now pass on the repaired source below. Tasks are
+9/9. Publication metadata/body supplemental review, PR publication, merge/main
+acceptance, Issue closure and R4 synchronization/archive remain pending.
 
 ## Ordinary quality review repairs
 
 The first 28-entry quality review found a prepared-action race and stale R3
-current-base documentation. Both were repaired; independent rereview remains
-pending and tasks 3.2/3.3 remain unchecked.
+current-base documentation. Both were repaired and independently rereviewed.
+The current reviewed source is `1117cd8edddea921aa306bd7f1fc9349cdefe60e`.
 
 `TestQualityRetryDoesNotAuthorizeDifferentPreparedRevision` preserves the reviewer
 scenario: Prepare applies a second approved revision. Both atomic resume and
@@ -143,3 +143,32 @@ probe. On frozen `6fdbb3aa4b0cd83575efa7c0095f588f7af32966` its RED exit was 1;
 the unchanged probe GREEN exit is 0. Permanent regression RED/GREEN and the
 second claim binding RED/GREEN are recorded in `quality-repair/`, along with
 fresh final verification logs and a source fingerprint bound to the repair commit.
+
+## Independent review and publication checkpoint
+
+Initial source: `6fdbb3aa4b0cd83575efa7c0095f588f7af32966`.
+Ordinary quality repair: `1117cd8edddea921aa306bd7f1fc9349cdefe60e`.
+
+- Initial specification review covered 28/28 entries. Ordinary quality review
+  found Q1 (stale prepared action versus a newer mutation) and D1 (guide wording).
+  Regression-first repairs preserve the exact original probe and both claims.
+- Affected specification rereview PASS: four changed files, 28/28 retained scope,
+  13 independent binding-tamper cases and fresh complete checks. Local report:
+  `/tmp/agent-manager-issue27-spec-quality-rereview.md`.
+- Ordinary quality rereview PASS: the byte-identical original probe and permanent
+  Prepare/between-claims regressions pass. Local report:
+  `/tmp/agent-manager-issue27-quality-rereview.md`.
+- Required final OCR `gpt-6.1-sol/high` PASS on repaired source: actual OCR
+  `v1.12.12 (182898c)`, range base/merge_base `490bff8472d86039b13f83f726e332e66bb9ba81`,
+  15 selected plus 13 manually reviewed exclusions, complete 28/28 coverage,
+  zero skips, no actionable findings or important coverage gaps. Local report:
+  `/tmp/agent-manager-issue27-final-ocr/report.md`.
+- Final reviewer independently ran full Go/race/vet/build, strict active and seven
+  main specs, doctor/diff/gofmt; exact original probe and five additional negative
+  cases passed. All 428 tracked files remained unchanged during review.
+
+The final reviewed Go source and normative specs remain unchanged by this
+publication metadata update. The same final reviewer must separately review the
+three metadata paths and exact proposed PR body before publication. This is
+branch validation, not a main-branch acceptance or Issue-closure claim. R3 archive
+carry is included; R4 remains active until authorized merge and acceptance.
