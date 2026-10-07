@@ -13,7 +13,75 @@ Agent Manager never executes managed-resource code and never installs dependenci
 - **Target agents** — Claude Code, Codex, and Pi have registered Skill adapters. Pi supports Skill placement only; its native layout has no verified SubAgent definition format, so SubAgent installation for Pi is reported as unsupported without a write. A project can activate the same Skill for multiple agents.
 - **Global baseline** — a deliberately small set of resources installed agent-wide. Only `init` touches global locations; project commands never do.
 
+## Install the CLI
+
+The npm distribution is prepared in this repository; the commands below become
+available after the first npm/GitHub Release publication. See the
+[release guide](docs/npm-release.md) for publisher setup and validation.
+
+With Node.js 22 or later, npm, and a system `tar` command (included on macOS,
+Linux and Windows 10+), run the prebuilt CLI directly:
+
+```sh
+npx @allenmuu/agent-manager --help
+npx @allenmuu/agent-manager init --yes
+npx @allenmuu/agent-manager web --project .
+```
+
+For a persistent CLI installation:
+
+```sh
+npm install -g @allenmuu/agent-manager
+agent-manager --help
+```
+
+Go and a source checkout are not required for npm installation. The wrapper
+fetches the exact package version's platform binary from GitHub Releases and
+checks its SHA-256 before installation. If npm lifecycle scripts are disabled,
+the first invocation downloads the binary instead. Initial setup requires
+network access to npm and GitHub Releases; installed CLI operations use the
+local Go binary. All CLI arguments are forwarded, including the existing
+`install <skill-id>...` command.
+
+If a global npm installation reports `command not found`, add `$(npm prefix -g)/bin`
+to PATH on macOS/Linux (the npm prefix itself on Windows), or use npx directly.
+For zsh on macOS/Linux:
+
+```sh
+export PATH="$(npm prefix -g)/bin:$PATH"
+# Run once to persist the setting for new terminal sessions:
+echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> "$HOME/.zshrc"
+```
+
+### Install from source
+
+Until the first npm release, or if you prefer a source build, use Go 1.24 or
+later and Git:
+
+```sh
+git clone https://github.com/AllenMuu/agent-manager.git
+cd agent-manager
+mkdir -p "$HOME/.local/bin"
+GOBIN="$HOME/.local/bin" go install ./cmd/agent-manager
+export PATH="$HOME/.local/bin:$PATH"
+agent-manager --help
+```
+
+If you already have a checkout, start from its root at `mkdir -p`. For zsh,
+persist the source installation's PATH setting once:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+```
+
+`agent-manager init` installs the global Operator Skill after the CLI is
+available. It does not install the CLI itself.
+
 ## Build
+
+`go build ./cmd/agent-manager` creates `./agent-manager` in the repository root;
+run it as `./agent-manager --help`. To use `agent-manager` from any directory,
+follow the CLI installation steps above.
 
 ```text
 go build ./cmd/agent-manager

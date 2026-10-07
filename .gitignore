@@ -1,3 +1,10 @@
 .worktrees/
 .agent-manager/evals/
 web/node_modules/
+.goreleaser-dist/
+dist/npm/bin/agent-manager
+dist/npm/bin/agent-manager.exe
+dist/npm/bin/.version
+dist/npm/.download-*/
+dist/npm/*.tgz
+dist/npm/release-assets/

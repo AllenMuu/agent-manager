@@ -24,6 +24,56 @@
 
 ## 快速开始
 
+仓库已提供 npm 分发实现；以下 npm 命令需在首次发布 npm 包和 GitHub Release 后使用。发布步骤见[发布指南](docs/npm-release.md)。
+
+需要 Node.js 22 或更高版本、npm 和系统 `tar` 命令（macOS、Linux 和 Windows 10+ 通常自带）。通过 npx 直接运行，无需 Go、克隆仓库或手动配置 PATH：
+
+```sh
+npx @allenmuu/agent-manager --help
+npx @allenmuu/agent-manager init --yes
+npx @allenmuu/agent-manager web --project .
+```
+
+也可以长期安装 CLI：
+
+```sh
+npm install -g @allenmuu/agent-manager
+agent-manager --help
+```
+
+npm 包装器会从 GitHub Release 下载与包版本一致的当前平台二进制，并在安装前校验 SHA-256。如果禁用了 npm 安装脚本，首次运行时会下载。初次安装需要访问 npm 和 GitHub Release；安装完成后使用本地 Go 二进制。`install <skill-id>...` 等现有命令全部透传。
+
+如果全局 npm 安装后仍提示 `command not found`，macOS/Linux 请将 `$(npm prefix -g)/bin` 加入 PATH，Windows 则将 npm 前缀目录本身加入 PATH；也可以直接使用 npx。macOS/Linux 的 zsh 可执行：
+
+```sh
+export PATH="$(npm prefix -g)/bin:$PATH"
+# 再执行一次，让新开的终端也能找到命令：
+echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> "$HOME/.zshrc"
+```
+
+### 从源码安装
+
+首次 npm 发布前，或需要从源码构建时，使用 Go 1.24 或更高版本及 Git：
+
+```sh
+git clone https://github.com/AllenMuu/agent-manager.git
+cd agent-manager
+mkdir -p "$HOME/.local/bin"
+GOBIN="$HOME/.local/bin" go install ./cmd/agent-manager
+export PATH="$HOME/.local/bin:$PATH"
+agent-manager --help
+```
+
+已有本地仓库时，从仓库根目录的 `mkdir -p` 步骤开始。zsh 用户可执行一次以下命令，持久化源码安装的 PATH 配置：
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+```
+
+`agent-manager init` 用于安装全局 Operator Skill，前提是 CLI 已经可用；它不会安装 CLI 本身。
+
+CLI 安装完成后，在需要管理的项目目录运行：
+
 ```sh
 # 安装或更新全局 Operator Skill
 agent-manager init --yes
@@ -52,6 +102,8 @@ agent-manager web --project . --port 0
 ## 构建与开发
 
 从仓库根目录运行 Go 检查和 OpenSpec 命令：
+
+`go build ./cmd/agent-manager` 只会在仓库根目录生成 `./agent-manager`，可用 `./agent-manager --help` 运行。若要在任意目录直接使用 `agent-manager`，请先按“快速开始”安装 CLI 并配置 PATH。
 
 ```sh
 go build ./cmd/agent-manager
