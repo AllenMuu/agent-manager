@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	storeVersion         = "v2"
+	storeVersion         = "v3"
+	previousStoreVersion = "v2"
 	legacyStoreVersion   = "v1"
 	auditVersion         = "v3"
 	previousAuditVersion = "v2"
@@ -54,17 +55,18 @@ const (
 )
 
 type Record struct {
-	ExternalRuntime    *ExternalRuntime   `json:"external_runtime,omitempty"`
-	ID                 string             `json:"id"`
-	ProjectRoot        string             `json:"project_root"`
-	Runtime            string             `json:"runtime"`
-	Status             Status             `json:"status"`
-	Policy             policy.Snapshot    `json:"policy"`
-	Identity           identity.Selection `json:"identity"`
-	CapabilityWarnings []policy.Control   `json:"capability_warnings,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	TerminationReason  string             `json:"termination_reason,omitempty"`
+	PolicyRevisions    *PolicyRevisionHistory `json:"policy_revisions,omitempty"`
+	ExternalRuntime    *ExternalRuntime       `json:"external_runtime,omitempty"`
+	ID                 string                 `json:"id"`
+	ProjectRoot        string                 `json:"project_root"`
+	Runtime            string                 `json:"runtime"`
+	Status             Status                 `json:"status"`
+	Policy             policy.Snapshot        `json:"policy"`
+	Identity           identity.Selection     `json:"identity"`
+	CapabilityWarnings []policy.Control       `json:"capability_warnings,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	TerminationReason  string                 `json:"termination_reason,omitempty"`
 }
 
 type ApprovalStatus string
@@ -285,7 +287,7 @@ func (s *Store) List() ([]Record, error) {
 	return result, nil
 }
 
-func (s *Store) appendEvent(runID string, event policy.Event, decision policy.Decision, invocationStatus InvocationStatus, now time.Time) (AuditRecord, error) {
+func (s *Store) appendEvent(runID string, event policy.Event, decision policy.Decision, invocationStatus InvocationStatus, now time.Time, expected policy.Snapshot) (AuditRecord, error) {
 	if err := event.Validate(); err != nil {
 		return AuditRecord{}, err
 	}
@@ -308,6 +310,26 @@ func (s *Store) appendEvent(runID string, event policy.Event, decision policy.De
 			}
 		}
 		var err error
+		snapshot := record.AppliedPolicy()
+		if event.RequestAuditID == "" && !samePolicySnapshot(snapshot, expected) {
+			return ErrProposalStaleBase
+		}
+		if (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested || event.Category == policy.CredentialAccessRequested) && record.policyRevisionBlocked() {
+			return enforcement.ErrUnknown
+		}
+		if event.RequestAuditID != "" {
+			request, found := auditRecordByID(db.Events, event.RequestAuditID)
+			if !found {
+				return errors.New("request audit not found")
+			}
+			var resolved bool
+			snapshot, resolved = record.policySnapshot(request.PolicyHash, request.PolicyResolvedAt)
+			if !resolved {
+				return errors.New("request revision not found")
+			}
+		}
+		record.Policy = snapshot
+		record.PolicyRevisions = nil
 		result, err = auditFor(record, event, decision, "")
 		if err == nil {
 			if invocationStatus != "" {
@@ -461,7 +483,7 @@ func (s *Store) ConsumeApprovalForInvocation(approvalID, runID, requestAuditID s
 				break
 			}
 		}
-		if !found || invocationRequest.RunID != runID || invocationRequest.Category != policy.ToolCallRequested || invocationRequest.Decision != policy.RequireApproval || invocationRequest.ApprovalID != approvalID || invocationRequest.ActionID != approvedRequest.ActionID || invocationRequest.Tool != approvedRequest.Tool || invocationRequest.ActionType != approvedRequest.ActionType || invocationRequest.TraceID != approvedRequest.TraceID || invocationRequest.PolicyHash != runRecord.Policy.Hash {
+		if !found || invocationRequest.RunID != runID || invocationRequest.Category != policy.ToolCallRequested || invocationRequest.Decision != policy.RequireApproval || invocationRequest.ApprovalID != approvalID || invocationRequest.ActionID != approvedRequest.ActionID || invocationRequest.Tool != approvedRequest.Tool || invocationRequest.ActionType != approvedRequest.ActionType || invocationRequest.TraceID != approvedRequest.TraceID || invocationRequest.PolicyHash != runRecord.AppliedPolicy().Hash || !sameAuditPolicyReference(invocationRequest, approvedRequest) {
 			return errors.New("invocation audit does not match the approved action")
 		}
 		approval.ConsumedAt = now.UTC()
@@ -585,6 +607,8 @@ func (s *Store) DecideApproval(id string, status ApprovalStatus, reason string, 
 			return err
 		}
 		event := policy.Event{Category: category, RunID: run.ID, Tool: request.Tool, Domain: request.Domain, ActionType: request.ActionType, ActionID: requestAudit.ActionID, TraceID: requestAudit.TraceID, ApprovalID: request.ID, ApproverID: decider.ID, Timestamp: now.UTC()}
+		run.Policy = snapshotForAudit(run, requestAudit)
+		run.PolicyRevisions = nil
 		audit, err := auditFor(run, event, policy.Decision{Outcome: outcomeFor(status), ReasonCode: request.ReasonCode}, "approval_"+string(status))
 		if err != nil {
 			return err
@@ -757,7 +781,7 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 	if err != nil {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 	}
-	if runRecord.ExternalRuntime != nil && (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested) && !runRecord.ExecutionReady() {
+	if (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested || event.Category == policy.CredentialAccessRequested) && ((runRecord.ExternalRuntime != nil && !runRecord.ExecutionReady()) || runRecord.policyRevisionBlocked()) {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, enforcement.ErrUnknown
 	}
 	event.RunID = runID
@@ -821,13 +845,13 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 			}
 		}
 	}
-	evaluation := engine.EvaluateAfter(runRecord.Policy, event, state)
-	decision := engine.EvaluateBefore(runRecord.Policy, decisionEvent, state)
+	evaluation := engine.EvaluateAfter(runRecord.AppliedPolicy(), event, state)
+	decision := engine.EvaluateBefore(runRecord.AppliedPolicy(), decisionEvent, state)
 	if requirement.Required {
 		if event.ActionID != requirement.ActionID {
 			decision = policy.Decision{Outcome: policy.Deny, ReasonCode: policy.ReasonIdentityPolicyDenied}
 		} else {
-			decision = engine.EvaluateBeforeWithIdentity(runRecord.Policy, decisionEvent, state, requirement, runID, selection, now)
+			decision = engine.EvaluateBeforeWithIdentity(runRecord.AppliedPolicy(), decisionEvent, state, requirement, runID, selection, now)
 		}
 	}
 	if event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted {
@@ -842,7 +866,7 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 	}
 	event.ObservedDecision = decision.Outcome
 	event.ReasonCode = decision.ReasonCode
-	audit, err := m.Store.appendEvent(runID, event, decision, invocationStatus, now)
+	audit, err := m.Store.appendEvent(runID, event, decision, invocationStatus, now, runRecord.AppliedPolicy())
 	if err != nil {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 	}
@@ -893,7 +917,7 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 	if err != nil {
 		return Approval{}, err
 	}
-	if requestAudit.PolicyHash != run.Policy.Hash || requestAudit.PolicyID != run.Policy.PolicyID {
+	if requestAudit.PolicyHash != run.AppliedPolicy().Hash || requestAudit.PolicyID != run.AppliedPolicy().PolicyID {
 		return Approval{}, errors.New("approval request references an audit from a different policy snapshot")
 	}
 	if _, found, err := m.Store.approvalForRequest(run.ID, request.RequestAuditID); err != nil {
@@ -907,6 +931,9 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 			return Approval{}, err
 		}
 		request.ID = generated
+	}
+	if run.policyRevisionBlocked() {
+		return Approval{}, enforcement.ErrUnknown
 	}
 	controller := m.controller(run.ID)
 	if controller == nil || !controller.Capabilities()[policy.ControlApprovalPauseResume] {
@@ -948,6 +975,9 @@ func (m *Manager) DecideApproval(ctx context.Context, id string, status Approval
 	}
 	if request.Status == status && run.Status == Active {
 		return request, nil
+	}
+	if run.policyRevisionBlocked() {
+		return Approval{}, enforcement.ErrUnknown
 	}
 	controller := m.controller(run.ID)
 	if controller == nil || !controller.Capabilities()[policy.ControlApprovalPauseResume] {
@@ -1138,8 +1168,13 @@ func decodeDatabase(input io.Reader) (database, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return database{}, errors.New("run state must contain exactly one JSON document")
 	}
-	if (db.Version != legacyStoreVersion && db.Version != storeVersion) || db.Runs == nil || db.Approvals == nil || db.Events == nil {
+	if (db.Version != legacyStoreVersion && db.Version != previousStoreVersion && db.Version != storeVersion) || db.Runs == nil || db.Approvals == nil || db.Events == nil {
 		return database{}, errors.New("run state has an unsupported or incomplete version")
+	}
+	for _, record := range db.Runs {
+		if db.Version != storeVersion && record.PolicyRevisions != nil {
+			return database{}, errors.New("revision mutations require version-aware state")
+		}
 	}
 	if db.Version == legacyStoreVersion {
 		for id, record := range db.Runs {
@@ -1191,7 +1226,10 @@ func emptyDatabase() database {
 }
 
 func validateDatabase(db database) error {
-	if db.Version != legacyStoreVersion && db.Version != storeVersion {
+	if err := validateRevisionLineage(db); err != nil {
+		return err
+	}
+	if db.Version != legacyStoreVersion && db.Version != previousStoreVersion && db.Version != storeVersion {
 		return errors.New("run state has an unsupported version")
 	}
 	for id, run := range db.Runs {
@@ -1245,6 +1283,9 @@ func validateDatabase(db database) error {
 }
 
 func validateRecord(record Record) error {
+	if err := validatePolicyRevisions(record); err != nil {
+		return err
+	}
 	if err := validateExternal(record); err != nil {
 		return err
 	}
@@ -1382,7 +1423,7 @@ func validateApprovalRequestAudit(db database, request Approval) (AuditRecord, e
 	if audit.RunID != request.RunID || audit.Category != request.Category || audit.Tool != request.Tool || !sameAuditDomain(audit.Domain, request.Domain) || audit.ActionType != request.ActionType {
 		return AuditRecord{}, errors.New("approval request audit does not match its action")
 	}
-	if audit.PolicyID != runRecord.Policy.PolicyID || audit.PolicyHash != runRecord.Policy.Hash {
+	if !auditResolvesPolicy(runRecord, audit) {
 		return AuditRecord{}, errors.New("approval request audit does not match the run policy snapshot")
 	}
 	if audit.Decision != policy.RequireApproval {
@@ -1447,6 +1488,9 @@ func validateAudit(event AuditRecord, db database) error {
 			if err != nil {
 				return fmt.Errorf("audit event %q references an invalid approval: %w", event.ID, err)
 			}
+			if !sameAuditPolicyReference(event, request) {
+				return errors.New("approval audit policy reference differs from its original request")
+			}
 			if (request.ActionID != "" && event.ActionID != request.ActionID) || (request.TraceID != "" && event.TraceID != request.TraceID) || event.Tool != request.Tool || event.ActionType != request.ActionType {
 				return fmt.Errorf("audit event %q approval lineage does not match its request", event.ID)
 			}
@@ -1484,7 +1528,8 @@ func validateAudit(event AuditRecord, db database) error {
 			return fmt.Errorf("audit event %q has an approver without an approval", event.ID)
 		}
 	}
-	if event.PolicyID != run.Policy.PolicyID || event.PolicyVersion != run.Policy.Version || event.PolicyHash != run.Policy.Hash || !event.PolicyResolvedAt.Equal(run.Policy.ResolvedAt) {
+	snapshot, found := run.policySnapshot(event.PolicyHash, event.PolicyResolvedAt)
+	if !found || event.PolicyID != snapshot.PolicyID || event.PolicyVersion != snapshot.Version {
 		return fmt.Errorf("audit event %q policy reference does not match run snapshot", event.ID)
 	}
 	return nil
@@ -1569,6 +1614,7 @@ func (event AuditRecord) Validate() error {
 }
 
 func auditFor(run Record, event policy.Event, decision policy.Decision, terminationReason string) (AuditRecord, error) {
+	run.Policy = run.AppliedPolicy()
 	if err := event.Validate(); err != nil {
 		return AuditRecord{}, err
 	}

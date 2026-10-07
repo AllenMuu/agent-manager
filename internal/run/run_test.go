@@ -216,8 +216,8 @@ func TestV1RunStoreReadsAsLegacyWithoutRewriteAndUpgradesOnMutation(t *testing.T
 	if err := json.Unmarshal(upgradedBytes, &upgraded); err != nil {
 		t.Fatal(err)
 	}
-	if upgraded["version"] != "v2" {
-		t.Fatalf("mutated run-store envelope version = %v, want v2", upgraded["version"])
+	if upgraded["version"] != "v3" {
+		t.Fatalf("mutated run-store envelope version = %v, want v3", upgraded["version"])
 	}
 	upgradedRecord, err := legacyStore.Get(started.ID)
 	if err != nil || upgradedRecord.Identity.Mode != identity.ModeLegacyAnonymous {

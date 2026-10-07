@@ -11,12 +11,15 @@ import (
 // MockProvider is deterministic offline evidence, never a sandbox or model.
 // Its receipts survive coordinator replacement while this fixture is retained.
 type MockProvider struct {
-	mu        sync.Mutex
-	id        string
-	receipts  map[string]Acknowledgement
-	resources map[string]string
-	calls     []Operation
-	faults    map[string]mockFault
+	policyReceipts map[string]PolicyReceipt
+	policyCalls    []PolicyMutation
+	activePolicies map[string]policy.Snapshot
+	mu             sync.Mutex
+	id             string
+	receipts       map[string]Acknowledgement
+	resources      map[string]string
+	calls          []Operation
+	faults         map[string]mockFault
 }
 type mockFault struct {
 	err    error
@@ -24,11 +27,11 @@ type mockFault struct {
 }
 
 func NewMockProvider(id string) *MockProvider {
-	return &MockProvider{id: id, receipts: map[string]Acknowledgement{}, resources: map[string]string{}, faults: map[string]mockFault{}}
+	return &MockProvider{policyReceipts: map[string]PolicyReceipt{}, activePolicies: map[string]policy.Snapshot{}, id: id, receipts: map[string]Acknowledgement{}, resources: map[string]string{}, faults: map[string]mockFault{}}
 }
 func (m *MockProvider) ID() string { return m.id }
 func (m *MockProvider) Declaration() Declaration {
-	return Declaration{Name: m.id, Kind: "execution", Governance: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlApprovalPauseResume: true, policy.ControlRunTermination: true}, Controls: map[Dimension]Capability{Tool: {Support: "supported", Update: "unsupported", Verified: true}}}
+	return Declaration{Name: m.id, Kind: "execution", Governance: map[policy.Control]bool{policy.ControlToolInterception: true, policy.ControlRuntimeEvents: true, policy.ControlNetworkRestriction: true, policy.ControlCredentialScope: true, policy.ControlApprovalPauseResume: true, policy.ControlRunTermination: true}, Controls: map[Dimension]Capability{Tool: {Support: "supported", Update: "live-update", Verified: true}, Network: {Support: "supported", Update: "live-update", Verified: true}, Credential: {Support: "supported", Update: "live-update", Verified: true}}}
 }
 
 // FailNext injects an external boundary fault, optionally after the mutation.
@@ -97,6 +100,9 @@ func (m *MockProvider) apply(ctx context.Context, op Operation, state string) (A
 		op.Generation = "generation-1"
 	} else if _, ok := m.resources[op.Handle]; !ok {
 		return Acknowledgement{}, fmt.Errorf("%w: handle missing", ErrRefused)
+	}
+	if op.Action == "prepare" {
+		m.activePolicies[op.Handle] = op.Policy
 	}
 	m.resources[op.Handle] = state
 	a := Acknowledgement{Operation: op, State: state}

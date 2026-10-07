@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/AllenMuu/skill-manager/internal/enforcement"
 	"github.com/AllenMuu/skill-manager/internal/identity"
@@ -14,8 +15,13 @@ import (
 // Coordinator owns durable intent before mutation and accepts only exactly
 // correlated provider receipts. Reconcile never repeats an uncertain mutation.
 type Coordinator struct {
-	store     LifecycleStore
-	providers map[string]enforcement.Provider
+	policyMu         sync.Mutex
+	policyConfigured bool
+	policyDecider    *PermissionProposalDecider
+	policyEvents     PolicyEventAdapter
+	policyRetry      PolicyRetryAdapter
+	store            LifecycleStore
+	providers        map[string]enforcement.Provider
 }
 
 func NewCoordinator(store LifecycleStore, providers ...enforcement.Provider) (*Coordinator, error) {

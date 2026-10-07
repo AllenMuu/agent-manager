@@ -69,7 +69,7 @@ func unresolved(r Record) bool {
 
 // ExecutionReady survives coordinator restart; unconfirmed mutations block calls.
 func (r Record) ExecutionReady() bool {
-	return r.Status == Active && (r.ExternalRuntime == nil || (r.ExternalRuntime.ObservedState == "active" && !unresolved(r)))
+	return !r.policyRevisionBlocked() && r.Status == Active && (r.ExternalRuntime == nil || (r.ExternalRuntime.ObservedState == "active" && !unresolved(r)))
 }
 func (s *Store) BeginLifecycle(id, action, reason string) (Record, error) {
 	var result Record
@@ -78,7 +78,7 @@ func (s *Store) BeginLifecycle(id, action, reason string) (Record, error) {
 		if !ok || r.ExternalRuntime == nil {
 			return errors.New("managed run not found")
 		}
-		if unresolved(r) {
+		if unresolved(r) || (r.policyRevisionBlocked() && action != "terminate") {
 			return enforcement.ErrUnknown
 		}
 		allowed := action == "start" && r.Status == Prepared || action == "pause" && r.Status == Active || action == "resume" && r.Status == Paused || action == "terminate" && (r.Status == Active || r.Status == Paused || r.Status == Prepared)
@@ -177,7 +177,7 @@ func (s *Store) FinishLifecycle(id, opID string, ack *enforcement.Acknowledgemen
 }
 func validateAcknowledgement(want enforcement.Operation, ack enforcement.Acknowledgement) error {
 	got := ack.Operation
-	if got.ProviderID != want.ProviderID || got.RunID != want.RunID || got.ID != want.ID || got.Action != want.Action || got.TerminationReason != want.TerminationReason || !reflect.DeepEqual(got.Policy, want.Policy) || !reflect.DeepEqual(got.Identity, want.Identity) {
+	if got.ProviderID != want.ProviderID || got.RunID != want.RunID || got.ID != want.ID || got.Action != want.Action || got.TerminationReason != want.TerminationReason || !samePolicySnapshot(got.Policy, want.Policy) || !reflect.DeepEqual(got.Identity, want.Identity) {
 		return errors.New("provider acknowledgement authority or correlation mismatch")
 	}
 	if err := validateID("handle", got.Handle); err != nil {
@@ -229,7 +229,7 @@ func validateExternal(r Record) error {
 			return errors.New("invalid lifecycle operation")
 		}
 		seen[op.ID] = true
-		if op.Request.ProviderID != e.ProviderID || op.Request.RunID != r.ID || !reflect.DeepEqual(op.Request.Policy, r.Policy) || !reflect.DeepEqual(op.Request.Identity, r.Identity) {
+		if op.Request.ProviderID != e.ProviderID || op.Request.RunID != r.ID || !samePolicySnapshot(op.Request.Policy, r.Policy) || !reflect.DeepEqual(op.Request.Identity, r.Identity) {
 			return errors.New("lifecycle authority differs from immutable run")
 		}
 		if op.Outcome != "pending" && op.Outcome != "unknown" && op.Outcome != "failed" && op.Outcome != "confirmed" && op.Outcome != "unsupported" {
