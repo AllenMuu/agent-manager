@@ -2,9 +2,12 @@
 
 R3 is implemented and verified on `feature/issue26-runtime-permission-proposals`
 in `/Users/allenj/.codex/worktrees/b9dc/agent-manager`. This is branch evidence:
-ordinary independent review, final gpt-6.1-sol/high read-only OCR, publication,
-main acceptance, synchronization and archival remain pending. Parent #16 remains
-open. The active R3 change has 7/9 implementation/verification tasks complete.
+ordinary independent specification/quality review and final gpt-6.1-sol/high
+read-only OCR have passed at source commit
+`737211bc48e422d0379693facca939b57b09874b`. Publication metadata and the exact PR
+body still require their supplementary read-only gate. Publication, main
+acceptance, synchronization and archival remain pending. Parent #16 and #26
+remain open. The active R3 change has 9/9 implementation/review tasks complete.
 
 ## Prerequisites and selected boundaries
 
@@ -116,7 +119,35 @@ remains separate and pending restored current subscription evidence.
 The prerequisite R2 carry from `5068a37` is preserved: five exact archive renames,
 one synchronized main capability, and the three prior delivery/roadmap documents.
 The whole proposed PR inventory includes those entries alongside R3 and must be
-covered by the root's ordinary review and final OCR. Tasks 3.2 and 3.3 remain
-unchecked. No PR, push, GitHub mutation, merge, review acceptance or main delivery
+covered by the completed independent ordinary review and final OCR. Tasks 3.2
+and 3.3 are checked on that evidence. No PR, push, GitHub mutation, merge, review acceptance or main delivery
 is claimed by this implementation record. R3 remains active until acceptance and
 authorized merge; this slice does not close parent #16.
+
+
+## Independent review completion
+
+The ordinary specification report `/tmp/agent-manager-issue26-spec-review.md`
+passed all 17 entries, five requirements and six scenarios with no findings.
+Fresh full tests, related races, vet/build, strict OpenSpec/doctor/diff checks,
+archive equivalence and the 188-Go-file fingerprint passed. Four extra independent
+probes verified cancellation during authority resolution, changed authority ID
+on use, historical missing credential scope remaining unusable, and eligibility
+validation leaving the denied retry unchanged.
+
+The ordinary quality report `/tmp/agent-manager-issue26-quality-review.md`
+passed 17/17 entries with no actionable findings. Independent alias-mutation,
+sanitized authority-error/replay and publication-failure probes also passed.
+The required final OCR report `/tmp/agent-manager-issue26-final-ocr/report.md`
+used actual CLI 1.12.12 preview/rules: four selected and 13 excluded entries
+manually supplemented, full 17/17 unique coverage, zero skipped and no actionable
+findings or important gaps. Fresh full Go/race/vet/build/help, strict active and
+main specs, doctor/diff/gofmt checks, two new boundary probe functions with seven
+subcases, and replayed independent prior probes all passed. All 418 tracked bytes
+and the reviewed source remained unchanged during that gate.
+
+This metadata changes no Go source or normative capability content. The exact
+publication head/body require the supplementary read-only gate; review-task
+completion does not establish main acceptance, Issue closure or live operator
+authentication. The accepted R2 specification/archive carry will enter main
+through this separately reviewed delivery.
