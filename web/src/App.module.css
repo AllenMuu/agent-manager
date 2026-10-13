@@ -25,6 +25,12 @@
 .navItemActive .navIndex { border-color: #b84f31; color: #b84f31; }
 .sidebarFoot { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid #d9d4c8; }
 .sidebarFoot p { margin: 11px 0 0; color: #72756c; font-size: 12px; line-height: 1.55; }
+.languageSwitch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #d9d4c8; border-radius: 8px; background: #f7f4ec; }
+.languageSwitch button { min-height: 27px; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #72756c; font-size: 10px; font-weight: 650; cursor: pointer; }
+.languageSwitch button[aria-pressed="true"] { background: #fffdf8; color: #252923; box-shadow: 0 0 0 1px #d9d4c8; }
+.languageSwitch button:focus-visible { outline: 2px solid #185f70; outline-offset: 1px; }
+.mobileHeader .languageSwitch { margin-left: auto; }
+.sidebarFoot .languageSwitch { margin-top: 12px; }
 .localBadge { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid #d9d4c8; border-radius: 20px; background: #fffdf8; color: #51574e; font-size: 10px; font-weight: 650; white-space: nowrap; }
 .localBadge i, .statusDot i { width: 7px; height: 7px; border-radius: 50%; background: #376b4d; }
 .mobileHeader { display: none; }
@@ -195,7 +201,7 @@
 @media (max-width: 760px) {
   .mobileHeader { display: flex; min-height: 62px; padding: 10px 16px; border-bottom: 1px solid #d9d4c8; background: #ece8de; }
   .mobileHeader .brandMark { width: 34px; height: 34px; flex-basis: 34px; border-radius: 10px 10px 10px 4px; font-size: 16px; }
-  .mobileHeader .localBadge { margin-left: auto; }
+  .mobileHeader .localBadge { margin-left: 0; }
   .sidebar { position: static; width: 100%; padding: 9px 12px; border-right: 0; border-bottom: 1px solid #d9d4c8; }
   .sidebar .brandBlock, .sidebar .navLabel, .sidebarFoot { display: none; }
   .navList { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
@@ -252,6 +258,12 @@
   .metadataRow { gap: 9px 14px; }
   .documentLabel { flex-direction: column; gap: 1px; }
   .pageFooter span:last-child { text-align: right; }
+}
+
+@media (max-width: 370px) {
+  .mobileHeader { gap: 8px; padding-right: 10px; padding-left: 10px; }
+  .mobileHeader .localBadge { display: none; }
+  .mobileHeader .languageSwitch { margin-left: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

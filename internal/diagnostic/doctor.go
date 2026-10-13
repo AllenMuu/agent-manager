@@ -14,8 +14,14 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
-// Finding is one non-mutating diagnostic result.
-type Finding struct{ Path, Message string }
+// Finding is one non-mutating diagnostic result. Code is a stable,
+// language-neutral identifier for presentation clients.
+type Finding struct {
+	Path    string
+	Message string
+	Code    string
+	Args    map[string]string
+}
 
 // BeforeReconcilePublish is an optional fault-injection seam.
 var BeforeReconcilePublish func(string) error
@@ -42,7 +48,7 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 	}
 	var managedPaths []string
 	for _, d := range invalid {
-		findings = append(findings, Finding{d.Path, "invalid catalog entry: " + d.Message})
+		findings = append(findings, Finding{Path: d.Path, Message: "invalid catalog entry: " + d.Message, Code: "doctor.invalid_catalog_entry", Args: map[string]string{"detail": d.Message}})
 	}
 	for _, a := range adapter.Supported() {
 		for _, kind := range a.ResourceKinds() {
@@ -57,6 +63,8 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 			findings = append(findings, Finding{
 				Path:    string(a.Target()),
 				Message: fmt.Sprintf("adapter capabilities: %s supports %s (%s)", a.Target(), kind, strings.Join(values, ", ")),
+				Code:    "doctor.adapter_capabilities",
+				Args:    map[string]string{"target": string(a.Target()), "kind": string(kind), "capabilities": strings.Join(values, ", ")},
 			})
 		}
 	}
@@ -72,7 +80,7 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 				return nil, err
 			}
 			if info.Mode()&os.ModeSymlink == 0 {
-				findings = append(findings, Finding{path, "unmanaged resource"})
+				findings = append(findings, Finding{Path: path, Message: "unmanaged resource", Code: "doctor.unmanaged_resource"})
 				continue
 			}
 			target, err := os.Readlink(path)
@@ -89,14 +97,14 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 					return nil, recordErr
 				}
 				if managedByLibrary || (owned && recorded == target) {
-					findings = append(findings, Finding{path, "orphaned managed link: " + target})
+					findings = append(findings, Finding{Path: path, Message: "orphaned managed link: " + target, Code: "doctor.orphaned_managed_link", Args: map[string]string{"target": target}})
 				} else {
-					findings = append(findings, Finding{path, "ambiguous dangling link: refusing automatic reconciliation"})
+					findings = append(findings, Finding{Path: path, Message: "ambiguous dangling link: refusing automatic reconciliation", Code: "doctor.ambiguous_dangling_link"})
 				}
 			} else if err != nil {
 				return nil, fmt.Errorf("inspect link target %s: %w", target, err)
 			} else if !managedByLibrary {
-				findings = append(findings, Finding{path, "unmanaged resource"})
+				findings = append(findings, Finding{Path: path, Message: "unmanaged resource", Code: "doctor.unmanaged_resource"})
 			}
 			if managedByLibrary {
 				managedPaths = append(managedPaths, path)
@@ -108,11 +116,11 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 		return nil, err
 	}
 	for _, root := range unsupportedRoots {
-		findings = append(findings, Finding{root, "unsupported agent skill location"})
+		findings = append(findings, Finding{Path: root, Message: "unsupported agent skill location", Code: "doctor.unsupported_skill_location"})
 	}
 	if _, err := os.Stat(filepath.Join(project, ".git")); err == nil {
 		if err := exec.Command("git", "-C", project, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
-			findings = append(findings, Finding{project, "Git guidance: do not track managed absolute links; initialize/repair this Git worktree to inspect exact status"})
+			findings = append(findings, Finding{Path: project, Message: "Git guidance: do not track managed absolute links; initialize/repair this Git worktree to inspect exact status", Code: "doctor.git_worktree_unavailable"})
 			return findings, nil
 		}
 		for _, path := range managedPaths {
@@ -130,7 +138,7 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 			} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 				return nil, fmt.Errorf("inspect Git ignore state: %w", err)
 			}
-			findings = append(findings, Finding{path, "Git guidance: managed absolute link is " + status + "; add this exact managed path to .gitignore after confirmation"})
+			findings = append(findings, Finding{Path: path, Message: "Git guidance: managed absolute link is " + status + "; add this exact managed path to .gitignore after confirmation", Code: "doctor.git_managed_link_status", Args: map[string]string{"status": status}})
 		}
 	}
 	return findings, nil

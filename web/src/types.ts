@@ -1,5 +1,6 @@
 export type Project = { id: string; name: string; path: string }
 export type ErrorEnvelope = { error: { code: string; message: string } }
+export type MessageRef = { key: string; args?: Record<string, string> }
 export type Agent = {
   id: string
   status: string
@@ -11,6 +12,8 @@ export type Recommendation = {
   identifier: string
   description: string
   matchReason: string
+  matchReasonRef?: MessageRef
+  matchingEvidence?: { technology: string; field: string }[]
   confidence: string
   score: number
 }
@@ -23,7 +26,7 @@ export type Resource = {
   sourcePath?: string
   status: string
 }
-export type Finding = { path: string; message: string }
+export type Finding = { path: string; message: string; messageRef?: MessageRef }
 export type Scope = {
   path: string
   status: string
@@ -59,23 +62,26 @@ export type SubAgent = {
   requiredCapabilities?: string[]
 }
 export type SubAgentDiagnostic = { id?: string; path: string; message: string }
-export type PlanChange = { path: string; action: string; detail?: string }
+export type PlanChange = { path: string; action: string; actionRef?: MessageRef; detail?: string }
 export type OperationPlan = {
   id: string
   projectId: string
   operation: string
+  operationRef?: MessageRef
   version: string
   resourceKind: string
   changes: PlanChange[]
   warnings: string[]
+  warningRefs?: (MessageRef | null)[]
   createdAt: string
   expiresAt: string
   forceReplacementConfirmed: boolean
 }
 export type LatestOperation = {
   operation: string
+  operationRef?: MessageRef
   resourceKind: string
   at: string
   undoAvailable: boolean
-  undoPreview?: { operation: string; changes: PlanChange[]; warnings: string[] }
+  undoPreview?: { operation: string; operationRef?: MessageRef; changes: PlanChange[]; warnings: string[]; warningRefs?: (MessageRef | null)[] }
 } | null
