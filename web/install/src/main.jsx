@@ -6,6 +6,7 @@ import { previewPayload } from './selection.js'
 import './style.css'
 
 const session = document.querySelector('meta[name="agent-manager-session"]')?.content ?? ''
+const consoleURL = document.querySelector('meta[name="agent-manager-console-url"]')?.content ?? ''
 const request = (path, options = {}) => apiRequest(path, options, session)
 
 function App() {
@@ -139,6 +140,7 @@ function App() {
           <span>Agent Manager</span>
         </a>
         <div className="topbar-actions">
+          {consoleURL.startsWith('http://127.0.0.1:') && <a className="console-link" href={consoleURL} target="_blank" rel="noopener noreferrer">{t('openConsole')}</a>}
           <div className="language-switch" role="group" aria-label={t('language')}>
             <button type="button" onClick={() => changeLanguage('en')} aria-label={t('english')} aria-pressed={language === 'en'}>EN</button>
             <button type="button" onClick={() => changeLanguage('zh-CN')} aria-label={t('chinese')} aria-pressed={language === 'zh-CN'}>中文</button>

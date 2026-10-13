@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/recommend"
 	"github.com/AllenMuu/skill-manager/internal/search"
 	"github.com/AllenMuu/skill-manager/internal/stack"
+	"github.com/AllenMuu/skill-manager/internal/weblinks"
 )
 
 //go:embed dist
@@ -35,11 +37,18 @@ type server struct {
 	session   string
 	installs  *installation.Service
 	assets    fs.FS
+	webLinks  *weblinks.Links
 }
 
 // NewLocalServer binds to IPv4 loopback and returns its URL and HTTP server.
 // The listener is returned separately so callers control serving and shutdown.
 func NewLocalServer(project, library string) (string, *http.Server, net.Listener, error) {
+	return NewLocalServerWithLinks(project, library, nil)
+}
+
+// NewLocalServerWithLinks binds the installer and shares the optional paired
+// console URL with the embedded page.
+func NewLocalServerWithLinks(project, library string, links *weblinks.Links) (string, *http.Server, net.Listener, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return "", nil, nil, err
@@ -72,8 +81,11 @@ func NewLocalServer(project, library string) (string, *http.Server, net.Listener
 		session:   session,
 		installs:  installation.New(library),
 		assets:    assets,
+		webLinks:  links,
 	}
-	return "http://" + state.authority, &http.Server{Handler: state.handler()}, listener, nil
+	url := "http://" + state.authority
+	links.SetInstallUIURL(url)
+	return url, &http.Server{Handler: state.handler()}, listener, nil
 }
 
 func (s *server) handler() http.Handler {
@@ -266,7 +278,9 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "embedded WebUI is unavailable", http.StatusInternalServerError)
 			return
 		}
-		contents = []byte(strings.ReplaceAll(string(contents), "__SESSION_TOKEN__", s.session))
+		page := strings.ReplaceAll(string(contents), "__SESSION_TOKEN__", s.session)
+		page = strings.ReplaceAll(page, "__AGENT_MANAGER_CONSOLE_URL__", html.EscapeString(s.webLinks.ConsoleURL()))
+		contents = []byte(page)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(contents)

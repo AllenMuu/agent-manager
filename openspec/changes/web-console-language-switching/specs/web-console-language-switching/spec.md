@@ -48,3 +48,14 @@ Changing the console language SHALL NOT translate, rewrite, or normalize source 
 #### Scenario: Display project paths and identifiers
 - **WHEN** the console displays a project path, resource identifier, or technical value inside a translated status or diagnostic
 - **THEN** the value remains byte-for-byte unchanged
+
+### Requirement: Navigate between paired Web pages
+When the operator starts the main console with the paired installation UI option, both local Web interfaces SHALL show a link to the other page. Each link SHALL open the peer page in a separate tab, and the console link SHALL retain its session entry fragment. The peer URLs SHALL remain process-local and SHALL NOT be persisted. Starting either interface without the paired option SHALL preserve its current standalone behavior.
+
+#### Scenario: Open both interfaces with mutual navigation
+- **WHEN** the operator runs `agent-manager web --project <path> --with-install-ui`
+- **THEN** the command prints both loopback URLs and each page provides a link to the other
+
+#### Scenario: Start a standalone interface
+- **WHEN** the operator runs `agent-manager web --project <path>` or `agent-manager webui --project <path>` without paired startup
+- **THEN** the selected interface starts independently and does not display a broken peer link

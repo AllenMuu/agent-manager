@@ -112,6 +112,7 @@ remains available.
 ```text
 agent-manager init --yes            # verify CLI and install the global Operator skill
 agent-manager web --project .      # open the local Web console for this repository
+agent-manager web --project . --with-install-ui # start both local Web pages with cross-links
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
 agent-manager add <skill> --project . --target codex --yes
@@ -195,6 +196,11 @@ moves that token into tab-scoped `sessionStorage` and removes it from the
 address bar. API requests send it as a bearer token, require the exact current
 host and same origin for mutations, reject cross-site fetches, and grant no
 CORS access. Stop the command to discard the session and its pending plans.
+
+To start the console and Skill installation UI together, add
+`--with-install-ui` and provide `--project`. The command prints both local URLs;
+each page then offers a link to the other in its header. Without this option,
+`web` and `webui` continue to start independently.
 
 The console registers one canonical project per process and exposes only the
 supported inventory, catalog, diagnostic, and operation APIs; it has no

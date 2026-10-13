@@ -3,6 +3,7 @@ export const languageStorageKey = 'agent-manager.webui.language'
 const messages = {
   en: {
     language: 'Language',
+    openConsole: 'Web console',
     english: 'English',
     chinese: 'Simplified Chinese',
     home: 'Agent Manager home',
@@ -66,6 +67,7 @@ const messages = {
   },
   'zh-CN': {
     language: '语言',
+    openConsole: '主控制台',
     english: 'English',
     chinese: '简体中文',
     home: 'Agent Manager 首页',

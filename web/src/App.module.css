@@ -37,6 +37,9 @@
 
 .mainArea { max-width: 1490px; min-height: 100vh; margin-left: 228px; padding: 0 54px 25px; }
 .topline { display: flex; min-height: 48px; align-items: center; gap: 13px; border-bottom: 1px solid #d9d4c8; color: #53594f; font-size: 11px; font-weight: 650; }
+.clientLink { flex: 0 0 auto; padding: 5px 8px; border: 1px solid #d9d4c8; border-radius: 6px; color: #376b4d; background: #fffdf8; font-size: 10px; text-decoration: none; }
+.clientLink:hover { background: #f7f4ec; }
+.clientLink:focus-visible { outline: 2px solid #185f70; outline-offset: 2px; }
 .pathText { overflow: hidden; flex: 1; color: #85867b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pageHeading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 29px 0 22px; }
 .pageHeading h1 { margin: 5px 0 0; font-size: clamp(27px, 3.2vw, 39px); font-weight: 670; letter-spacing: -.045em; line-height: 1.1; }

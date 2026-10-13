@@ -29,6 +29,7 @@ const navItems: { id: View; label: string; eyebrow: string }[] = [
   { id: 'diagnostics', label: 'Diagnostics', eyebrow: '04' },
   { id: 'operations', label: 'Operations', eyebrow: '05' },
 ]
+const installUIURL = document.querySelector<HTMLMetaElement>('meta[name="agent-manager-install-ui-url"]')?.content ?? ''
 
 const initialPage = <T,>(): PageState<T> => ({ data: null, loading: false, error: null })
 
@@ -283,6 +284,7 @@ export function App() {
       <div className={styles.topline}>
         <span>{project?.name ?? t('No project registered')}</span>
         <span className={styles.pathText}>{project?.path ?? t('Choose a local directory to begin')}</span>
+        {installUIURL.startsWith('http://127.0.0.1:') && <a className={styles.clientLink} href={installUIURL} target="_blank" rel="noopener noreferrer">{t('Skill installation')}</a>}
         <span className={styles.localBadge}><i /> {t('Session active')}</span>
       </div>
       <div className={styles.pageHeading}>

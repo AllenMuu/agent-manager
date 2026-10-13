@@ -14,3 +14,4 @@
 - [x] 3.2 Add language detection, persistence, translation, and a visible language control to the local Skill installation page; preserve selections and preview state while switching.
 - [x] 3.3 Rebuild the embedded installation-page assets and confirm the generated entry point includes the language catalog and switch.
 - [x] 3.4 Validate the OpenSpec change and run the repository's OpenSpec relationship check.
+- [x] 3.5 Add a paired `web --with-install-ui` mode, mutual page links, CLI guidance, and in-memory loopback URL sharing.

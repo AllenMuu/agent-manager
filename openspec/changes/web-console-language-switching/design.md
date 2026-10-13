@@ -24,6 +24,8 @@ An external i18n package is unnecessary for two local languages and would add a 
 
 The installation page uses a small local message catalog alongside its React entry point. It detects Chinese browser language on first visit, saves a manual choice under its own local-storage key, updates the document language, and translates fixed installation-plan labels. It preserves dynamic skill content and paths. Known fixed server messages are translated by exact message or a narrow interpolation pattern; unknown server text remains visible verbatim.
 
+The optional `agent-manager web --with-install-ui --project <path>` mode starts both existing loopback servers on their usual dynamically assigned ports. A process-local link holder passes each generated URL to the other page for a header link; it is not written to disk. The console entry URL keeps its session token in the URL fragment. Without the option, both commands retain their independent startup behavior.
+
 ### Give generated console messages stable presentation identifiers
 
 Keep API error codes as the error identifier. Add optional message identifiers and interpolation parameters to Web console DTOs for fixed diagnostic messages and operation-plan headings, actions, and warnings. Preserve the existing English message fields and all dynamic source values; the client uses a translation when the identifier is known and otherwise displays the original message. Identifiers are language-neutral and the Go domain continues to produce locale-independent data.

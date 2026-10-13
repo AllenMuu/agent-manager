@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AllenMuu/skill-manager/internal/weblinks"
 )
 
 const sessionTokenBytes = 32
@@ -37,6 +40,7 @@ type Options struct {
 	TokenSource io.Reader
 	Now         func() time.Time
 	Assets      fs.FS
+	WebLinks    *weblinks.Links // Optional URLs for the paired local Web pages.
 }
 
 // Server is the authenticated HTTP delivery adapter for one local project.
@@ -47,6 +51,7 @@ type Server struct {
 	token                      string
 	origin                     string
 	assets                     fs.FS
+	webLinks                   *weblinks.Links
 	libraryPath                string
 	homeDir                    string
 	dataRoot                   string
@@ -89,6 +94,7 @@ func New(options Options) (*Server, error) {
 		token:       hex.EncodeToString(tokenBytes),
 		origin:      options.Origin,
 		assets:      assets,
+		webLinks:    options.WebLinks,
 		libraryPath: options.LibraryPath,
 		homeDir:     options.HomeDir,
 		dataRoot:    options.DataRoot,
@@ -203,6 +209,9 @@ func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, name string)
 	if err != nil {
 		http.NotFound(w, r)
 		return
+	}
+	if name == "index.html" {
+		contents = []byte(strings.ReplaceAll(string(contents), "__AGENT_MANAGER_INSTALL_UI_URL__", html.EscapeString(s.webLinks.InstallUIURL())))
 	}
 	contentType := mime.TypeByExtension(path.Ext(name))
 	if contentType == "" {

@@ -159,6 +159,7 @@ const zh: Record<string, string> = {
   'An unexpected local service error occurred.': '本地服务发生意外错误。',
   'Request failed with status {status}.': '请求失败，HTTP 状态码为 {status}。',
   'Console language': '控制台语言',
+  'Skill installation': '技能安装',
   'Local workspace manager for agent resources.': '用于管理 Agent 资源的本地工作区。',
 }
 
