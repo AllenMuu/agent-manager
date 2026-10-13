@@ -302,8 +302,7 @@ agent-manager recommend --project . --json
 Agent Manager 的本地任务工件和评估能力不会生成自主代理、同步完整对话、获取远程数据或成为分布式工作流引擎。
 
 - **自主委派**：后续可使用版本化任务工件和角色契约，而无需绑定特定代理的任务状态格式。
-- **React WebUI**：CLI 之后的本地 Web 界面。
-- **Wails**：为 WebUI 提供桌面应用封装。
+- **Wails**：后续为本地 Web 应用提供桌面封装。
 
 
 ## 结构化 Memory

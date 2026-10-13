@@ -387,8 +387,7 @@ no-network-default, journal, or provider-ownership rules.
 
 - **Autonomous delegation** — future work can consume the versioned artifact
   and role contracts without inventing a runtime-specific task-state format.
-- **React WebUI** — a post-CLI web interface over the same local services.
-- **Wails** — desktop packaging of the WebUI.
+- **Wails** — future desktop packaging for the local Web app.
 
 
 The explicitly selected [Mem0 OSS Memory provider](docs/mem0-memory-provider.md)

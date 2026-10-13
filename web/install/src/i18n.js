@@ -162,8 +162,10 @@ export function initialLanguage() {
     // Storage can be disabled by the browser; use language detection instead.
   }
 
-  const preferred = globalThis.navigator?.languages?.[0] ?? globalThis.navigator?.language ?? ''
-  return /^zh(?:-|$)/i.test(preferred) ? 'zh-CN' : 'en'
+  const languages = globalThis.navigator?.languages?.length
+    ? globalThis.navigator.languages
+    : [globalThis.navigator?.language ?? '']
+  return languages.some((preferred) => /^zh(?:-|$)/i.test(preferred)) ? 'zh-CN' : 'en'
 }
 
 export function saveLanguage(language) {
