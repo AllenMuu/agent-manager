@@ -1,30 +1,30 @@
 ## Purpose
 
-Lets operators use the main local Web console in English or Simplified Chinese while preserving the original language and exact values of project and Skill library content.
+Lets operators use the local Web console and Skill installation page in English or Simplified Chinese while preserving the original language and exact values of project and Skill library content.
 
 ## ADDED Requirements
 
-### Requirement: Select and remember the console language
-The console SHALL support English (`en`) and Simplified Chinese (`zh-CN`). On a browser's first visit, it SHALL select Simplified Chinese when the browser's preferred language is Chinese and English otherwise. An operator SHALL be able to change the language without leaving the current view or losing current form and review state. The console SHALL remember an explicit selection in that browser, and that selection SHALL take precedence over later browser-language detection.
+### Requirement: Select and remember the Web interface language
+The main Web console and local Skill installation page SHALL support English (`en`) and Simplified Chinese (`zh-CN`). On a browser's first visit to either interface, it SHALL select Simplified Chinese when the browser's preferred language is Chinese and English otherwise. An operator SHALL be able to change the language without leaving the current view or losing current form, selection, and review state. Each interface SHALL remember an explicit selection in that browser, and that selection SHALL take precedence over later browser-language detection.
 
 #### Scenario: Choose a language on first visit
-- **WHEN** no console-language preference has been saved in the browser
-- **THEN** the console selects Simplified Chinese for a Chinese browser language and English for other browser languages
+- **WHEN** no language preference has been saved for the opened Web interface
+- **THEN** the opened Web interface selects Simplified Chinese for a Chinese browser language and English for other browser languages
 
 #### Scenario: Restore an explicit language choice
-- **WHEN** the operator previously selected a language in this browser and opens the console again
-- **THEN** the console uses that saved language regardless of the browser's current preferred language
+- **WHEN** the operator previously selected a language for this Web interface and opens it again
+- **THEN** that Web interface uses its saved language regardless of the browser's current preferred language
 
 #### Scenario: Change language during a review
-- **WHEN** the operator changes the console language while viewing a project, editing a search, or reviewing a guarded operation plan
+- **WHEN** the operator changes the language while viewing a project, editing a search, selecting Skills, or reviewing an installation or guarded operation plan
 - **THEN** the current view, entered values, selected items, and pending review remain available in the newly selected language
 
-### Requirement: Localize console-owned text and generated messages
-The console SHALL present its built-in navigation, labels, instructions, loading and empty states, notifications, errors, status labels, diagnostics, and guarded-operation review text in the selected language. Agent Manager APIs SHALL expose stable identifiers for fixed generated diagnostics and operation-review messages so the console can localize them without matching English prose. Error responses SHALL continue to expose their stable error code. The document language and locale-sensitive date and time formatting SHALL follow the selected console language.
+### Requirement: Localize Web-owned text and generated messages
+Both Web interfaces SHALL present their built-in labels, instructions, loading and empty states, notifications, and errors in the selected language. The main console SHALL also localize status labels, diagnostics, and guarded-operation review text. Agent Manager main-console APIs SHALL expose stable identifiers for fixed generated diagnostics and operation-review messages so the console can localize them without matching English prose. Error responses SHALL continue to expose their stable error code. The document language and locale-sensitive date and time formatting SHALL follow the selected language. The installation page SHALL translate known fixed installation messages and SHALL preserve unknown server text verbatim.
 
 #### Scenario: Read the console in Simplified Chinese
 - **WHEN** Simplified Chinese is selected
-- **THEN** all built-in console text, supported system statuses, and fixed Agent Manager-generated diagnostic and operation-review messages are presented in Chinese
+- **THEN** all built-in text in the selected Web interface is presented in Chinese, along with the main console's supported system statuses and fixed Agent Manager-generated diagnostic and operation-review messages
 
 #### Scenario: Show a known API error
 - **WHEN** an API request fails with a recognized error code
