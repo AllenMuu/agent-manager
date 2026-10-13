@@ -6,6 +6,29 @@
 >
 > 它提供 CLI 和本地 Web 控制台，但**不会启动 AI 代理**。Claude Code、Codex 和 Pi 当前也没有接入运行时策略执行或共享 Memory 的原生适配器。
 
+## 快速开始：用 CLI 或 WebUI 一次安装多个 Skill
+
+在仓库根目录安装 CLI（需要 Go 1.24 或更高版本）：
+
+```sh
+GOBIN="$HOME/.local/bin" go install ./cmd/agent-manager
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+要让新开的 zsh 窗口也能找到命令，请把 `export PATH=...` 这一行加入 `~/.zshrc`。
+
+然后任选一种方式，从已配置的本地 Skill 库安装：
+
+```sh
+# CLI：一次安装多个明确选择的 Skill
+agent-manager install go-helper review --project . --target codex --yes
+
+# WebUI：打开本地安装界面，在页面中选择 Skill 并预览、应用计划
+agent-manager webui --project .
+```
+
+WebUI 已随 CLI 提供，无需单独安装；按 `Ctrl+C` 可停止服务。
+
 ## 目录
 
 - [快速开始](#快速开始)

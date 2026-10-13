@@ -6,6 +6,29 @@ Agent Manager governs local agent resources across a shared Skill library, agent
 
 Agent Manager never executes managed-resource code and never installs dependencies.
 
+## Quick start: install Skills with the CLI or Web UI
+
+From the repository root, install the CLI with Go 1.24 or later:
+
+```sh
+GOBIN="$HOME/.local/bin" go install ./cmd/agent-manager
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+To keep the command available in new zsh sessions, add the `export PATH=...` line to `~/.zshrc`.
+
+Choose either interface to install Skills from your configured local library:
+
+```sh
+# Install several explicitly selected Skills in one operation
+agent-manager install go-helper review --project . --target codex --yes
+
+# Or open the local Web UI, then select Skills and preview/apply the plan
+agent-manager webui --project .
+```
+
+The Web UI is included with the CLI; stop it with `Ctrl+C`.
+
 ## How activation works
 
 - **Skill library** — the authoritative local collection of reusable skills (default `~/.agents/skills`, configurable). Each skill is a directory containing `SKILL.md` and optional companion metadata (`.skill-manager.yaml`).
