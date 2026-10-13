@@ -57,16 +57,18 @@ type removalRequest struct {
 }
 
 type operationPlanView struct {
-	ID                        string      `json:"id"`
-	ProjectID                 string      `json:"projectId"`
-	Operation                 string      `json:"operation"`
-	Version                   string      `json:"version"`
-	ResourceKind              string      `json:"resourceKind"`
-	Changes                   []changeDTO `json:"changes"`
-	Warnings                  []string    `json:"warnings"`
-	CreatedAt                 time.Time   `json:"createdAt"`
-	ExpiresAt                 time.Time   `json:"expiresAt"`
-	ForceReplacementConfirmed bool        `json:"forceReplacementConfirmed"`
+	ID                        string           `json:"id"`
+	ProjectID                 string           `json:"projectId"`
+	Operation                 string           `json:"operation"`
+	OperationRef              *messageRefDTO   `json:"operationRef,omitempty"`
+	Version                   string           `json:"version"`
+	ResourceKind              string           `json:"resourceKind"`
+	Changes                   []changeDTO      `json:"changes"`
+	Warnings                  []string         `json:"warnings"`
+	WarningRefs               []*messageRefDTO `json:"warningRefs,omitempty"`
+	CreatedAt                 time.Time        `json:"createdAt"`
+	ExpiresAt                 time.Time        `json:"expiresAt"`
+	ForceReplacementConfirmed bool             `json:"forceReplacementConfirmed"`
 }
 
 type operationPlanEnvelope struct {
@@ -363,7 +365,7 @@ func (s *Server) savePlan(plan *storedPlan) {
 
 func makePlanView(plan *storedPlan, preview operation.Plan) operationPlanView {
 	converted := toPlanDTO(preview)
-	return operationPlanView{ID: plan.id, ProjectID: plan.projectID, Operation: converted.Operation, Version: converted.Version, ResourceKind: converted.ResourceKind, Changes: converted.Changes, Warnings: converted.Warnings, CreatedAt: plan.createdAt, ExpiresAt: plan.expiresAt, ForceReplacementConfirmed: plan.activation != nil && plan.activation.ForceConfirmed}
+	return operationPlanView{ID: plan.id, ProjectID: plan.projectID, Operation: converted.Operation, OperationRef: converted.OperationRef, Version: converted.Version, ResourceKind: converted.ResourceKind, Changes: converted.Changes, Warnings: converted.Warnings, WarningRefs: converted.WarningRefs, CreatedAt: plan.createdAt, ExpiresAt: plan.expiresAt, ForceReplacementConfirmed: plan.activation != nil && plan.activation.ForceConfirmed}
 }
 
 func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id string) {

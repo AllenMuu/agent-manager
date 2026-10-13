@@ -6,6 +6,14 @@ _Avoid_: Skill Manager (except when referring to the compatibility CLI or pre-mi
 
 ## Language
 
+**Console language**:
+The selected language for the Web console's built-in interface and Agent Manager-generated explanations. It does not translate project or Skill library source content.
+_Avoid_: project language, content language
+
+**Local source content**:
+Names, descriptions, instructions, identifiers, and paths read from a registered project or the configured Skill library and presented as stored.
+_Avoid_: translated console copy
+
 **Skill library**:
 The independent, authoritative local collection of reusable skills. It is the source from which project skills are selected and installed; the initial library is `~/.agents/skills`, with a configurable location.
 _Avoid_: skill repository, global skill folder

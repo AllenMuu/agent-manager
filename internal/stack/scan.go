@@ -21,8 +21,10 @@ type Evidence struct {
 
 // Diagnostic reports a localized, non-fatal observation from a scan.
 type Diagnostic struct {
-	Path    string `json:"path"`
-	Message string `json:"message"`
+	Path    string            `json:"path"`
+	Message string            `json:"message"`
+	Code    string            `json:"code,omitempty"`
+	Args    map[string]string `json:"args,omitempty"`
 }
 
 // Scope is one independently evaluated project scope with its detected
@@ -80,6 +82,8 @@ func Scan(root string) (Result, error) {
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{
 			Path:    ".",
 			Message: fmt.Sprintf("traversal stopped after inspecting %d directory entries", maxEntries),
+			Code:    "scan.traversal_limit",
+			Args:    map[string]string{"limit": fmt.Sprint(maxEntries)},
 		})
 		result.ScanComplete = false
 	}
@@ -146,7 +150,7 @@ func scanDirectory(state *scanState, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		state.complete = false
-		state.recordDiagnostic(dir, ".", fmt.Sprintf("unreadable directory: %v", err))
+		state.recordDiagnostic(dir, ".", "scan.unreadable_directory", fmt.Sprintf("unreadable directory: %v", err), map[string]string{"detail": err.Error()})
 		return
 	}
 	for _, entry := range entries {
@@ -174,7 +178,7 @@ func scanDirectory(state *scanState, dir string) {
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
 			state.complete = false
-			state.recordDiagnostic(dir, name, "skipped directory soft link")
+			state.recordDiagnostic(dir, name, "scan.skipped_directory_symlink", "skipped directory soft link", nil)
 			continue
 		}
 		if entry.IsDir() {
@@ -188,7 +192,7 @@ func (s *scanState) readFileMarker(dir, name string, m marker) {
 	file, err := os.Open(path)
 	if err != nil {
 		s.complete = false
-		s.recordDiagnostic(dir, name, fmt.Sprintf("unreadable marker: %v", err))
+		s.recordDiagnostic(dir, name, "scan.unreadable_marker", fmt.Sprintf("unreadable marker: %v", err), map[string]string{"detail": err.Error()})
 		return
 	}
 	defer file.Close()
@@ -196,12 +200,12 @@ func (s *scanState) readFileMarker(dir, name string, m marker) {
 	n, err := io.ReadFull(file, contents)
 	if err != nil && err != io.ErrUnexpectedEOF {
 		s.complete = false
-		s.recordDiagnostic(dir, name, fmt.Sprintf("unreadable marker: %v", err))
+		s.recordDiagnostic(dir, name, "scan.unreadable_marker", fmt.Sprintf("unreadable marker: %v", err), map[string]string{"detail": err.Error()})
 		return
 	}
 	if n > maxMarkerBytes {
 		s.complete = false
-		s.recordDiagnostic(dir, name, "marker exceeds the 1 MiB static read limit and was not parsed")
+		s.recordDiagnostic(dir, name, "scan.marker_read_limit", "marker exceeds the 1 MiB static read limit and was not parsed", nil)
 		return
 	}
 	s.recordMarker(dir, name, m, contents[:n])
@@ -213,8 +217,8 @@ func (s *scanState) recordMarker(dir, name string, m marker, contents []byte) {
 	}
 }
 
-func (s *scanState) recordDiagnostic(dir, name, message string) {
-	s.diagnostics[dir] = append(s.diagnostics[dir], Diagnostic{Path: name, Message: message})
+func (s *scanState) recordDiagnostic(dir, name, code, message string, args map[string]string) {
+	s.diagnostics[dir] = append(s.diagnostics[dir], Diagnostic{Path: name, Message: message, Code: code, Args: args})
 }
 
 func buildScope(state *scanState, dir string) Scope {
