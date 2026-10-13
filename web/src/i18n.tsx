@@ -13,6 +13,7 @@ type LanguageContextValue = {
 }
 
 const preferenceKey = 'agent-manager.console-language'
+const previousInstallPreferenceKey = 'agent-manager.webui.language'
 
 const zh: Record<string, string> = {
   'Agent Manager': 'Agent Manager',
@@ -159,6 +160,7 @@ const zh: Record<string, string> = {
   'An unexpected local service error occurred.': '本地服务发生意外错误。',
   'Request failed with status {status}.': '请求失败，HTTP 状态码为 {status}。',
   'Console language': '控制台语言',
+  'Skill installation': '技能安装',
   'Local workspace manager for agent resources.': '用于管理 Agent 资源的本地工作区。',
 }
 
@@ -263,7 +265,7 @@ function browserLocale(): Locale {
 
 function savedLocale(): Locale | null {
   try {
-    const value = window.localStorage.getItem(preferenceKey)
+    const value = window.localStorage.getItem(preferenceKey) ?? window.localStorage.getItem(previousInstallPreferenceKey)
     return value === 'en' || value === 'zh-CN' ? value : null
   } catch {
     return null

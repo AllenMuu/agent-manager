@@ -16,7 +16,7 @@ The system SHALL provide an installation workflow that accepts one or more expli
 - **THEN** it continues to activate Skills with its current arguments and guarded behavior
 
 #### Scenario: Install selected Skills from the WebUI catalog
-- **WHEN** a user selects one or more eligible Skills in the WebUI catalog, chooses a project and supported target agents, and confirms the displayed plan
+- **WHEN** a user selects one or more eligible Skills for the registered project, chooses supported target agents, and confirms the displayed plan
 - **THEN** Agent Manager activates the selected Skills for only that project and those target agents
 
 #### Scenario: Install selected project recommendations
@@ -76,9 +76,9 @@ The system SHALL apply a confirmed multi-Skill installation as one guarded opera
 ### Requirement: Keep the WebUI install surface local
 The WebUI SHALL use a local Agent Manager process and SHALL accept installation mutations only from the local operator's WebUI session. It SHALL NOT expose project installation to non-local network clients or fetch Skill content from an external source.
 
-#### Scenario: Launch WebUI for a project
-- **WHEN** an operator runs `agent-manager webui --project <path>` (or omits `--project` to use the current directory)
-- **THEN** Agent Manager serves the installation UI for that project from a local-only endpoint and reports the local URL
+#### Scenario: Open Skill installation in the Web application
+- **WHEN** an operator runs `agent-manager web --project <path>` and selects the Skill installation tab
+- **THEN** Agent Manager serves the installation UI through the same local-only endpoint and authenticated session as the management dashboard
 
 #### Scenario: Installation is requested from outside the local WebUI session
 - **WHEN** a request to preview or apply an installation does not originate from the active local WebUI session

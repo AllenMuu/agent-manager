@@ -17,7 +17,7 @@ import type {
 } from './types'
 import styles from './App.module.css'
 
-type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations'
+type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations' | 'install'
 type PageState<T> = { data: T | null; loading: boolean; error: unknown | null }
 type PlanEnvelope = { plan: OperationPlan }
 type Toast = { kind: 'success'; text: string; values?: Record<string, string | number> } | { kind: 'error'; error: unknown }
@@ -28,6 +28,7 @@ const navItems: { id: View; label: string; eyebrow: string }[] = [
   { id: 'subagents', label: 'SubAgents', eyebrow: '03' },
   { id: 'diagnostics', label: 'Diagnostics', eyebrow: '04' },
   { id: 'operations', label: 'Operations', eyebrow: '05' },
+  { id: 'install', label: 'Skill installation', eyebrow: '06' },
 ]
 
 const initialPage = <T,>(): PageState<T> => ({ data: null, loading: false, error: null })
@@ -320,6 +321,7 @@ export function App() {
         {view === 'subagents' && <SubAgentsPage page={subagents} />}
         {view === 'diagnostics' && <DiagnosticsPage page={findings} onRefresh={() => void loadDiagnostics()} />}
         {view === 'operations' && <OperationsPage page={latest} onUndo={() => void createUndoPlan()} busy={busy} />}
+        {view === 'install' && <iframe className={styles.installationFrame} title={t('Skill installation')} src={`/install/?embedded=1#session=${encodeURIComponent(token)}`} />}
       </>}
       <footer className={styles.pageFooter}><span>AGENT MANAGER</span><span>{t('LOCAL SESSION · NO NETWORK CONTENT')}</span></footer>
     </main>

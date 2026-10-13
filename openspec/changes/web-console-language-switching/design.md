@@ -1,6 +1,6 @@
 ## Context
 
-See `proposal.md` and `specs/web-console-language-switching/spec.md`. The main console is a React application in `web/src/`, embedded by the Go `internal/webconsole` server. It has no client-side router or existing localization dependency. The server already returns stable codes for API errors, while project diagnostics and operation-plan fields currently include plain English strings.
+See `proposal.md` and `specs/web-console-language-switching/spec.md`. The management console is a React application in `web/src/`, embedded by the Go `internal/webconsole` server. The Skill installation client is a React application in `web/install/`, embedded by `internal/webui` and mounted inside the console as a navigation tab. Both clients use one loopback server, origin, and session token. Neither application has an existing localization dependency. The main console server already returns stable codes for API errors, while project diagnostics and operation-plan fields currently include plain English strings.
 
 ## Goals / Non-Goals
 
@@ -11,7 +11,7 @@ See `proposal.md` and `specs/web-console-language-switching/spec.md`. The main c
 
 **Non-Goals:**
 - Translate Skill or SubAgent source documents, project names, paths, identifiers, or other local source content.
-- Localize the separate `web/install` UI, CLI, logs, or server-generated console output.
+- Localize the CLI, logs, or server-generated console output.
 - Add a third-party localization package or make server responses depend on the browser's language.
 
 ## Decisions
@@ -21,6 +21,10 @@ See `proposal.md` and `specs/web-console-language-switching/spec.md`. The main c
 Add a small typed language context and local message catalog for `en` and `zh-CN`. Use English source copy as the fallback when a translation is missing. Detect the browser's preferred language only when no valid saved choice exists; persist explicit choices under a namespaced `localStorage` key. Update the document `lang` attribute and format timestamps with the selected locale. The language control updates context without remounting the current page.
 
 An external i18n package is unnecessary for two local languages and would add a frontend dependency. Server-side locale negotiation would couple API behavior to presentation and make language preference harder to keep browser-local.
+
+The installation tab uses a small local message catalog alongside its React entry point. It shares the console's browser-local language preference, updates the iframe document language when the global language switch changes, and translates fixed installation-plan labels. It preserves dynamic skill content and paths. Known fixed server messages are translated by exact message or a narrow interpolation pattern; unknown server text remains visible verbatim.
+
+`agent-manager web --project <path>` starts one loopback server and prints one URL. The management dashboard is the default view. The Skill installation tab loads its embedded client under the same origin and routes its catalog, recommendation, preview, and apply API calls through the console's existing session authorization. The entry URL keeps its session token in the URL fragment. There is no separate CLI command or listener for the installation client.
 
 ### Give generated console messages stable presentation identifiers
 

@@ -2,7 +2,7 @@
 
 Agent Manager uses Go for its domain model, application services, filesystem operations, and operation journal; those remain independent from command, terminal, and browser presentation packages.
 
-The CLI and a minimal React WebUI use the same Go application services. The WebUI is served by the Agent Manager process on an IPv4 loopback address, uses a session-scoped local API, and embeds its compiled assets in the Go executable. The dedicated installation UI (`webui`) and the broader local console (`web`) retain separate frontend entry points and embedded assets. Both use guarded local services; neither is a public HTTP service or general-purpose remote API. A Wails macOS package may later reuse the React interface and Go core.
+The CLI and React Web application use the same Go application services. The Web application is served by one Agent Manager process on an IPv4 loopback address and embeds both compiled clients in the Go executable. The management dashboard opens by default; Skill installation is available as a tab in the same application. Both clients share the same origin and session-scoped API, and installation routes are dispatched only after the console authenticates the request. The Web application has one CLI entry point (`agent-manager web`) and one printed URL. It uses guarded local services and is not a public HTTP service or general-purpose remote API. A Wails macOS package may later reuse the React interface and Go core.
 
 ## Considered Options
 

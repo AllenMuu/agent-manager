@@ -21,23 +21,28 @@ func newWebCommand(options *rootOptions) *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
 		Use:   "web",
-		Short: "Start the local Web console",
-		Long:  "Start an authenticated Web console bound only to IPv4 loopback. The entry URL contains a process-session token in its URL fragment.",
+		Short: "Start the local Web application",
+		Long:  "Start the authenticated local Web application on IPv4 loopback. It opens on the management dashboard and includes Skill installation as a navigation tab. The entry URL contains a process-session token in its URL fragment.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if project == "" {
+				return fmt.Errorf("--project is required")
+			}
 			settings, err := config.Load(options.configPath)
 			if err != nil {
 				return fmt.Errorf("load Agent Manager configuration: %w", err)
 			}
+
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return fmt.Errorf("resolve home directory: %w", err)
 			}
 			console, err := webconsole.New(webconsole.Options{
-				LibraryPath: settings.LibraryPath,
-				HomeDir:     home,
-				DataRoot:    filepath.Join(home, ".agents"),
-				ProjectPath: project,
+				LibraryPath:       settings.LibraryPath,
+				HomeDir:           home,
+				DataRoot:          filepath.Join(home, ".agents"),
+				ProjectPath:       project,
+				SkillInstallation: true,
 			})
 			if err != nil {
 				return err
@@ -49,39 +54,46 @@ func newWebCommand(options *rootOptions) *cobra.Command {
 			defer listener.Close()
 
 			entryURL := console.EntryURL()
-			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Agent Manager Web console listening on %s\nOpen %s\nPress Ctrl+C to stop.\n", listener.Addr(), entryURL); err != nil {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Open Agent Manager Web at %s\n", entryURL); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop."); err != nil {
 				return err
 			}
 
-			server := &http.Server{
+			consoleServer := &http.Server{
 				Handler:           console,
 				ReadHeaderTimeout: 5 * time.Second,
 				IdleTimeout:       60 * time.Second,
 			}
 			serveResult := make(chan error, 1)
-			go func() { serveResult <- server.Serve(listener) }()
+			go func() { serveResult <- consoleServer.Serve(listener) }()
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			select {
-			case err := <-serveResult:
-				if errors.Is(err, http.ErrServerClosed) {
+			case serveErr := <-serveResult:
+				shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = consoleServer.Shutdown(shutdownContext)
+				if errors.Is(serveErr, http.ErrServerClosed) {
 					return nil
 				}
-				return fmt.Errorf("serve local Web console: %w", err)
+				return fmt.Errorf("serve local Web interface: %w", serveErr)
 			case <-ctx.Done():
 				shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if err := server.Shutdown(shutdownContext); err != nil {
-					return fmt.Errorf("shut down local Web console: %w", err)
+				if err := consoleServer.Shutdown(shutdownContext); err != nil {
+					return fmt.Errorf("shut down local Web interface: %w", err)
 				}
 				if err := <-serveResult; err != nil && !errors.Is(err, http.ErrServerClosed) {
-					return fmt.Errorf("serve local Web console: %w", err)
+					return fmt.Errorf("serve local Web interface: %w", err)
 				}
 				return nil
 			}
 		},
 	}
-	cmd.Flags().StringVar(&project, "project", "", "register this local project when the console starts")
+	cmd.Flags().StringVar(&project, "project", "", "project served by the local Web application (required)")
 	cmd.Flags().IntVar(&port, "port", 0, "loopback TCP port (0 selects an available port)")
+	_ = cmd.MarkFlagRequired("project")
 	return cmd
 }

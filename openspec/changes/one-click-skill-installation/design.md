@@ -26,7 +26,7 @@ The current `AddMany` flow combines plan creation, confirmation, and application
 
 ### 2. Host the minimal WebUI on loopback
 
-`agent-manager webui --project <path>` starts a local process for the requested project and reports a URL bound to `127.0.0.1` on an available port. The process serves the compiled React assets and a narrow API for catalog search, project recommendations, installation preview, and installation confirmation. Embed built assets in the Go binary so running the WebUI does not require a Node runtime. The API is not a general remote management interface.
+`agent-manager web --project <path>` starts the local Web application and reports one URL bound to `127.0.0.1` on an available port. The management dashboard opens by default; its Skill installation tab serves the compiled React assets and a narrow API for catalog search, project recommendations, installation preview, and installation confirmation. Embed both clients in the Go binary so running the Web application does not require a Node runtime. The API is not a general remote management interface.
 
 The server rejects non-loopback binds, validates the browser `Origin`, and requires a per-session token for mutation requests. Static Skill content stays in the local library and is never fetched from a remote source. Update ADR 0005 to record this local WebUI phase and its loopback-only bridge; do not add a public listener or remote API.
 
@@ -55,7 +55,7 @@ The React UI reads the configured Skill catalog and existing project recommendat
 
 1. Extract reusable batch planning and application from the current lifecycle path without changing `add`, `select`, journal compatibility, or undo behavior.
 2. Add `install` as a batch-oriented CLI entry point and retain existing commands.
-3. Add the loopback WebUI command, narrow local API, and embedded React assets; update ADR 0005 and usage documentation.
+3. Add the local Web application route, narrow installation API, and embedded React assets; update ADR 0005 and usage documentation.
 4. Verify that failed or rejected previews leave project files and journals unchanged, and that successful operations use existing undo behavior.
 
-Rollback removes the `install` and `webui` entry points and the embedded frontend/API. No existing configuration or journal format needs migration; operations already committed through the shared lifecycle remain recoverable with `undo`.
+Rollback removes the `install` workflow and the embedded installation tab/API. No existing configuration or journal format needs migration; operations already committed through the shared lifecycle remain recoverable with `undo`.
