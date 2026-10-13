@@ -23,8 +23,8 @@ Choose either interface to install Skills from your configured local library:
 # Install several explicitly selected Skills in one operation
 agent-manager install go-helper review --project . --target codex --yes
 
-# Or open the local Web UI, then select Skills and preview/apply the plan
-agent-manager webui --project .
+# Or open the local Web app, then select Skills from its installation tab
+agent-manager web --project .
 ```
 
 The Web UI is included with the CLI; stop it with `Ctrl+C`.
@@ -111,13 +111,11 @@ remains available.
 
 ```text
 agent-manager init --yes            # verify CLI and install the global Operator skill
-agent-manager web --project .      # open the local Web console for this repository
-agent-manager web --project . --with-install-ui # start both local Web pages with cross-links
+agent-manager web --project .      # open the management console and Skill installation tab
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
 agent-manager add <skill> --project . --target codex --yes
 agent-manager install go-helper review --project . --target codex --yes
-agent-manager webui --project .     # open the local installation UI; stop with Ctrl+C
 agent-manager list --project .      # show managed/unmanaged/orphaned Skills
 agent-manager agents --project . --json # inspect registered agent adapters
 agent-manager subagents list        # list canonical SubAgent definitions
@@ -142,7 +140,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | Command | Purpose |
 |---|---|
 | `init` | Verify the CLI and install or update the minimal global Operator skill (guarded, confirmed) |
-| `web` | Start the authenticated local Web console on `127.0.0.1` |
+| `web` | Start the authenticated local Web app with the management console and Skill installation tab on `127.0.0.1` |
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
@@ -150,7 +148,6 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
 | `install <skill-id>...` | Preview and install explicitly selected library Skills in one operation |
-| `webui` | Serve the local project installation interface on loopback |
 | `list` | Inventory project skills with their status |
 | `remove <skill>` | Remove one managed project link |
 | `adopt <skill>` | Move an eligible project skill into the library and link it back |
@@ -180,7 +177,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `subagents install <id>` | Render and install a SubAgent for Claude Code or Codex (guarded, confirmed, journaled) |
 | `subagents remove <id>` | Remove a managed SubAgent representation (guarded, confirmed, journaled) |
 
-## Local Web Console
+## Local Web App
 
 Start a one-project local session with:
 
@@ -188,19 +185,16 @@ Start a one-project local session with:
 agent-manager web --project . --port 0
 ```
 
-`--project` is optional; without it, register a project from the console. The
-default port `0` asks the operating system for an available port. The command
-always binds to IPv4 loopback (`127.0.0.1`) and prints an entry URL whose
+`--project` is required. The default port `0` asks the operating system for an
+available port. The command starts the management console and Skill installation
+tab on the same IPv4 loopback server (`127.0.0.1`) and prints one entry URL whose
 `#session=` fragment contains a random, process-lifetime token. The browser
 moves that token into tab-scoped `sessionStorage` and removes it from the
 address bar. API requests send it as a bearer token, require the exact current
 host and same origin for mutations, reject cross-site fetches, and grant no
 CORS access. Stop the command to discard the session and its pending plans.
-
-To start the console and Skill installation UI together, add
-`--with-install-ui` and provide `--project`. The command prints both local URLs;
-each page then offers a link to the other in its header. Without this option,
-`web` and `webui` continue to start independently.
+The management dashboard opens by default. Select **Skill installation** in the
+navigation to browse the local library and preview or confirm installations.
 
 The console registers one canonical project per process and exposes only the
 supported inventory, catalog, diagnostic, and operation APIs; it has no

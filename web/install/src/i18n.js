@@ -1,9 +1,9 @@
-export const languageStorageKey = 'agent-manager.webui.language'
+export const languageStorageKey = 'agent-manager.console-language'
+const previousLanguageStorageKey = 'agent-manager.webui.language'
 
 const messages = {
   en: {
     language: 'Language',
-    openConsole: 'Web console',
     english: 'English',
     chinese: 'Simplified Chinese',
     home: 'Agent Manager home',
@@ -67,7 +67,6 @@ const messages = {
   },
   'zh-CN': {
     language: '语言',
-    openConsole: '主控制台',
     english: 'English',
     chinese: '简体中文',
     home: 'Agent Manager 首页',
@@ -157,7 +156,7 @@ const exactMessages = new Map([
 
 export function initialLanguage() {
   try {
-    const saved = globalThis.localStorage?.getItem(languageStorageKey)
+    const saved = globalThis.localStorage?.getItem(languageStorageKey) ?? globalThis.localStorage?.getItem(previousLanguageStorageKey)
     if (saved === 'en' || saved === 'zh-CN') return saved
   } catch {
     // Storage can be disabled by the browser; use language detection instead.

@@ -16,7 +16,7 @@
 ## 3. Local WebUI and install bridge
 
 - [x] 3.1 Create the minimal React UI and reproducible asset build, then embed its output in the Go executable; verify a clean build serves the embedded UI without a Node runtime.
-- [x] 3.2 Add `agent-manager webui --project <path>` with a loopback-only local server and per-session request protection; verify the server rejects non-loopback access and requests outside the active session.
+- [x] 3.2 Mount the installation UI and API in the authenticated `agent-manager web --project <path>` process, sharing its loopback origin and session protection.
 - [x] 3.3 Add read-only catalog search and project recommendation endpoints backed by existing Go services; verify the WebUI displays only eligible local-library Skills and recommendations for its selected project.
 - [x] 3.4 Add WebUI selection, target selection, plan preview, and confirmation flows backed by the shared installation service; verify confirmation applies only the selected Skills and targets.
 - [x] 3.5 Verify a stale WebUI plan is rejected and refreshed, compatibility warnings remain visible, conflicts require the supported force path, and failed batches leave no partial activation.
@@ -24,6 +24,6 @@
 
 ## 4. Documentation and integration
 
-- [x] 4.1 Update ADR 0005, README command examples, and build instructions to describe the loopback WebUI and `install` command; verify documented commands match the shipped help output.
+- [x] 4.1 Update ADR 0005, README command examples, and build instructions to describe the integrated Web installation tab and `install` command; verify documented commands match the shipped help output.
 - [x] 4.2 Run OpenSpec validation, the complete Go test suite, and the frontend build/test workflow; verify the CLI and WebUI share the same guarded behavior and the change validates cleanly.
 - [x] 4.3 Re-run review-driven concurrency, rollback, symlink-fingerprint, and WebUI network-failure regression checks.

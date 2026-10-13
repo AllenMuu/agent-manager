@@ -5,7 +5,7 @@ Lets operators use the local Web console and Skill installation page in English 
 ## ADDED Requirements
 
 ### Requirement: Select and remember the Web interface language
-The main Web console and local Skill installation page SHALL support English (`en`) and Simplified Chinese (`zh-CN`). On a browser's first visit to either interface, it SHALL select Simplified Chinese when the browser's preferred language is Chinese and English otherwise. An operator SHALL be able to change the language without leaving the current view or losing current form, selection, and review state. Each interface SHALL remember an explicit selection in that browser, and that selection SHALL take precedence over later browser-language detection.
+The Web application SHALL support English (`en`) and Simplified Chinese (`zh-CN`) across its management and Skill installation tabs. On a browser's first visit, it SHALL select Simplified Chinese when the browser's preferred language is Chinese and English otherwise. An operator SHALL be able to change the language without leaving the current view or losing current form, selection, and review state. The application SHALL remember one explicit language selection in that browser, and that selection SHALL take precedence over later browser-language detection in every tab.
 
 #### Scenario: Choose a language on first visit
 - **WHEN** no language preference has been saved for the opened Web interface
@@ -20,7 +20,7 @@ The main Web console and local Skill installation page SHALL support English (`e
 - **THEN** the current view, entered values, selected items, and pending review remain available in the newly selected language
 
 ### Requirement: Localize Web-owned text and generated messages
-Both Web interfaces SHALL present their built-in labels, instructions, loading and empty states, notifications, and errors in the selected language. The main console SHALL also localize status labels, diagnostics, and guarded-operation review text. Agent Manager main-console APIs SHALL expose stable identifiers for fixed generated diagnostics and operation-review messages so the console can localize them without matching English prose. Error responses SHALL continue to expose their stable error code. The document language and locale-sensitive date and time formatting SHALL follow the selected language. The installation page SHALL translate known fixed installation messages and SHALL preserve unknown server text verbatim.
+The management and Skill installation tabs SHALL present their built-in labels, instructions, loading and empty states, notifications, and errors in the selected language. The management tab SHALL also localize status labels, diagnostics, and guarded-operation review text. Agent Manager management APIs SHALL expose stable identifiers for fixed generated diagnostics and operation-review messages so the client can localize them without matching English prose. Error responses SHALL continue to expose their stable error code. The document language and locale-sensitive date and time formatting SHALL follow the selected language. The installation tab SHALL translate known fixed installation messages and SHALL preserve unknown server text verbatim.
 
 #### Scenario: Read the console in Simplified Chinese
 - **WHEN** Simplified Chinese is selected
@@ -49,13 +49,13 @@ Changing the console language SHALL NOT translate, rewrite, or normalize source 
 - **WHEN** the console displays a project path, resource identifier, or technical value inside a translated status or diagnostic
 - **THEN** the value remains byte-for-byte unchanged
 
-### Requirement: Navigate between paired Web pages
-When the operator starts the main console with the paired installation UI option, both local Web interfaces SHALL show a link to the other page. Each link SHALL open the peer page in a separate tab, and the console link SHALL retain its session entry fragment. The peer URLs SHALL remain process-local and SHALL NOT be persisted. Starting either interface without the paired option SHALL preserve its current standalone behavior.
+### Requirement: Use one Web application for management and installation
+The `agent-manager web --project <path>` command SHALL start the management dashboard and Skill installation tab on one IPv4 loopback listener and SHALL print exactly one entry URL. The management dashboard SHALL open by default. The Skill installation tab SHALL use the same origin and authenticated session as the dashboard. The CLI SHALL NOT expose a separate command for starting the installation UI.
 
-#### Scenario: Open both interfaces with mutual navigation
-- **WHEN** the operator runs `agent-manager web --project <path> --with-install-ui`
-- **THEN** the command prints both loopback URLs and each page provides a link to the other
+#### Scenario: Start the local Web application
+- **WHEN** the operator runs `agent-manager web --project <path>`
+- **THEN** one local listener serves the management dashboard and Skill installation tab, the dashboard opens first, and the command prints one URL
 
-#### Scenario: Start a standalone interface
-- **WHEN** the operator runs `agent-manager web --project <path>` or `agent-manager webui --project <path>` without paired startup
-- **THEN** the selected interface starts independently and does not display a broken peer link
+#### Scenario: Open Skill installation
+- **WHEN** the operator selects the Skill installation tab
+- **THEN** it loads from the same Web application and uses the active console session for catalog, recommendation, preview, and apply requests

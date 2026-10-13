@@ -6,7 +6,7 @@
 >
 > 它提供 CLI 和本地 Web 控制台，但**不会启动 AI 代理**。Claude Code、Codex 和 Pi 当前也没有接入运行时策略执行或共享 Memory 的原生适配器。
 
-## 快速开始：用 CLI 或 WebUI 一次安装多个 Skill
+## 快速开始：用 CLI 或 Web 应用安装 Skill
 
 在仓库根目录安装 CLI（需要 Go 1.24 或更高版本）：
 
@@ -23,11 +23,11 @@ export PATH="$HOME/.local/bin:$PATH"
 # CLI：一次安装多个明确选择的 Skill
 agent-manager install go-helper review --project . --target codex --yes
 
-# WebUI：打开本地安装界面，在页面中选择 Skill 并预览、应用计划
-agent-manager webui --project .
+# Web：打开本地管理后台，再进入“技能安装”页签选择 Skill
+agent-manager web --project .
 ```
 
-WebUI 已随 CLI 提供，无需单独安装；按 `Ctrl+C` 可停止服务。
+Web 页面已随 CLI 提供，无需单独安装；按 `Ctrl+C` 可停止服务。
 
 ## 目录
 
@@ -62,11 +62,10 @@ agent-manager recommend --project .
 agent-manager select --project .
 agent-manager add <skill> --project . --target codex --yes
 
-# 一次安装多个明确选择的 Skill，或打开专用安装界面
+# 一次安装多个明确选择的 Skill，或打开包含技能安装页签的 Web 应用
 agent-manager install go-helper review --project . --target codex --yes
-agent-manager webui --project .
 
-# 启动只监听本机的 Web 控制台
+# 启动管理后台和技能安装页签（共用一个本机地址）
 agent-manager web --project . --port 0
 ```
 
@@ -152,7 +151,6 @@ memory:
 | `select` | 交互式搜索、选择 Skills 和目标代理，并确认计划。 |
 | `add <skill>` | 激活 Skill 到指定目标代理。 |
 | `install <skill-id>...` | 预览并一次安装明确选择的多个 Skills。 |
-| `webui` | 启动只监听本机的项目安装界面。 |
 | `list` | 查看项目 Skills 的受管理状态。 |
 | `remove <skill>` | 移除一个受管理的项目链接。 |
 | `adopt <skill>` | 将合适的项目 Skill 收入 Skill 库并建立链接。 |
@@ -185,17 +183,17 @@ memory:
 | `policies validate/list/show` | 校验和查看本地版本化 AgentPolicy。 |
 | `runs list/show/events/kill` | 检查本地 AgentRun、策略快照、审批及审计事件；按能力请求终止。 |
 | `approvals list/show/approve/reject/expire` | 查看审批请求并记录人工决策。 |
-| `web` | 启动本地 Web 控制台。 |
+| `web` | 启动本地 Web 应用，包含管理后台和技能安装页签。 |
 
-## 本地 Web 控制台
+## 本地 Web 应用
 
-启动一个只监听 IPv4 回环地址 `127.0.0.1` 的控制台：
+启动管理后台和技能安装页签组成的本地 Web 应用：
 
 ```sh
 agent-manager web --project . --port 0
 ```
 
-`--project` 可省略，之后可在控制台注册项目；`--port 0` 会让系统选择可用端口。启动命令会打印入口地址，其中 URL 片段带有随机的进程级会话令牌。浏览器会将令牌存入当前标签页的 `sessionStorage` 并从地址栏移除；API 使用 Bearer 令牌，写请求校验来源，不开放 CORS。按 `Ctrl+C` 会关闭会话并丢弃待处理计划。
+`--project` 必填；`--port 0` 会让系统选择可用端口。命令启动一个只监听 `127.0.0.1` 的 Web 应用，并且只打印一个入口地址。默认打开管理后台，导航中的“技能安装”页签可浏览本地库并预览、确认安装。URL 片段带有随机的进程级会话令牌；浏览器会将令牌存入当前标签页的 `sessionStorage` 并从地址栏移除。API 使用 Bearer 令牌，写请求校验来源，不开放 CORS。按 `Ctrl+C` 会关闭会话并丢弃待处理计划。
 
 每个进程只注册一个规范项目。控制台没有任意路径读取接口；激活、移除和可用的撤销操作会显示由服务端生成、有效期为 10 分钟的计划，并要求操作者再次确认。替换冲突还需要额外的强制确认。撤销仅覆盖控制台管理的项目目录；涉及共享 Skill 库或其他非托管路径的操作不会提供撤销入口。
 

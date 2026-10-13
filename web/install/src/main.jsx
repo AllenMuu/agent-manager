@@ -5,8 +5,10 @@ import { initialLanguage, presentMessage, saveLanguage, targetLabel, translate }
 import { previewPayload } from './selection.js'
 import './style.css'
 
-const session = document.querySelector('meta[name="agent-manager-session"]')?.content ?? ''
-const consoleURL = document.querySelector('meta[name="agent-manager-console-url"]')?.content ?? ''
+const session = new URLSearchParams(window.location.hash.slice(1)).get('session')
+  ?? document.querySelector('meta[name="agent-manager-session"]')?.content
+  ?? ''
+const embedded = new URLSearchParams(window.location.search).get('embedded') === '1'
 const request = (path, options = {}) => apiRequest(path, options, session)
 
 function App() {
@@ -29,6 +31,17 @@ function App() {
     document.documentElement.lang = language
     document.title = language === 'zh-CN' ? 'Agent Manager · 安装技能' : 'Agent Manager · Install Skills'
   }, [language])
+
+  useEffect(() => {
+    if (!embedded) return undefined
+    const syncLanguage = (event) => {
+      if (event.key === 'agent-manager.console-language' && (event.newValue === 'en' || event.newValue === 'zh-CN')) {
+        setLanguage(event.newValue)
+      }
+    }
+    window.addEventListener('storage', syncLanguage)
+    return () => window.removeEventListener('storage', syncLanguage)
+  }, [])
 
   function changeLanguage(nextLanguage) {
     setLanguage(nextLanguage)
@@ -134,24 +147,23 @@ function App() {
 
   return (
     <main className="shell">
-      <header className="topbar">
+      {!embedded && <header className="topbar">
         <a className="brand" href="#top" aria-label={t('home')}>
           <span className="brand-mark">A</span>
           <span>Agent Manager</span>
         </a>
         <div className="topbar-actions">
-          {consoleURL.startsWith('http://127.0.0.1:') && <a className="console-link" href={consoleURL} target="_blank" rel="noopener noreferrer">{t('openConsole')}</a>}
           <div className="language-switch" role="group" aria-label={t('language')}>
             <button type="button" onClick={() => changeLanguage('en')} aria-label={t('english')} aria-pressed={language === 'en'}>EN</button>
             <button type="button" onClick={() => changeLanguage('zh-CN')} aria-label={t('chinese')} aria-pressed={language === 'zh-CN'}>中文</button>
           </div>
           <span className="local-indicator"><i /> {t('localProject')}</span>
         </div>
-      </header>
+      </header>}
 
       <section className="intro" id="top">
         <div className="eyebrow">{t('skillLibrary')} <span>·</span> {t('projectActivation')}</div>
-        <h1>{t('headline')}</h1>
+        {!embedded && <h1>{t('headline')}</h1>}
         <p>{t('intro')}</p>
         <div className="project-line"><span className="project-icon">⌂</span><span>{recommendation?.project ?? t('readingProject')}</span></div>
       </section>
@@ -209,7 +221,7 @@ function App() {
         </div>
       </section>}
 
-      <footer><span>Agent Manager</span><span>{t('runsLocally')}</span></footer>
+      {!embedded && <footer><span>Agent Manager</span><span>{t('runsLocally')}</span></footer>}
     </main>
   )
 }

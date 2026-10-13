@@ -1,6 +1,6 @@
 ## Context
 
-See `proposal.md` and `specs/web-console-language-switching/spec.md`. The main console is a React application in `web/src/`, embedded by the Go `internal/webconsole` server. The separate local Skill installation page is a React application in `web/install/`, embedded by `internal/webui`. Neither application has an existing localization dependency. The main console server already returns stable codes for API errors, while project diagnostics and operation-plan fields currently include plain English strings.
+See `proposal.md` and `specs/web-console-language-switching/spec.md`. The management console is a React application in `web/src/`, embedded by the Go `internal/webconsole` server. The Skill installation client is a React application in `web/install/`, embedded by `internal/webui` and mounted inside the console as a navigation tab. Both clients use one loopback server, origin, and session token. Neither application has an existing localization dependency. The main console server already returns stable codes for API errors, while project diagnostics and operation-plan fields currently include plain English strings.
 
 ## Goals / Non-Goals
 
@@ -22,9 +22,9 @@ Add a small typed language context and local message catalog for `en` and `zh-CN
 
 An external i18n package is unnecessary for two local languages and would add a frontend dependency. Server-side locale negotiation would couple API behavior to presentation and make language preference harder to keep browser-local.
 
-The installation page uses a small local message catalog alongside its React entry point. It detects Chinese browser language on first visit, saves a manual choice under its own local-storage key, updates the document language, and translates fixed installation-plan labels. It preserves dynamic skill content and paths. Known fixed server messages are translated by exact message or a narrow interpolation pattern; unknown server text remains visible verbatim.
+The installation tab uses a small local message catalog alongside its React entry point. It shares the console's browser-local language preference, updates the iframe document language when the global language switch changes, and translates fixed installation-plan labels. It preserves dynamic skill content and paths. Known fixed server messages are translated by exact message or a narrow interpolation pattern; unknown server text remains visible verbatim.
 
-The optional `agent-manager web --with-install-ui --project <path>` mode starts both existing loopback servers on their usual dynamically assigned ports. A process-local link holder passes each generated URL to the other page for a header link; it is not written to disk. The console entry URL keeps its session token in the URL fragment. Without the option, both commands retain their independent startup behavior.
+`agent-manager web --project <path>` starts one loopback server and prints one URL. The management dashboard is the default view. The Skill installation tab loads its embedded client under the same origin and routes its catalog, recommendation, preview, and apply API calls through the console's existing session authorization. The entry URL keeps its session token in the URL fragment. There is no separate CLI command or listener for the installation client.
 
 ### Give generated console messages stable presentation identifiers
 

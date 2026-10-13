@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"io/fs"
 	"net"
@@ -24,7 +23,6 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/recommend"
 	"github.com/AllenMuu/skill-manager/internal/search"
 	"github.com/AllenMuu/skill-manager/internal/stack"
-	"github.com/AllenMuu/skill-manager/internal/weblinks"
 )
 
 //go:embed dist
@@ -37,18 +35,18 @@ type server struct {
 	session   string
 	installs  *installation.Service
 	assets    fs.FS
-	webLinks  *weblinks.Links
+}
+
+// Module mounts the Skill installation interface inside another authenticated
+// local Web server, sharing that server's session token and origin.
+type Module struct {
+	server *server
+	api    http.Handler
 }
 
 // NewLocalServer binds to IPv4 loopback and returns its URL and HTTP server.
 // The listener is returned separately so callers control serving and shutdown.
 func NewLocalServer(project, library string) (string, *http.Server, net.Listener, error) {
-	return NewLocalServerWithLinks(project, library, nil)
-}
-
-// NewLocalServerWithLinks binds the installer and shares the optional paired
-// console URL with the embedded page.
-func NewLocalServerWithLinks(project, library string, links *weblinks.Links) (string, *http.Server, net.Listener, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return "", nil, nil, err
@@ -81,11 +79,58 @@ func NewLocalServerWithLinks(project, library string, links *weblinks.Links) (st
 		session:   session,
 		installs:  installation.New(library),
 		assets:    assets,
-		webLinks:  links,
 	}
 	url := "http://" + state.authority
-	links.SetInstallUIURL(url)
 	return url, &http.Server{Handler: state.handler()}, listener, nil
+}
+
+// NewModule prepares the installation interface to be mounted by the main Web
+// console. The console authenticates requests before dispatching to its API.
+func NewModule(project, library, session string) (*Module, error) {
+	project, err := filepath.Abs(project)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(project)
+	if err != nil {
+		return nil, fmt.Errorf("inspect project %s: %w", project, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("project path %s is not a directory", project)
+	}
+	if session == "" {
+		session, err = randomToken()
+		if err != nil {
+			return nil, err
+		}
+	}
+	assets, err := fs.Sub(embedded, "dist")
+	if err != nil {
+		return nil, err
+	}
+	module := &Module{server: &server{
+		project:  project,
+		library:  library,
+		session:  session,
+		installs: installation.New(library),
+		assets:   assets,
+	}}
+	module.api = module.server.apiHandler()
+	return module, nil
+}
+
+// APIHandler exposes only installation API routes for a parent server to mount
+// after it has authenticated and validated the request origin.
+func (m *Module) APIHandler() http.Handler {
+	return m.api
+}
+
+// ServeAssets serves the embedded installation client under the parent's
+// same-origin path. Same-origin embedding is allowed for the single-page app.
+func (m *Module) ServeAssets(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'self'; form-action 'self'")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	m.server.static(w, r)
 }
 
 func (s *server) handler() http.Handler {
@@ -113,6 +158,15 @@ func (s *server) handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func (s *server) apiHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/catalog", s.catalog)
+	mux.HandleFunc("/api/recommend", s.recommend)
+	mux.HandleFunc("/api/install/preview", s.preview)
+	mux.HandleFunc("/api/install/apply", s.apply)
+	return mux
 }
 
 func (s *server) catalog(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +333,6 @@ func (s *server) static(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		page := strings.ReplaceAll(string(contents), "__SESSION_TOKEN__", s.session)
-		page = strings.ReplaceAll(page, "__AGENT_MANAGER_CONSOLE_URL__", html.EscapeString(s.webLinks.ConsoleURL()))
 		contents = []byte(page)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")

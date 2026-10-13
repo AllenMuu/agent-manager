@@ -5,6 +5,7 @@ export async function request(path, options = {}, session = '', fetchImpl = glob
     const response = await fetchImpl(path, {
       ...options,
       headers: {
+        Authorization: `Bearer ${session}`,
         'X-Agent-Manager-Session': session,
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         ...options.headers,

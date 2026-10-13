@@ -13,6 +13,7 @@ type LanguageContextValue = {
 }
 
 const preferenceKey = 'agent-manager.console-language'
+const previousInstallPreferenceKey = 'agent-manager.webui.language'
 
 const zh: Record<string, string> = {
   'Agent Manager': 'Agent Manager',
@@ -264,7 +265,7 @@ function browserLocale(): Locale {
 
 function savedLocale(): Locale | null {
   try {
-    const value = window.localStorage.getItem(preferenceKey)
+    const value = window.localStorage.getItem(preferenceKey) ?? window.localStorage.getItem(previousInstallPreferenceKey)
     return value === 'en' || value === 'zh-CN' ? value : null
   } catch {
     return null
