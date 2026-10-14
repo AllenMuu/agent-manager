@@ -566,31 +566,7 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   busy: boolean
 }) {
   const { t, message } = useLanguage()
-  return <>
-    <p data-selection-action={selectionAction} aria-live="polite">{t('{count} selected', { count: selectedSkillIDs.length })}</p>
-    {selectedSkillIDs.length > 0 && <section className={styles.panel} aria-label={t('Selected Skills')}>
-      <ul>{selectedSkillIDs.map((identifier) => <li key={identifier}>
-        <span>{identifier}{unavailableSkillIDs.includes(identifier) ? ` · ${t('Unavailable')}` : ''}</span>
-        <button type="button" disabled={inputsLocked} aria-label={t('Deselect {identifier}', { identifier })} onClick={() => onToggleSkill(identifier)}>×</button>
-      </li>)}</ul>
-      {selectionAction === 'activate' && <>
-        <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Activation targets')}</legend><div className={styles.targetChecks}>{['claude-code', 'codex', 'pi'].map((target) => <label key={target}><input type="checkbox" checked={targets.includes(target)} onChange={() => onToggleTarget(target)} /><span>{target}</span></label>)}</div></fieldset>
-        <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={forceReplace} onChange={(event) => setForceReplace(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span><small>{t('Requires this separate confirmation and is recorded in the review plan.')}</small></label>
-        <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !targets.length} onClick={onActivate}>{t('Review activation plan')}</button>
-      </>}
-      {selectionAction === 'batch-install' && <>
-        <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Installation targets')}</legend><div className={styles.targetChecks}>{supportedTargets.map((target) => <label key={target.id}><input type="checkbox" checked={batchTargets.includes(target.id)} onChange={() => onToggleBatchTarget(target.id)} /><span>{target.label}</span></label>)}</div></fieldset>
-        <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={batchReplaceConflicts} onChange={(event) => setBatchReplaceConflicts(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span></label>
-        <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onPreviewInstallation}>{t('Preview installation')}</button>
-      </>}
-    </section>}
-    {batchPreview && <section className={styles.reviewPanel} aria-labelledby="installation-review-title">
-      <h2 id="installation-review-title">{t('Review installation')}</h2>
-      <p>{batchPreview.skillIds.join(', ')} → {batchPreview.targets.join(', ')}</p>
-      <ol className={styles.changeList}>{(batchPreview.plan.changes ?? []).map((change, index) => <li key={`${change.path}-${index}`}><div><strong>{change.action}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
-      {(batchPreview.plan.warnings ?? []).map((warning, index) => <p className={styles.inlineWarning} key={index}>{warning}</p>)}
-      <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onApplyInstallation}>{t('Confirm installation')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancelInstallation}>{t('Cancel installation')}</button></div>
-    </section>}
+  return <div className={styles.skillsWorkspace} data-selection-action={selectionAction}>
     <section className={styles.panel} aria-label={t('Recommended Skills')}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOMMENDED SKILLS')}</span></div>
       {recommendations.loading ? <LoadingState label={t('Reading this project…')} /> : recommendations.error ? <><ErrorState error={recommendations.error} /><button type="button" className={styles.secondaryButton} onClick={onRetryRecommendations}>{t('Retry recommendations')}</button></> : recommendations.data?.scopes.some((scope) => scope.recommendations.length) ? <>
@@ -606,26 +582,52 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
       </> : <EmptyInline title={t('No matching Skills')} detail={t('Search the eligible library to browse available Skills.')} />}
     </section>
     <div className={styles.libraryLayout}>
-    <section className={`${styles.panel} ${styles.libraryPanel}`} aria-label={t('Eligible library')}>
-      <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.skills.length.toString().padStart(2, '0') ?? '—'}</span></div>
-      <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit" disabled={busy || page.loading}>{t('Search')}</button></form>
-      {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
-        <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(skill.identifier)} />
-        <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
-        <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
-      </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
-    </section>
-    <section className={`${styles.panel} ${styles.skillDetailPanel}`} aria-label={t('Skill detail')}>
-      {selected ? <>
-        <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL DETAIL / {identifier}', { identifier: selected.identifier })}</span><span className={styles.pill}>{selected.provenance || t('Local library')}</span></div>
-        <h2>{selected.name || selected.identifier}</h2><p className={styles.detailLead}>{selected.description}</p>
-        <div className={styles.metadataRow}><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
-        <div className={styles.documentLabel}>{t('SKILL.MD CONTENT')} <span>{t('READ ONLY · NEVER EXECUTED')}</span></div>
-        <pre className={styles.skillBody}>{selected.body ?? t('Select a Skill to read its content.')}</pre>
-      </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}
-    </section>
+      <section className={`${styles.panel} ${styles.libraryPanel}`} aria-label={t('Eligible library')}>
+        <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.skills.length.toString().padStart(2, '0') ?? '—'}</span></div>
+        <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit" disabled={busy || page.loading}>{t('Search')}</button></form>
+        {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
+          <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(skill.identifier)} />
+          <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
+          <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
+        </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
+      </section>
+      <section className={`${styles.panel} ${styles.skillDetailPanel}`} aria-label={t('Skill detail')}>
+        {selected ? <>
+          <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL DETAIL / {identifier}', { identifier: selected.identifier })}</span><span className={styles.pill}>{selected.provenance || t('Local library')}</span></div>
+          <h2>{selected.name || selected.identifier}</h2><p className={styles.detailLead}>{selected.description}</p>
+          <div className={styles.metadataRow}><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
+          <div className={styles.documentLabel}>{t('SKILL.MD CONTENT')} <span>{t('READ ONLY · NEVER EXECUTED')}</span></div>
+          <pre className={styles.skillBody}>{selected.body ?? t('Select a Skill to read its content.')}</pre>
+        </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}
+      </section>
+    </div>
+    <div className={`${styles.panel} ${styles.selectionBar}`}>
+      <p data-selection-action={selectionAction} aria-live="polite">{t('{count} selected', { count: selectedSkillIDs.length })}</p>
+      {selectedSkillIDs.length > 0 && <section className={styles.selectionControls} aria-label={t('Selected Skills')}>
+        <ul>{selectedSkillIDs.map((identifier) => <li key={identifier}>
+          <span>{identifier}{unavailableSkillIDs.includes(identifier) ? ` · ${t('Unavailable')}` : ''}</span>
+          <button type="button" disabled={inputsLocked} aria-label={t('Deselect {identifier}', { identifier })} onClick={() => onToggleSkill(identifier)}>×</button>
+        </li>)}</ul>
+        {selectionAction === 'activate' && <>
+          <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Activation targets')}</legend><div className={styles.targetChecks}>{['claude-code', 'codex', 'pi'].map((target) => <label key={target}><input type="checkbox" checked={targets.includes(target)} onChange={() => onToggleTarget(target)} /><span>{target}</span></label>)}</div></fieldset>
+          <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={forceReplace} onChange={(event) => setForceReplace(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span><small>{t('Requires this separate confirmation and is recorded in the review plan.')}</small></label>
+          <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !targets.length} onClick={onActivate}>{t('Review activation plan')}</button>
+        </>}
+        {selectionAction === 'batch-install' && <>
+          <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Installation targets')}</legend><div className={styles.targetChecks}>{supportedTargets.map((target) => <label key={target.id}><input type="checkbox" checked={batchTargets.includes(target.id)} onChange={() => onToggleBatchTarget(target.id)} /><span>{target.label}</span></label>)}</div></fieldset>
+          <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={batchReplaceConflicts} onChange={(event) => setBatchReplaceConflicts(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span></label>
+          <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onPreviewInstallation}>{t('Preview installation')}</button>
+        </>}
+      </section>}
+    </div>
+    {batchPreview && <section className={styles.reviewPanel} aria-labelledby="installation-review-title">
+      <h2 id="installation-review-title">{t('Review installation')}</h2>
+      <p>{batchPreview.skillIds.join(', ')} → {batchPreview.targets.join(', ')}</p>
+      <ol className={styles.changeList}>{(batchPreview.plan.changes ?? []).map((change, index) => <li key={`${change.path}-${index}`}><div><strong>{change.action}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
+      {(batchPreview.plan.warnings ?? []).map((warning, index) => <p className={styles.inlineWarning} key={index}>{warning}</p>)}
+      <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onApplyInstallation}>{t('Confirm installation')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancelInstallation}>{t('Cancel installation')}</button></div>
+    </section>}
   </div>
-  </>
 }
 
 function SubAgentsPage({ page }: { page: PageState<{ definitions: SubAgent[]; diagnostics: SubAgentDiagnostic[] }> }) {

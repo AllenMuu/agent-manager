@@ -77,6 +77,24 @@ const zh: Record<string, string> = {
   '{count} scan notes': '{count} 条扫描记录',
   'Doctor findings are available in a read-only view.': '可在只读视图中查看 Doctor 检查结果。',
   'Open diagnostics': '打开诊断',
+  'Recommended Skills': '推荐 Skill',
+  'RECOMMENDED SKILLS': '推荐 Skill',
+  'Retry recommendations': '重试推荐',
+  'Eligible library': '可用库',
+  'Skill detail': 'Skill 详情',
+  'Read details →': '查看详情 →',
+  'Select {identifier}': '选择 {identifier}',
+  'Deselect {identifier}': '取消选择 {identifier}',
+  '{count} selected': '已选择 {count} 项',
+  'Selected Skills': '已选 Skill',
+  'Installation targets': '安装目标',
+  'Preview installation': '预览安装',
+  'Review installation': '审查安装',
+  'Confirm installation': '确认安装',
+  'Cancel installation': '取消安装',
+  'Installation could not be completed.': '无法完成安装。',
+  'The project changed after preview. Review this updated plan, then confirm again.': '预览后项目已发生变化。请审查更新后的方案，再次确认。',
+  'Selected Skills installed successfully.': '已成功安装所选 Skill。',
   'ELIGIBLE LIBRARY': '可用库',
   'Search Skills': '搜索 Skill',
   'Find by name, tag, or description': '按名称、标签或描述查找',
@@ -308,7 +326,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
         if (value.code === 'request_failed') return t('Request failed with status {status}.', { status: value.status })
         return translated
       }
-      if (value instanceof Error) return value.message
+      if (value instanceof Error) return value.message === 'Installation could not be completed.' ? t(value.message) : value.message
       return t('An unexpected local service error occurred.')
     }
     return { locale, setLocale, t, message, error }

@@ -161,6 +161,57 @@ describe('console entry and guarded activation', () => {
     expect(await screen.findByRole('searchbox', { name: 'Search Skills' })).toBeInTheDocument()
   })
 
+  it('keeps the narrow-screen reading order as recommendations, catalog, inline details, then selection actions', async () => {
+    vi.stubGlobal('innerWidth', 375)
+    installFixture()
+    renderApp()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    fireEvent.click(screen.getByRole('button', { name: /Go Helper/ }))
+    const recommendations = screen.getByRole('region', { name: 'Recommended Skills' })
+    const catalog = screen.getByRole('region', { name: 'Eligible library' })
+    const details = screen.getByRole('region', { name: 'Skill detail' })
+    const actions = screen.getByRole('region', { name: 'Selected Skills' })
+    for (const [before, after] of [[recommendations, catalog], [catalog, details], [details, actions]]) {
+      expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    const review = within(actions).getByRole('button', { name: 'Review activation plan' })
+    review.focus()
+    expect(review).toHaveFocus()
+    expect(within(actions).getByRole('button', { name: 'Deselect go-helper' })).not.toHaveAttribute('tabindex', '-1')
+  })
+
+  it('translates unified workspace actions while preserving identifiers, paths, and content', async () => {
+    installFixture((route) => route.startsWith('/api/v1/skills/') ? jsonResponse({ skill: { ...operationSkills[0], body: 'Untranslated SKILL.md content.' } }) : undefined)
+    renderApp()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    fireEvent.click(screen.getByRole('button', { name: /Go Helper/ }))
+    await screen.findByText('Untranslated SKILL.md content.')
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    expect(screen.getByRole('region', { name: '推荐 Skill' })).toBeInTheDocument()
+    expect(screen.getByText('已选择 1 项')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '取消选择 go-helper' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '审查启用方案' })).toBeInTheDocument()
+    expect(screen.getByText('Untranslated SKILL.md content.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 go-test' }))
+    expect(screen.getByRole('group', { name: '安装目标' })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('group', { name: '安装目标' })).getByRole('checkbox', { name: 'pi' }))
+    fireEvent.click(screen.getByRole('button', { name: '预览安装' }))
+    expect(await screen.findByRole('heading', { name: '审查安装' })).toBeInTheDocument()
+    expect(screen.getByText('/workspace/sample/.pi/skills/go-helper')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '确认安装' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消安装' }))
+    expect(screen.getByText('已选择 2 项')).toBeInTheDocument()
+  })
+
+  it('keeps unknown installation API errors unchanged in Chinese', async () => {
+    installFixture((route) => route === '/api/install/preview' ? jsonResponse({ error: { code: 'unknown_install_error', message: 'Unknown local error: /workspace/sample/go-helper' } }, 422) : undefined)
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    fireEvent.click(screen.getByRole('button', { name: '预览安装' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Unknown local error: /workspace/sample/go-helper')
+  })
+
   it('uses selected count for guarded actions and explicit batch targets', async () => {
     const { calls } = installFixture()
     renderApp()
