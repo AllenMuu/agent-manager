@@ -14,10 +14,16 @@ import type {
   Skill,
   SubAgent,
   SubAgentDiagnostic,
+  SyncImportPreview,
+  SyncInventory,
+  SyncMode,
+  SyncPlan,
+  SyncSource,
+  SyncSourceGroup,
 } from './types'
 import styles from './App.module.css'
 
-type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations' | 'install'
+type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations' | 'sync' | 'install'
 type PageState<T> = { data: T | null; loading: boolean; error: unknown | null }
 type PlanEnvelope = { plan: OperationPlan }
 type Toast = { kind: 'success'; text: string; values?: Record<string, string | number> } | { kind: 'error'; error: unknown }
@@ -28,7 +34,8 @@ const navItems: { id: View; label: string; eyebrow: string }[] = [
   { id: 'subagents', label: 'SubAgents', eyebrow: '03' },
   { id: 'diagnostics', label: 'Diagnostics', eyebrow: '04' },
   { id: 'operations', label: 'Operations', eyebrow: '05' },
-  { id: 'install', label: 'Skill installation', eyebrow: '06' },
+  { id: 'sync', label: 'Storage & Sync', eyebrow: '06' },
+  { id: 'install', label: 'Skill installation', eyebrow: '07' },
 ]
 
 const initialPage = <T,>(): PageState<T> => ({ data: null, loading: false, error: null })
@@ -307,7 +314,9 @@ export function App() {
         <button type="button" aria-label={t('Dismiss message')} onClick={() => setToast(null)}>×</button>
       </div>}
 
-      {!project ? <ProjectRegistration path={projectPath} setPath={setProjectPath} onSubmit={registerProject} busy={busy} /> : <>
+      {!project ? (view === 'sync'
+        ? <StorageSyncPage token={token} hasProject={false} />
+        : <ProjectRegistration path={projectPath} setPath={setProjectPath} onSubmit={registerProject} busy={busy} />) : <>
         {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
         {view === 'workspace' && <Workspace
           page={workspace}
@@ -338,6 +347,7 @@ export function App() {
           busy={busy}
         />}
         {view === 'operations' && <OperationsPage page={latest} onUndo={() => void createUndoPlan()} busy={busy} />}
+        {view === 'sync' && <StorageSyncPage token={token} hasProject={Boolean(project)} />}
         {view === 'install' && <iframe className={styles.installationFrame} title={t('Skill installation')} src={`/install/?embedded=1#session=${encodeURIComponent(token)}`} />}
       </>}
       <footer className={styles.pageFooter}><span>AGENT MANAGER</span><span>{t('LOCAL SESSION · NO NETWORK CONTENT')}</span></footer>
@@ -351,6 +361,243 @@ function LanguageSwitch() {
     <button type="button" aria-label={t('English')} aria-pressed={locale === 'en'} onClick={() => setLocale('en')}>EN</button>
     <button type="button" aria-label={t('Simplified Chinese')} aria-pressed={locale === 'zh-CN'} onClick={() => setLocale('zh-CN')}>中文</button>
   </div>
+}
+
+type SyncOperationReview =
+  | { kind: 'resync'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
+  | { kind: 'resync-undo'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
+
+function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boolean }) {
+  const { t, error: formatError } = useLanguage()
+  const [inventory, setInventory] = useState<SyncInventory | null>(null)
+  const [syncMode, setSyncMode] = useState<SyncMode>('auto')
+  const [selectedSyncMode, setSelectedSyncMode] = useState<SyncMode>('auto')
+  const [selected, setSelected] = useState<string[]>([])
+  const [currentChoices, setCurrentChoices] = useState<Record<string, string>>({})
+  const [importReview, setImportReview] = useState<{ planId: string; preview: SyncImportPreview } | null>(null)
+  const [operationReview, setOperationReview] = useState<SyncOperationReview | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown | null>(null)
+  const [notice, setNotice] = useState('')
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [settings, sources] = await Promise.all([
+        get<{ repositoryPath: string; syncMode: SyncMode }>(token, '/api/v1/sync/settings'),
+        get<SyncInventory>(token, '/api/v1/sync/sources'),
+      ])
+      setSyncMode(settings.syncMode)
+      setSelectedSyncMode(settings.syncMode)
+      setInventory(sources)
+    } catch (caught) {
+      setError(caught)
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
+
+  useEffect(() => { void refresh() }, [refresh])
+
+  const perform = async <T,>(action: () => Promise<T>, onSuccess: (result: T) => void) => {
+    setBusy(true)
+    setError(null)
+    setNotice('')
+    try { onSuccess(await action()) } catch (caught) { setError(caught) } finally { setBusy(false) }
+  }
+
+  const saveMode = async () => {
+    const mode = selectedSyncMode
+    await perform(
+      () => post<{ syncMode: SyncMode }>(token, '/api/v1/sync/settings', { syncMode: mode }, 'PUT'),
+      (result) => { setSyncMode(result.syncMode); setNotice(t('Sync mode saved. Resync a scope to update existing activations.')) },
+    )
+  }
+
+  const createImportPreview = async () => {
+    await perform(
+      () => post<{ planId: string; preview: SyncImportPreview }>(token, '/api/v1/sync/import/preview', { selectedGroupIds: selected, currentChoices }),
+      (result) => setImportReview(result),
+    )
+  }
+
+  const applyImport = async () => {
+    if (!importReview) return
+    await perform(
+      () => post<{ imported: number }>(token, '/api/v1/sync/import/apply', { planId: importReview.planId }),
+      (result) => {
+        setNotice(t('{count} Skill versions imported. Sources were left in place.', { count: result.imported }))
+        setImportReview(null)
+        setSelected([])
+        setCurrentChoices({})
+        void refresh()
+      },
+    )
+  }
+
+  const previewResync = async (scope: 'global' | 'project') => {
+    await perform(
+      () => post<{ planId: string; scope: string; plan: SyncPlan['plan'] }>(token, '/api/v1/sync/resync/preview', { scope }),
+      (result) => setOperationReview({ kind: 'resync', planId: result.planId, scope, plan: result.plan }),
+    )
+  }
+
+  const previewResyncUndo = async (scope: 'global' | 'project') => {
+    await perform(
+      () => post<{ planId: string; plan: SyncPlan['plan'] }>(token, '/api/v1/sync/resync/undo/preview', { scope }),
+      (result) => setOperationReview({ kind: 'resync-undo', planId: result.planId, scope, plan: result.plan }),
+    )
+  }
+
+  const applyOperationReview = async () => {
+    if (!operationReview) return
+    const { kind, planId, scope } = operationReview
+    const route = kind === 'resync' ? '/api/v1/sync/resync/apply' : '/api/v1/sync/resync/undo/apply'
+    await perform(
+      () => post<{ operation?: string; status?: string }>(token, route, { planId }),
+      () => {
+        setNotice(kind === 'resync' ? t('{scope} activations resynchronized.', { scope: scopeLabel(scope, t) }) : t('{scope} resync was undone.', { scope: scopeLabel(scope, t) }))
+        setOperationReview(null)
+        void refresh()
+      },
+    )
+  }
+
+  const toggleGroup = (groupID: string) => setSelected((current) => current.includes(groupID) ? current.filter((id) => id !== groupID) : [...current, groupID])
+  const allGroups = inventory?.groups ?? []
+  const currentPreviewNeedsChoice = importReview?.preview.currentChoiceRequired ?? []
+  const currentPreviewChoices = Array.from(new Set(importReview?.preview.groups.filter((group) => group.requiresCurrentChoice).map((group) => group.identifier) ?? []))
+  const hasUnappliedCurrentChoice = Boolean(importReview && currentPreviewChoices.some((identifier) => currentChoices[identifier] !== importReview.preview.currentChoices?.[identifier]))
+  const canApplyImport = Boolean(importReview && currentPreviewNeedsChoice.length === 0 && !hasUnappliedCurrentChoice && importReview.preview.groups.some((group) => !group.alreadyPresent) && importReview.preview.groups.every((group) => !group.conflict))
+  const reviewActive = Boolean(importReview || operationReview)
+
+  if (loading && !inventory) return <LoadingState label={t('Reading supported Skill locations…')} />
+  if (error && !inventory) return <ErrorState error={error} />
+  if (!inventory) return <EmptyState title={t('Storage & Sync is unavailable')} detail={t('The local synchronization inventory could not be loaded.')} />
+
+  return <div className={styles.syncPage}>
+    {notice && <div className={styles.syncNotice} role="status">{notice}<button type="button" onClick={() => setNotice('')} aria-label={t('Dismiss message')}>×</button></div>}
+    {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+
+    <section className={styles.panel} aria-labelledby="sync-library-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('CENTRAL SKILL LIBRARY')}</span><span className={styles.statusDot}><i /> {t('Local only')}</span></div>
+      <h2 id="sync-library-heading">{t('Storage & Sync')}</h2>
+      <p>{t('Imported Skills are copied into the Agent Manager repository. Their source folders stay unchanged, and importing does not activate them.')}</p>
+      <div className={styles.syncRepoPath}><span>{t('Repository path')}</span><code>{inventory.repositoryPath}</code></div>
+      <fieldset className={styles.syncModes}>
+        <legend>{t('How new activations are synchronized')}</legend>
+        {(['auto', 'symlink-only', 'copy-only'] as SyncMode[]).map((mode) => <label key={mode}>
+          <input type="radio" name="sync-mode" value={mode} checked={selectedSyncMode === mode} disabled={busy || reviewActive} onChange={() => setSelectedSyncMode(mode)} />
+          <span><strong>{modeLabel(mode, t)}</strong><small>{modeDescription(mode, t)}</small></span>
+        </label>)}
+      </fieldset>
+      <div className={styles.syncActions}><button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selectedSyncMode === syncMode} onClick={() => void saveMode()}>{t('Save sync mode')}</button></div>
+    </section>
+
+    <section className={styles.panel} aria-labelledby="source-inventory-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('SOURCE INVENTORY')}</span><button className={styles.textButton} type="button" disabled={loading || busy || reviewActive} onClick={() => void refresh()}>{t('Refresh sources')}</button></div>
+      <h2 id="source-inventory-heading">{t('Skills ready to import')}</h2>
+      <p>{t('Choose a version to add it to the central library. Matching content from several locations is grouped once.')}</p>
+      <div className={styles.syncScopes}>
+        <SyncSourceSection scope="global" groups={allGroups} sources={inventory.sources} selected={selected} disabled={busy || reviewActive} onToggle={toggleGroup} onSelectAll={(ids, checked) => setSelected((current) => checked ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !ids.includes(id)))} />
+        <SyncSourceSection scope="project" groups={allGroups} sources={inventory.sources} selected={selected} disabled={busy || reviewActive || !hasProject} onToggle={toggleGroup} onSelectAll={(ids, checked) => setSelected((current) => checked ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !ids.includes(id)))} />
+      </div>
+      {inventory.diagnostics.length > 0 && <div className={styles.syncDiagnostics}>
+        <strong>{t('{count} scan notes', { count: inventory.diagnostics.length })}</strong>
+        {inventory.diagnostics.map((item, index) => <div key={`${item.path}-${index}`}><code>{item.scope === 'global' ? t('Global') : t('Project')} · {item.path}</code><span>{item.message}</span></div>)}
+      </div>}
+      <div className={styles.syncActions}>
+        <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selected.length === 0} onClick={() => void createImportPreview()}>{t('Review selected import')}</button>
+      </div>
+    </section>
+
+    <section className={styles.panel} aria-labelledby="resync-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('EXISTING ACTIVATIONS')}</span><span className={styles.countMark}>{t('Scope by scope')}</span></div>
+      <h2 id="resync-heading">{t('Resync managed Skills')}</h2>
+      <p>{t('Apply the saved synchronization mode to journal-managed activations. Each scope has its own review, operation journal, and Undo.')}</p>
+      <div className={styles.syncActions}>
+        <button className={styles.secondaryButton} type="button" disabled={busy || reviewActive} onClick={() => void previewResync('global')}>{t('Review global resync')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy || reviewActive || !hasProject} onClick={() => void previewResync('project')}>{t('Review project resync')}</button>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive || !inventory.globalResyncUndoAvailable} onClick={() => void previewResyncUndo('global')}>{t('Global Undo')}</button>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive || !hasProject || !inventory.projectResyncUndoAvailable} onClick={() => void previewResyncUndo('project')}>{t('Project Undo')}</button>
+      </div>
+    </section>
+
+    {importReview && <section className={styles.syncReview} aria-labelledby="import-review-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('IMPORT PREVIEW')}</span><span className={styles.pill}>{t('{count} selected versions', { count: importReview.preview.groups.length })}</span></div>
+      <h2 id="import-review-heading">{t('Review before importing')}</h2>
+      {importReview.preview.groups.map((group) => <SyncGroupReview key={group.id} group={group} t={t} />)}
+      {currentPreviewChoices.map((identifier) => <fieldset className={styles.currentChoice} key={identifier}>
+        <legend>{t('Choose the current version for {identifier}', { identifier })}</legend>
+        {importReview.preview.groups.filter((group) => group.identifier === identifier).map((group) => <label key={group.id}>
+          <input type="radio" name={`current-${identifier}`} checked={currentChoices[identifier] === group.id} onChange={() => setCurrentChoices((current) => ({ ...current, [identifier]: group.id }))} />
+          <span>{group.sources.map((source) => `${source.location} · ${source.scope === 'global' ? t('Global') : t('Project')}`).join(', ')} <code>{group.checksum.slice(0, 12)}</code></span>
+        </label>)}
+        <button className={styles.secondaryButton} type="button" disabled={busy || !currentChoices[identifier] || currentChoices[identifier] === importReview.preview.currentChoices?.[identifier]} onClick={() => void createImportPreview()}>{t('Update preview with this choice')}</button>
+      </fieldset>)}
+      {importReview.preview.groups.some((group) => group.alreadyPresent) && <p className={styles.syncMuted}>{t('Versions already in the repository will be skipped.')}</p>}
+      <div className={styles.syncActions}>
+        <button className={styles.primaryButton} type="button" disabled={busy || !canApplyImport} onClick={() => void applyImport()}>{t('Confirm import')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setImportReview(null)}>{t('Cancel')}</button>
+      </div>
+    </section>}
+
+    {operationReview && <section className={styles.syncReview} aria-labelledby="resync-review-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{operationReview.kind === 'resync' ? t('RESYNC PREVIEW') : t('OPERATION UNDO')}</span><span className={styles.pill}>{scopeLabel(operationReview.scope, t)}</span></div>
+      <h2 id="resync-review-heading">{operationReview.kind === 'resync' ? t('Review managed destinations') : t('Review the latest scope operation')}</h2>
+      {operationReview.plan.changes.length ? operationReview.plan.changes.map((change, index) => <div className={styles.syncPlanRow} key={`${change.path}-${index}`}><strong>{change.action}</strong><code>{change.path}</code>{change.detail && <small>{change.detail}</small>}</div>) : <EmptyInline title={t('No managed activations to resync')} detail={t('This scope has no journal-managed Skills.')} />}
+      {operationReview.plan.warnings.map((warning) => <p className={styles.syncMuted} key={warning}>{warning}</p>)}
+      <div className={styles.syncActions}>
+        <button className={operationReview.kind === 'resync' ? styles.primaryButton : styles.subtleDangerButton} type="button" disabled={busy || operationReview.plan.changes.length === 0} onClick={() => void applyOperationReview()}>{operationReview.kind === 'resync' ? t('Confirm resync') : t('Confirm scope Undo')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setOperationReview(null)}>{t('Cancel')}</button>
+      </div>
+    </section>}
+  </div>
+}
+
+function SyncSourceSection({ scope, groups, sources, selected, disabled, onToggle, onSelectAll }: {
+  scope: 'global' | 'project'
+  groups: SyncSourceGroup[]
+  sources: SyncSource[]
+  selected: string[]
+  disabled: boolean
+  onToggle: (id: string) => void
+  onSelectAll: (ids: string[], checked: boolean) => void
+}) {
+  const { t } = useLanguage()
+  const label = scopeLabel(scope, t)
+  const scopedGroups = groups.filter((group) => group.sources.some((source) => source.scope === scope))
+  const groupIDs = scopedGroups.map((group) => group.id)
+  const allSelected = groupIDs.length > 0 && groupIDs.every((id) => selected.includes(id))
+  const otherSources = sources.filter((source) => source.scope === scope && (!source.eligible || source.alreadyManaged))
+  return <section className={styles.syncScope} aria-label={label}>
+    <div className={styles.syncScopeHeading}><div><span className={styles.kicker}>{scope === 'global' ? t('GLOBAL SOURCES') : t('PROJECT SOURCES')}</span><h3>{label}</h3></div><label className={styles.selectAll}><input type="checkbox" checked={allSelected} disabled={disabled || groupIDs.length === 0} onChange={(event) => onSelectAll(groupIDs, event.target.checked)} />{t('Select all')}</label></div>
+    {scopedGroups.length === 0 && <EmptyInline title={t('No eligible Skills found')} detail={scope === 'project' ? t('This project has no eligible source Skills.') : t('No eligible global source Skills were found.')} />}
+    <div className={styles.syncGroupList}>{scopedGroups.map((group) => <label className={styles.syncSourceRow} key={group.id}>
+      <input type="checkbox" checked={selected.includes(group.id)} disabled={disabled} onChange={() => onToggle(group.id)} aria-label={t('Select {identifier}', { identifier: group.identifier })} />
+      <span><strong>{group.identifier}</strong><small>{group.sources.filter((source) => source.scope === scope).map((source) => `${source.location} · ${source.path}`).join(' · ')}</small>{group.sources.length > 1 && <small>{t('Same content appears in {count} locations', { count: group.sources.length })}</small>}</span>
+    </label>)}</div>
+    {otherSources.map((source) => <div className={styles.syncSourceNote} key={source.id}><strong>{source.identifier}</strong><small>{source.alreadyManaged ? t('Already managed as {method}', { method: source.managedMaterial ?? '' }) : t('Not eligible · {problem}', { problem: source.problem ?? '' })}</small><code>{source.path}</code></div>)}
+  </section>
+}
+
+function SyncGroupReview({ group, t }: { group: SyncSourceGroup; t: (source: string, values?: Record<string, string | number>) => string }) {
+  return <div className={styles.syncPlanRow}>
+    <strong>{group.identifier} · {group.alreadyPresent ? t('Already in repository') : group.conflict ? t('Conflict') : t('New version')}</strong>
+    <code>{group.versionKey}</code>
+    {group.makeCurrent && <small>{t('Will become the current version')}</small>}
+    {group.conflictReason && <small className={styles.syncProblem}>{group.conflictReason}</small>}
+    {group.existingCurrent && <small>{t('Current version stays {version}', { version: group.existingCurrent })}</small>}
+    {group.sources.map((source) => <small key={source.id}>{source.scope === 'global' ? t('Global') : t('Project')} · {source.location} · {source.path}</small>)}
+  </div>
+}
+
+function scopeLabel(scope: 'global' | 'project', t: (source: string) => string) { return scope === 'global' ? t('Global') : t('Project') }
+function modeLabel(mode: SyncMode, t: (source: string) => string) { return t(mode === 'auto' ? 'Automatic' : mode === 'symlink-only' ? 'Symlink only' : 'Copy only') }
+function modeDescription(mode: SyncMode, t: (source: string) => string) {
+  return t(mode === 'auto' ? 'Try a symbolic link first, then copy if links are unavailable.' : mode === 'symlink-only' ? 'Use symbolic links. Link errors are shown for review.' : 'Copy Skill files into the agent location.')
 }
 
 function ProjectRegistration({ path, setPath, onSubmit, busy }: { path: string; setPath: (path: string) => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; busy: boolean }) {

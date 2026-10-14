@@ -29,5 +29,5 @@ export async function apiRequest<T>(token: string, route: string, init: RequestI
 }
 
 export const get = <T>(token: string, route: string) => apiRequest<T>(token, route)
-export const post = <T>(token: string, route: string, body: unknown = {}) =>
-  apiRequest<T>(token, route, { method: 'POST', body: JSON.stringify(body) })
+export const post = <T>(token: string, route: string, body: unknown = {}, method = 'POST') =>
+  apiRequest<T>(token, route, { method, body: JSON.stringify(body) })

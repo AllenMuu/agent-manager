@@ -215,6 +215,85 @@ func TestPlaceFilesystemRefusesUnmanagedConflictWithoutForce(t *testing.T) {
 	}
 }
 
+func TestPlaceFilesystemAutoFallsBackToCopyOnlyForLinkCapabilityFailure(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("skill source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project, destination := testCodexPlacement(t)
+	journal := operation.New(filepath.Join(t.TempDir(), "journal.json"))
+	plan := resource.PlacementPlan{Resource: resource.ManagedResource{
+		Version: "v1", ID: "demo", Kind: resource.Skill,
+		Provenance: resource.Provenance{Source: source},
+	}}
+	preview, err := adapter.PlaceFilesystem(plan, adapter.FilesystemPlacementOptions{
+		Project: project, Target: adapter.Codex, Destination: destination,
+		Materialization: adapter.MaterializeAuto, Journal: journal,
+		BeforeLink: func() error { return errors.Join(adapter.ErrLinkUnavailable, os.ErrPermission) },
+		Confirm: func(plan operation.Plan) bool {
+			return len(plan.Changes) == 1 && strings.Contains(plan.Changes[0].Detail, "copy fallback")
+		},
+	})
+	if err != nil {
+		t.Fatalf("PlaceFilesystem() error = %v", err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("destination = %#v, %v; want copied directory", info, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(destination, "SKILL.md")); err != nil || string(got) != "skill source" {
+		t.Fatalf("copied Skill = %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "SKILL.md")); err != nil || string(got) != "skill source" {
+		t.Fatalf("source Skill changed = %q, %v", got, err)
+	}
+	if preview.Changes[0].Action != "create absolute link" {
+		t.Fatalf("preview action = %q, want link-first auto plan", preview.Changes[0].Action)
+	}
+}
+
+func TestPlaceFilesystemDoesNotFallbackForUnrelatedFailuresOrSymlinkOnly(t *testing.T) {
+	unrelatedFailure := errors.New("journal-independent validation failed")
+	cases := []struct {
+		name        string
+		mode        adapter.MaterializationMode
+		beforeLink  func() error
+		beforeFinal func() error
+		wantErr     error
+	}{
+		{name: "auto does not hide unrelated failure", mode: adapter.MaterializeAuto, beforeFinal: func() error { return unrelatedFailure }, wantErr: unrelatedFailure},
+		{name: "symlink-only does not fall back", mode: adapter.MaterializeSymlinkOnly, beforeLink: func() error { return errors.Join(adapter.ErrLinkUnavailable, os.ErrPermission) }, wantErr: adapter.ErrLinkUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := t.TempDir()
+			if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("source"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			project, destination := testCodexPlacement(t)
+			journal := operation.New(filepath.Join(t.TempDir(), "journal.json"))
+			plan := resource.PlacementPlan{Resource: resource.ManagedResource{
+				Version: "v1", ID: "demo", Kind: resource.Skill,
+				Provenance: resource.Provenance{Source: source},
+			}}
+			wantErr := tc.wantErr
+			_, err := adapter.PlaceFilesystem(plan, adapter.FilesystemPlacementOptions{
+				Project: project, Target: adapter.Codex, Destination: destination,
+				Materialization: tc.mode, Journal: journal,
+				BeforeFinalPublish: tc.beforeFinal,
+				BeforeLink:         tc.beforeLink,
+				Confirm:            func(operation.Plan) bool { return true },
+			})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("PlaceFilesystem() error = %v, want %v", err, wantErr)
+			}
+			if _, statErr := os.Lstat(destination); !os.IsNotExist(statErr) {
+				t.Fatalf("failed link operation left a destination: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestPlaceFilesystemRequiresConfirmationAndJournalsReplacement(t *testing.T) {
 	source := t.TempDir()
 	project, destination := testCodexPlacement(t)

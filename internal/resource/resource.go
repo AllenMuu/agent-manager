@@ -152,6 +152,12 @@ type SkillLifecycleRequest struct {
 	Force         bool
 	JournalSource string
 	JournalOwned  bool
+	// JournalCopyMatches is true only when the scoped journal proves the
+	// destination is an unchanged managed copy of JournalSource.
+	JournalCopyMatches     bool
+	JournalMaterialization string
+	JournalFingerprint     string
+	RematerializeManaged   bool
 }
 
 func (r SkillLifecycleRequest) ActionKind() LifecycleAction { return r.Action }

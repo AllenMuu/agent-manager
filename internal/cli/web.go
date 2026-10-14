@@ -39,6 +39,8 @@ func newWebCommand(options *rootOptions) *cobra.Command {
 			}
 			console, err := webconsole.New(webconsole.Options{
 				LibraryPath:       settings.LibraryPath,
+				ConfigPath:        options.configPath,
+				SyncMode:          string(settings.SyncMode),
 				HomeDir:           home,
 				DataRoot:          filepath.Join(home, ".agents"),
 				ProjectPath:       project,

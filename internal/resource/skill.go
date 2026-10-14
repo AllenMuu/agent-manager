@@ -409,6 +409,34 @@ func (h SkillHandler) planActivation(request SkillLifecycleRequest) (SkillLifecy
 	if err != nil {
 		return plan, err
 	}
+	if request.RematerializeManaged {
+		info, inspectErr := os.Lstat(request.PlacementPath)
+		if inspectErr != nil {
+			return plan, errors.Join(ErrUnsafeLifecycle, inspectErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(request.PlacementPath)
+			if readErr != nil {
+				return plan, readErr
+			}
+			if !filepath.IsAbs(target) {
+				target, readErr = filepath.Abs(filepath.Join(filepath.Dir(request.PlacementPath), target))
+				if readErr != nil {
+					return plan, readErr
+				}
+			}
+			if filepath.Clean(target) != filepath.Clean(source) {
+				return plan, ErrUnsafeLifecycle
+			}
+		} else if info.IsDir() {
+			if !request.JournalCopyMatches || request.JournalSource != source {
+				return plan, ErrUnsafeLifecycle
+			}
+		} else {
+			return plan, ErrUnsafeLifecycle
+		}
+		conflict = true
+	}
 	action := "create absolute link"
 	if conflict {
 		if request.Conflict != SkillConflictReplace {
@@ -431,7 +459,16 @@ func (h SkillHandler) planManagedLink(request SkillLifecycleRequest, action stri
 	plan := SkillLifecyclePlan{Action: request.Action}
 	var managed ManagedResource
 	var err error
-	if request.Action == LifecycleRemove {
+	journalCopy := request.JournalCopyMatches && request.JournalMaterialization == "copy"
+	if journalCopy {
+		managed = ManagedResource{
+			Version: "v1", ID: request.Identifier, Kind: Skill,
+			Provenance: Provenance{Source: request.JournalSource},
+		}
+		if err := h.Validate(managed); err != nil {
+			return plan, errors.Join(ErrUnsafeLifecycle, err)
+		}
+	} else if request.Action == LifecycleRemove {
 		library, absErr := filepath.Abs(request.LibraryPath)
 		if absErr != nil {
 			return plan, absErr
@@ -450,12 +487,35 @@ func (h SkillHandler) planManagedLink(request SkillLifecycleRequest, action stri
 	if request.PlacementPath == "" {
 		return plan, nil
 	}
-	source, owned, err := h.managedLink(request.LibraryPath, request.Identifier, request.PlacementPath)
-	if err != nil {
-		return plan, err
-	}
-	if !owned {
-		return plan, ErrUnsafeLifecycle
+	source := ""
+	if journalCopy {
+		source, err = filepath.Abs(request.JournalSource)
+		if err != nil {
+			return plan, err
+		}
+		owned, err := h.ManagesSource(request.LibraryPath, request.Identifier, source)
+		if err != nil {
+			return plan, err
+		}
+		if !owned {
+			return plan, ErrUnsafeLifecycle
+		}
+		eligible, err := h.Eligible(request.Identifier, source)
+		if err != nil || !eligible {
+			return plan, errors.Join(ErrUnsafeLifecycle, err)
+		}
+		if request.Action == LifecycleRemove {
+			action = "remove managed copy"
+		}
+	} else {
+		var owned bool
+		source, owned, err = h.managedLink(request.LibraryPath, request.Identifier, request.PlacementPath)
+		if err != nil {
+			return plan, err
+		}
+		if !owned {
+			return plan, ErrUnsafeLifecycle
+		}
 	}
 	managed.Provenance.Source = source
 	plan.SourcePath = source

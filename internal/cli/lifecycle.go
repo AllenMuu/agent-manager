@@ -50,10 +50,11 @@ func newProjectCommands(options *rootOptions) []*cobra.Command {
 func newSelectCommand(options *rootOptions) *cobra.Command {
 	var project string
 	cmd := &cobra.Command{Use: "select", Short: "Interactively select skills to activate", RunE: func(cmd *cobra.Command, _ []string) error {
-		lib, err := library(options)
+		settings, err := config.Load(options.configPath)
 		if err != nil {
 			return err
 		}
+		lib := settings.LibraryPath
 		skills, _, err := catalog.Discover(lib)
 		if err != nil {
 			return err
@@ -110,7 +111,7 @@ func newSelectCommand(options *rootOptions) *cobra.Command {
 			}
 			selectedIDs = append(selectedIDs, strings.TrimSpace(id))
 		}
-		service := installation.New(lib)
+		service := installation.NewWithMaterialization(lib, adapter.MaterializationMode(settings.SyncMode))
 		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: selectedIDs, Targets: targets})
 		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
 			return writeErr
@@ -205,15 +206,16 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 			return err
 		}
 		opts := lifecycle.Options{Conflict: lifecycle.ConflictStrategy(conflict), Force: force}
-		lib, err := library(options)
+		settings, err := config.Load(options.configPath)
 		if err != nil {
 			return err
 		}
+		lib := settings.LibraryPath
 		ts, err := parseTargets(targets)
 		if err != nil {
 			return err
 		}
-		service := installation.New(lib)
+		service := installation.NewWithMaterialization(lib, adapter.MaterializationMode(settings.SyncMode))
 		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: args, Versions: selectedVersions, Targets: ts, Options: opts})
 		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
 			return writeErr

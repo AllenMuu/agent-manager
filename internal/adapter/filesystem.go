@@ -26,9 +26,13 @@ var (
 	// ErrLateConflict identifies a no-replace publication that observed a new
 	// owner after confirmation. Callers can preserve that owner while rolling
 	// back other paths in a larger transaction.
-	ErrLateConflict   = errors.New("destination changed during guarded publication")
-	errLateConflict   = ErrLateConflict
-	errStagePreserved = errors.New("staged destination preserved")
+	ErrLateConflict = errors.New("destination changed during guarded publication")
+	// ErrLinkUnavailable identifies a platform or privilege limitation while
+	// creating a soft link. Auto mode may fall back to a staged copy only for
+	// this error; ordinary write and ownership failures remain fatal.
+	ErrLinkUnavailable = errors.New("soft link creation is unavailable")
+	errLateConflict    = ErrLateConflict
+	errStagePreserved  = errors.New("staged destination preserved")
 )
 
 // PreservedPathError reports a publication failure for which the staged
@@ -116,6 +120,24 @@ type ConflictStrategy string
 
 const ConflictReplace ConflictStrategy = "replace"
 
+// MaterializationMode controls how a Skill is published into an agent tree.
+type MaterializationMode string
+
+const (
+	MaterializeAuto        MaterializationMode = "auto"
+	MaterializeSymlinkOnly MaterializationMode = "symlink-only"
+	MaterializeCopyOnly    MaterializationMode = "copy-only"
+)
+
+func (m MaterializationMode) Validate() error {
+	switch m {
+	case MaterializeAuto, MaterializeSymlinkOnly, MaterializeCopyOnly:
+		return nil
+	default:
+		return fmt.Errorf("unsupported materialization mode %q", m)
+	}
+}
+
 // FilesystemPlacementOptions supplies the explicit, guarded mutation inputs.
 // Resource content is treated as opaque bytes and is never interpreted.
 type FilesystemPlacementOptions struct {
@@ -133,9 +155,16 @@ type FilesystemPlacementOptions struct {
 	// SourceContent optionally materializes a managed regular-file source after
 	// confirmation. It is used by rendered SubAgents; Skill sources remain
 	// directory-backed and opaque.
-	SourceContent []byte
-	Conflict      ConflictStrategy
-	Force         bool
+	SourceContent   []byte
+	Conflict        ConflictStrategy
+	Force           bool
+	Materialization MaterializationMode
+	// ExistingCopyOwned is true only when the scoped operation journal proves
+	// that the current destination is a managed copy of this source version.
+	ExistingCopyOwned bool
+	// Rematerialize replaces an already-active journal-verified Skill so an
+	// explicit resync can apply the configured method.
+	Rematerialize bool
 	Journal       *operation.Journal
 	Confirm       func(operation.Plan) bool
 	// InitialSnapshot is an optional snapshot captured before an outer
@@ -151,6 +180,9 @@ type FilesystemPlacementOptions struct {
 	BeforeRemove func() error
 	// BeforeFinalPublish runs after the destination absence check.
 	BeforeFinalPublish func() error
+	// BeforeLink injects a classified link-publication failure for lifecycle
+	// tests. Production callers leave it nil.
+	BeforeLink func() error
 	// BeforeDiscard injects a staged cleanup failure while leaving the stage
 	// available for recovery.
 	BeforeDiscard func() error
@@ -180,6 +212,16 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	if options.Project == "" || options.Target == "" {
 		return operation.Plan{}, ErrPlacementConfiguration
 	}
+	mode := options.Materialization
+	if mode == "" {
+		mode = MaterializeAuto
+	}
+	if plan.Resource.Kind != resource.Skill {
+		mode = MaterializeSymlinkOnly
+	}
+	if err := mode.Validate(); err != nil {
+		return operation.Plan{}, err
+	}
 	if plan.Project != "" {
 		plannedProject, projectErr := filepath.Abs(plan.Project)
 		selectedProject, selectedErr := filepath.Abs(options.Project)
@@ -202,6 +244,17 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 		return operation.Plan{}, err
 	}
 	alreadyInstalled := destinationIsNoop(destination, source, options.SourceContent)
+	if !alreadyInstalled && plan.Resource.Kind == resource.Skill && options.ExistingCopyOwned {
+		matches, matchErr := destinationCopyMatches(destination, source)
+		if matchErr != nil {
+			return operation.Plan{}, matchErr
+		}
+		alreadyInstalled = matches
+	}
+	if options.Rematerialize && alreadyInstalled {
+		alreadyInstalled = false
+		conflict = true
+	}
 	initialConflict := conflict
 	var before []operation.Snapshot
 	if options.InitialSnapshot != nil {
@@ -213,6 +266,16 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 		if err != nil {
 			return operation.Plan{}, err
 		}
+		if options.Rematerialize && before[0].Exists {
+			managedLink := destinationIsNoop(destination, source, options.SourceContent)
+			managedCopy := false
+			if options.ExistingCopyOwned {
+				managedCopy, _ = destinationCopyMatches(destination, source)
+			}
+			if managedLink || managedCopy {
+				initialConflict = true
+			}
+		}
 	}
 	preview := operation.NewPlan("place resource")
 	preview.ResourceKind = string(plan.Resource.Kind)
@@ -220,7 +283,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	if options.SourceContent != nil {
 		preview.Changes = append(preview.Changes, operation.Change{Path: source, Action: "write managed SubAgent source"})
 	}
-	preview.Changes = append(preview.Changes, operation.Change{Path: destination, Action: "create absolute link", Detail: source})
+	preview.Changes = append(preview.Changes, operation.Change{Path: destination, Action: MaterializationAction(mode, false), Detail: MaterializationDetail(source, mode)})
 	if alreadyInstalled {
 		preview.Changes = nil
 		preview.Warnings = append(preview.Warnings, "resource is already installed; no changes made")
@@ -231,7 +294,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 		// confirmation is refused. Render the replacement action before any
 		// strategy/force error is returned so callers can explain the exact
 		// mutation that was withheld.
-		preview.Changes[len(preview.Changes)-1].Action = "replace conflicting path with absolute link"
+		preview.Changes[len(preview.Changes)-1].Action = MaterializationAction(mode, true)
 		if options.Conflict != ConflictReplace {
 			return preview, ErrUnsafePath
 		}
@@ -268,7 +331,18 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	if err != nil {
 		return preview, err
 	}
-	if destinationIsNoop(destination, source, options.SourceContent) {
+	noOpAfterConfirmation := destinationIsNoop(destination, source, options.SourceContent)
+	if !noOpAfterConfirmation && plan.Resource.Kind == resource.Skill && options.ExistingCopyOwned {
+		noOpAfterConfirmation, err = destinationCopyMatches(destination, source)
+		if err != nil {
+			return preview, err
+		}
+	}
+	if options.Rematerialize && noOpAfterConfirmation {
+		noOpAfterConfirmation = false
+		conflict = true
+	}
+	if noOpAfterConfirmation {
 		preview.Changes = nil
 		preview.Warnings = append(preview.Warnings, "resource is already installed; no changes made")
 		return preview, nil
@@ -345,26 +419,50 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 		}
 		return verifyPublishedSource(sourceState, source, plan.Resource.Kind, options.SourceContent)
 	}
-	if err := publishLink(options.Project, destination, source, conflict, before[0], options.BeforeRemove, beforeFinalPublish, options.BeforeDiscard); err != nil {
+	beforeLink := func() error {
+		if options.BeforeLink != nil {
+			if err := options.BeforeLink(); err != nil {
+				return err
+			}
+		}
+		return beforeFinalPublish()
+	}
+	var publishErr error
+	if mode == MaterializeCopyOnly {
+		publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], beforeFinalPublish)
+	} else {
+		publishErr = publishLink(options.Project, destination, source, conflict, before[0], options.BeforeRemove, beforeLink, options.BeforeDiscard)
+		if mode == MaterializeAuto && errors.Is(publishErr, ErrLinkUnavailable) {
+			// The link publisher restores a reviewed conflict before returning a
+			// classified link-capability failure. Recheck the exact reviewed owner
+			// before attempting the copy fallback.
+			if conflict && !matchesSnapshot(before[0]) {
+				publishErr = errors.Join(ErrUnsafePath, errLateConflict)
+			} else {
+				publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], beforeFinalPublish)
+			}
+		}
+	}
+	if publishErr != nil {
 		// A late conflict has not been mutated; restoring its old snapshot would
 		// wrongly delete the unmanaged file that won the race.
-		if conflict && !errors.Is(err, errLateConflict) && !errors.Is(err, errStagePreserved) {
+		if conflict && !errors.Is(publishErr, errLateConflict) && !errors.Is(publishErr, errStagePreserved) {
 			if sourceState != nil && sourceState.Created {
-				return preview, errors.Join(err, options.Journal.Restore(before), sourceState.Cleanup())
+				return preview, errors.Join(publishErr, options.Journal.Restore(before), sourceState.Cleanup())
 			}
-			return preview, errors.Join(err, options.Journal.Restore(before))
+			return preview, errors.Join(publishErr, options.Journal.Restore(before))
 		}
 		if sourceState != nil && sourceState.Created {
-			return preview, errors.Join(err, sourceState.Cleanup())
+			return preview, errors.Join(publishErr, sourceState.Cleanup())
 		}
-		return preview, err
+		return preview, publishErr
 	}
 	after, err := options.Journal.Capture([]string{destination})
 	if err != nil {
 		if sourceState != nil && sourceState.Created {
-			return preview, errors.Join(err, options.Journal.Restore(before), sourceState.Cleanup())
+			return preview, errors.Join(publishErr, options.Journal.Restore(before), sourceState.Cleanup())
 		}
-		return preview, errors.Join(err, options.Journal.Restore(before))
+		return preview, errors.Join(publishErr, options.Journal.Restore(before))
 	}
 	if err := options.Journal.RecordPlan(preview, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {

@@ -256,6 +256,7 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 		return operation.Plan{}, "", nil, nil, err
 	}
 	service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+	service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 	plan, err := service.PreviewAddMany(project.Path, selected, targets, options)
 	if err != nil {
 		return plan, "", nil, nil, fmt.Errorf("activation cannot be safely planned: %w", err)
@@ -440,6 +441,26 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 		writeAPIError(w, http.StatusConflict, "stale_plan", "The registered project changed; create a fresh preview.")
 		return
 	}
+	if plan.kind == "activate" || plan.kind == "remove" {
+		journal, err := s.journalForProject(project)
+		if err != nil {
+			s.finishPlan(plan, storedPlanCompleted)
+			writePlanError(w, err)
+			return
+		}
+		unlock, err := journal.LockOperation()
+		if err != nil {
+			s.finishPlan(plan, storedPlanCompleted)
+			writeAPIError(w, http.StatusInternalServerError, "operation_lock_failed", "The project operation could not acquire its local operation lock.")
+			return
+		}
+		defer unlock()
+		if !s.now().Before(plan.expiresAt) {
+			s.finishPlan(plan, storedPlanStale)
+			writeAPIError(w, http.StatusGone, "plan_expired", "The operation plan expired while waiting for another local operation; create a fresh preview.")
+			return
+		}
+	}
 	var preview operation.Plan
 	var currentFingerprint string
 	var err error
@@ -495,6 +516,7 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			break
 		}
 		service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+		service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 		service.BeforeFinalPublish = func() error {
 			if err := validateProjectJournalLayout(project); err != nil {
 				return err

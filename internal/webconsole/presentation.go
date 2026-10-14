@@ -13,6 +13,7 @@ func operationMessageRef(operation string) *messageRefDTO {
 	keys := map[string]string{
 		"activate":                         "plan.operation.activate",
 		"activate selected skills":         "plan.operation.activate_selected_skills",
+		"resynchronize managed Skills":     "plan.operation.resynchronize_managed_skills",
 		"remove":                           "plan.operation.remove",
 		"reconcile":                        "plan.operation.reconcile",
 		"update managed-link Git guidance": "plan.operation.gitignore",
