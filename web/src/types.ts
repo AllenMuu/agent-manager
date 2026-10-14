@@ -91,5 +91,7 @@ export type InstallationPreview = {
   id: string
   skillIds: string[]
   targets: string[]
-  plan: { operation: string; changes: { path: string; action: string; detail?: string }[]; warnings: string[] }
+  plan: { operation: string; changes: { path: string; action: string; detail?: string }[] | null; warnings: string[] | null }
 }
+
+export type InstallationApplyResult = { result: { applied: boolean; stale: boolean } }

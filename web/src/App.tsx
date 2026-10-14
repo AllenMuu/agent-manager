@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { get, post } from './api'
+import { APIError, get, post } from './api'
 import { getSkillSelectionAction, toggleSkillSelection, type SkillSelectionAction } from './skillSelection'
 import { bootstrapSession } from './session'
 import { useLanguage } from './i18n'
@@ -8,6 +8,8 @@ import type {
   Finding,
   LatestOperation,
   InstallationCatalog,
+  InstallationPreview,
+  InstallationApplyResult,
   MessageRef,
   OperationPlan,
   Project,
@@ -42,6 +44,7 @@ export function App() {
   const [view, setView] = useState<View>(() => /^\/install\/?$/.test(window.location.pathname) ? 'skills' : 'workspace')
   const [workspace, setWorkspace] = useState<PageState<{ agents: Agent[]; recommendations: RecommendationResult; resources: Resource[] }>>(initialPage)
   const [skills, setSkills] = useState<PageState<InstallationCatalog>>(initialPage)
+  const [fullCatalog, setFullCatalog] = useState<PageState<InstallationCatalog>>(initialPage)
   const [subagents, setSubagents] = useState<PageState<{ definitions: SubAgent[]; diagnostics: SubAgentDiagnostic[] }>>(initialPage)
   const [findings, setFindings] = useState<PageState<Finding[]>>(initialPage)
   const [latest, setLatest] = useState<PageState<LatestOperation>>(initialPage)
@@ -51,10 +54,19 @@ export function App() {
   const [query, setQuery] = useState('')
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
   const [targets, setTargets] = useState<string[]>(['codex'])
+  const [batchTargets, setBatchTargets] = useState<string[]>([])
+  const [batchReplaceConflicts, setBatchReplaceConflicts] = useState(false)
+  const [batchPreview, setBatchPreview] = useState<InstallationPreview | null>(null)
+  const [pendingActivation, setPendingActivation] = useState(false)
   const [forceReplace, setForceReplace] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<OperationPlan | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [busy, setBusy] = useState(false)
+
+  const availableSkillIDs = new Set(fullCatalog.data?.skills.map((skill) => skill.identifier))
+  const unavailableSkillIDs = fullCatalog.data ? selectedSkillIDs.filter((id) => !availableSkillIDs.has(id)) : []
+  const mutationBlocked = busy || skills.loading || !!skills.error || fullCatalog.loading || !!fullCatalog.error || !fullCatalog.data || unavailableSkillIDs.length > 0
+  const batchTargetsValid = batchTargets.length > 0 && batchTargets.every((target) => fullCatalog.data?.targets.some((supported) => supported.id === target))
 
   const projectBase = project ? `/api/v1/projects/${project.id}` : ''
 
@@ -115,13 +127,22 @@ export function App() {
   }
 
   const loadSkills = async (searchTerm = query) => {
-    if (!token) return
+    if (!token || busy || skills.loading) return
     setSkills((current) => ({ ...current, loading: true, error: null }))
+    setFullCatalog((current) => ({ ...current, loading: true, error: null }))
+    setBatchPreview(null)
     try {
-      const result = await get<InstallationCatalog>(token, `/api/catalog?q=${encodeURIComponent(searchTerm)}`)
+      // Availability always comes from an unfiltered catalog, even during a search.
+      const fullRequest = get<InstallationCatalog>(token, '/api/catalog?q=')
+      const [result, fullResult] = await Promise.all([
+        searchTerm ? get<InstallationCatalog>(token, `/api/catalog?q=${encodeURIComponent(searchTerm)}`) : fullRequest,
+        fullRequest,
+      ])
       setSkills({ data: result, loading: false, error: null })
+      setFullCatalog({ data: fullResult, loading: false, error: null })
     } catch (error) {
       setSkills({ data: null, loading: false, error })
+      setFullCatalog({ data: null, loading: false, error })
     }
   }
 
@@ -198,15 +219,56 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, project])
 
-  const createActivationPlan = async (skill: Skill) => {
-    if (!token || !project) return
+  const createActivationPlan = async () => {
+    if (!token || !project || mutationBlocked || pendingPlan || selectionAction !== 'activate' || !targets.length) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/activate`, {
-        skillIdentifiers: [skill.identifier],
+        skillIdentifiers: selectedSkillIDs,
         targetAgents: targets,
         ...(forceReplace ? { conflictStrategy: 'replace', forceConfirmed: true } : {}),
       }),
-      (result) => setPendingPlan(result.plan),
+      (result) => { setPendingPlan(result.plan); setPendingActivation(true) },
+    )
+  }
+
+  const batchPayload = () => ({ skillIds: selectedSkillIDs, targets: batchTargets, replaceConflicts: batchReplaceConflicts })
+
+  const createBatchPreview = async () => {
+    if (!token || mutationBlocked || pendingPlan || selectionAction !== 'batch-install' || !batchTargetsValid) return
+    setBatchPreview(null)
+    await runRequest(
+      () => post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload()),
+      (result) => setBatchPreview(result.preview),
+    )
+  }
+
+  const applyBatchPreview = async () => {
+    if (!token || !batchPreview || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid) return
+    await runRequest(
+      async () => {
+        try {
+          const result = await post<InstallationApplyResult>(token, '/api/install/apply', { previewId: batchPreview.id })
+          if (!result.result.applied) throw new Error('Installation could not be completed.')
+          return { stale: false as const }
+        } catch (error) {
+          setBatchPreview(null)
+          if (!(error instanceof APIError) || error.status !== 409) throw error
+          const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload())
+          return { stale: true as const, preview: result.preview }
+        }
+      },
+      (result) => {
+        if (result.stale) {
+          setBatchPreview(result.preview)
+          setToast({ kind: 'success', text: 'The project changed after preview. Review this updated plan, then confirm again.' })
+          return
+        }
+        setBatchPreview(null)
+        setSelectedSkillIDs([])
+        setToast({ kind: 'success', text: 'Selected Skills installed successfully.' })
+        if (project) void loadWorkspace(project.id)
+        void loadLatest()
+      },
     )
   }
 
@@ -214,7 +276,7 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/remove`, { skillIdentifier: resource.identifier, targetAgent: resource.target }),
-      (result) => setPendingPlan(result.plan),
+      (result) => { setPendingPlan(result.plan); setPendingActivation(false); setBatchPreview(null) },
     )
   }
 
@@ -222,22 +284,25 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/undo`, {}),
-      (result) => setPendingPlan(result.plan),
+      (result) => { setPendingPlan(result.plan); setPendingActivation(false); setBatchPreview(null) },
     )
   }
 
   const executePlan = async () => {
-    if (!token || !pendingPlan) return
+    if (!token || !pendingPlan || (pendingActivation && (mutationBlocked || selectionAction !== 'activate'))) return
     await runRequest(
       () => post<{ operation: string; status: string }>(token, `/api/v1/plans/${pendingPlan.id}/execute`, {}),
       (result) => {
         setPendingPlan(null)
+        if (pendingActivation) setSelectedSkillIDs([])
+        setPendingActivation(false)
         setToast({ kind: 'success', text: '{operation} completed and journaled.', values: { operation: operationLabel(result.operation, translateMessage) } })
         if (project) void loadWorkspace(project.id)
         void loadLatest()
       },
       (error) => {
         setPendingPlan(null)
+        setPendingActivation(false)
         setToast({ kind: 'error', error })
         if (project) void loadWorkspace(project.id)
         void loadLatest()
@@ -251,6 +316,7 @@ export function App() {
       () => post<{ status: string }>(token, `/api/v1/plans/${pendingPlan.id}/cancel`, {}),
       () => {
         setPendingPlan(null)
+        setPendingActivation(false)
         setToast({ kind: 'success', text: 'The pending plan was cancelled.' })
       },
     )
@@ -315,7 +381,7 @@ export function App() {
       </div>}
 
       {!project ? <ProjectRegistration path={projectPath} setPath={setProjectPath} onSubmit={registerProject} busy={busy} /> : <>
-        {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
+        {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} canExecute={!pendingActivation || !mutationBlocked} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
         {view === 'workspace' && <Workspace
           page={workspace}
           onActivate={openWorkspaceSkill}
@@ -327,7 +393,11 @@ export function App() {
           recommendations={recommendations}
           selectedSkillIDs={selectedSkillIDs}
           selectionAction={selectionAction}
-          onToggleSkill={(identifier) => setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier))}
+          unavailableSkillIDs={unavailableSkillIDs}
+          mutationBlocked={mutationBlocked || !!pendingPlan}
+          inputsLocked={busy || pendingActivation}
+          onRetryRecommendations={() => void loadRecommendations(project.id)}
+          onToggleSkill={(identifier) => { setBatchPreview(null); setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier)) }}
           query={query}
           setQuery={setQuery}
           onSearch={(event) => { event.preventDefault(); void loadSkills(query) }}
@@ -335,9 +405,19 @@ export function App() {
           onSelect={(skill) => { if (skill) void openSkill(skill); else setSelectedSkill(null) }}
           targets={targets}
           onToggleTarget={(target) => setTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target])}
+          supportedTargets={fullCatalog.data?.targets ?? []}
+          batchTargets={batchTargets}
+          onToggleBatchTarget={(target) => { setBatchPreview(null); setBatchTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target]) }}
+          batchReplaceConflicts={batchReplaceConflicts}
+          setBatchReplaceConflicts={(value) => { setBatchPreview(null); setBatchReplaceConflicts(value) }}
+          batchTargetsValid={batchTargetsValid}
+          batchPreview={batchPreview}
+          onPreviewInstallation={() => void createBatchPreview()}
+          onApplyInstallation={() => void applyBatchPreview()}
+          onCancelInstallation={() => setBatchPreview(null)}
           forceReplace={forceReplace}
           setForceReplace={setForceReplace}
-          onActivate={(skill) => void createActivationPlan(skill)}
+          onActivate={() => void createActivationPlan()}
           busy={busy}
         />}
         {view === 'subagents' && <SubAgentsPage page={subagents} />}
@@ -434,11 +514,15 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
   </div>
 }
 
-function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, onToggleSkill, query, setQuery, onSearch, selected, onSelect, targets, onToggleTarget, forceReplace, setForceReplace, onActivate, busy }: {
+function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, unavailableSkillIDs, mutationBlocked, inputsLocked, onRetryRecommendations, onToggleSkill, query, setQuery, onSearch, selected, onSelect, targets, onToggleTarget, supportedTargets, batchTargets, onToggleBatchTarget, batchReplaceConflicts, setBatchReplaceConflicts, batchTargetsValid, batchPreview, onPreviewInstallation, onApplyInstallation, onCancelInstallation, forceReplace, setForceReplace, onActivate, busy }: {
   page: PageState<InstallationCatalog>
   recommendations: PageState<RecommendationResult>
   selectedSkillIDs: string[]
   selectionAction: SkillSelectionAction
+  unavailableSkillIDs: string[]
+  mutationBlocked: boolean
+  inputsLocked: boolean
+  onRetryRecommendations: () => void
   onToggleSkill: (identifier: string) => void
   query: string
   setQuery: (value: string) => void
@@ -447,22 +531,55 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   onSelect: (skill: Skill | null) => void
   targets: string[]
   onToggleTarget: (target: string) => void
+  supportedTargets: InstallationCatalog['targets']
+  batchTargets: string[]
+  onToggleBatchTarget: (target: string) => void
+  batchReplaceConflicts: boolean
+  setBatchReplaceConflicts: (value: boolean) => void
+  batchTargetsValid: boolean
+  batchPreview: InstallationPreview | null
+  onPreviewInstallation: () => void
+  onApplyInstallation: () => void
+  onCancelInstallation: () => void
   forceReplace: boolean
   setForceReplace: (value: boolean) => void
-  onActivate: (skill: Skill) => void
+  onActivate: () => void
   busy: boolean
 }) {
   const { t, message } = useLanguage()
   return <>
     <p data-selection-action={selectionAction} aria-live="polite">{t('{count} selected', { count: selectedSkillIDs.length })}</p>
+    {selectedSkillIDs.length > 0 && <section className={styles.panel} aria-label={t('Selected Skills')}>
+      <ul>{selectedSkillIDs.map((identifier) => <li key={identifier}>
+        <span>{identifier}{unavailableSkillIDs.includes(identifier) ? ` · ${t('Unavailable')}` : ''}</span>
+        <button type="button" disabled={inputsLocked} aria-label={t('Deselect {identifier}', { identifier })} onClick={() => onToggleSkill(identifier)}>×</button>
+      </li>)}</ul>
+      {selectionAction === 'activate' && <>
+        <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Activation targets')}</legend><div className={styles.targetChecks}>{['claude-code', 'codex', 'pi'].map((target) => <label key={target}><input type="checkbox" checked={targets.includes(target)} onChange={() => onToggleTarget(target)} /><span>{target}</span></label>)}</div></fieldset>
+        <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={forceReplace} onChange={(event) => setForceReplace(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span><small>{t('Requires this separate confirmation and is recorded in the review plan.')}</small></label>
+        <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !targets.length} onClick={onActivate}>{t('Review activation plan')}</button>
+      </>}
+      {selectionAction === 'batch-install' && <>
+        <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Installation targets')}</legend><div className={styles.targetChecks}>{supportedTargets.map((target) => <label key={target.id}><input type="checkbox" checked={batchTargets.includes(target.id)} onChange={() => onToggleBatchTarget(target.id)} /><span>{target.label}</span></label>)}</div></fieldset>
+        <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={batchReplaceConflicts} onChange={(event) => setBatchReplaceConflicts(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span></label>
+        <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onPreviewInstallation}>{t('Preview installation')}</button>
+      </>}
+    </section>}
+    {batchPreview && <section className={styles.reviewPanel} aria-labelledby="installation-review-title">
+      <h2 id="installation-review-title">{t('Review installation')}</h2>
+      <p>{batchPreview.skillIds.join(', ')} → {batchPreview.targets.join(', ')}</p>
+      <ol className={styles.changeList}>{(batchPreview.plan.changes ?? []).map((change, index) => <li key={`${change.path}-${index}`}><div><strong>{change.action}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
+      {(batchPreview.plan.warnings ?? []).map((warning, index) => <p className={styles.inlineWarning} key={index}>{warning}</p>)}
+      <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onApplyInstallation}>{t('Confirm installation')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancelInstallation}>{t('Cancel installation')}</button></div>
+    </section>}
     <section className={styles.panel} aria-label={t('Recommended Skills')}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOMMENDED SKILLS')}</span></div>
-      {recommendations.loading ? <LoadingState label={t('Reading this project…')} /> : recommendations.error ? <ErrorState error={recommendations.error} /> : recommendations.data?.scopes.some((scope) => scope.recommendations.length) ? <>
+      {recommendations.loading ? <LoadingState label={t('Reading this project…')} /> : recommendations.error ? <><ErrorState error={recommendations.error} /><button type="button" className={styles.secondaryButton} onClick={onRetryRecommendations}>{t('Retry recommendations')}</button></> : recommendations.data?.scopes.some((scope) => scope.recommendations.length) ? <>
         {!recommendations.data.scanComplete && <div className={styles.inlineWarning}>{t('Partial scan · review scan diagnostics')}</div>}
         {recommendations.data.scopes.map((scope, scopeIndex) => <div key={`${scope.path}-${scopeIndex}`}>
           <p className={styles.mutedText}>{scope.path}</p>
           {scope.recommendations.map((item, itemIndex) => <article className={styles.recommendationRow} key={`${item.identifier}-${itemIndex}`}>
-            <input type="checkbox" aria-label={t('Select {identifier}', { identifier: item.identifier })} checked={selectedSkillIDs.includes(item.identifier)} onChange={() => onToggleSkill(item.identifier)} />
+            <input type="checkbox" aria-label={t('Select {identifier}', { identifier: item.identifier })} checked={selectedSkillIDs.includes(item.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(item.identifier)} />
             <div><strong>{item.identifier}</strong><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span></div>
             <div className={styles.recommendationAction}><span className={styles.pill}>{statusLabel(item.confidence, t)} · {item.score}</span><button type="button" className={styles.textButton} onClick={() => onSelect({ identifier: item.identifier, name: item.identifier, description: item.description, tags: [], compatibility: [] })}>{t('Read details →')}</button></div>
           </article>)}
@@ -472,9 +589,9 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
     <div className={styles.libraryLayout}>
     <section className={`${styles.panel} ${styles.libraryPanel}`} aria-label={t('Eligible library')}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.skills.length.toString().padStart(2, '0') ?? '—'}</span></div>
-      <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit">{t('Search')}</button></form>
+      <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit" disabled={busy || page.loading}>{t('Search')}</button></form>
       {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
-        <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} onChange={() => onToggleSkill(skill.identifier)} />
+        <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(skill.identifier)} />
         <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
         <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
       </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
@@ -486,9 +603,6 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
         <div className={styles.metadataRow}><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
         <div className={styles.documentLabel}>{t('SKILL.MD CONTENT')} <span>{t('READ ONLY · NEVER EXECUTED')}</span></div>
         <pre className={styles.skillBody}>{selected.body ?? t('Select a Skill to read its content.')}</pre>
-        <fieldset className={styles.targetFieldset}><legend>{t('Activation targets')}</legend><div className={styles.targetChecks}>{['claude-code', 'codex', 'pi'].map((target) => <label key={target}><input type="checkbox" checked={targets.includes(target)} onChange={() => onToggleTarget(target)} /><span>{target}</span></label>)}</div></fieldset>
-        <label className={styles.forceCheck}><input type="checkbox" checked={forceReplace} onChange={(event) => setForceReplace(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span><small>{t('Requires this separate confirmation and is recorded in the review plan.')}</small></label>
-        <button className={styles.primaryButton} type="button" disabled={busy || !targets.length} onClick={() => onActivate(selected)}>{busy ? t('Preparing preview…') : t('Review activation plan')}</button>
       </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}
     </section>
   </div>
@@ -527,14 +641,14 @@ function OperationsPage({ page, onUndo, busy }: { page: PageState<LatestOperatio
   </section>
 }
 
-function PlanReview({ plan, busy, onExecute, onCancel }: { plan: OperationPlan; busy: boolean; onExecute: () => void; onCancel: () => void }) {
+function PlanReview({ plan, busy, canExecute = true, onExecute, onCancel }: { plan: OperationPlan; busy: boolean; canExecute?: boolean; onExecute: () => void; onCancel: () => void }) {
   const { locale, t, message } = useLanguage()
   return <section className={styles.reviewPanel} aria-labelledby="review-title">
     <div className={styles.reviewTop}><div><span className={styles.kicker}>{t('REVIEW BEFORE APPLYING')}</span><h2 id="review-title">{message(plan.operationRef, plan.operation)}</h2></div><span className={styles.reviewExpiry}>{t('Expires {time}', { time: new Date(plan.expiresAt).toLocaleTimeString(locale) })}</span></div>
     {plan.forceReplacementConfirmed && <div className={styles.forceNotice}>{t('Force replacement confirmed for this plan. Existing conflicting content may be replaced.')}</div>}
     <ol className={styles.changeList}>{plan.changes.map((change, index) => <li key={`${change.path}-${index}`}><span className={styles.changeNumber}>{String(index + 1).padStart(2, '0')}</span><div><strong>{message(change.actionRef, change.action)}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
     {plan.warnings.map((warning, index) => <p className={styles.inlineWarning} key={`${warning}-${index}`}>{message(plan.warningRefs?.[index] ?? undefined, warning)}</p>)}
-    <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={busy} onClick={onExecute}>{busy ? t('Applying…') : t('Confirm and apply')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancel}>{t('Cancel plan')}</button></div>
+    <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={busy || !canExecute} onClick={onExecute}>{busy ? t('Applying…') : t('Confirm and apply')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancel}>{t('Cancel plan')}</button></div>
   </section>
 }
 

@@ -161,6 +161,210 @@ describe('console entry and guarded activation', () => {
     expect(await screen.findByRole('searchbox', { name: 'Search Skills' })).toBeInTheDocument()
   })
 
+  it('uses selected count for guarded actions and explicit batch targets', async () => {
+    const { calls } = installFixture()
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
+    expect(screen.queryByRole('button', { name: 'Review activation plan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Preview installation' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
+    fireEvent.click(screen.getByRole('button', { name: /Go Test/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
+    await screen.findByRole('heading', { name: 'activate selected skills' })
+    expect(JSON.parse(calls.find((call) => call.route.endsWith('/plans/activate'))!.init.body as string)).toEqual({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'] })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel plan' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'activate selected skills' })).not.toBeInTheDocument())
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+    expect(screen.queryByRole('button', { name: 'Review activation plan' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
+    const targets = screen.getByRole('group', { name: 'Installation targets' })
+    expect(within(targets).getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
+    fireEvent.click(within(targets).getByRole('checkbox', { name: 'pi' }))
+    await previewBatch()
+    expect(JSON.parse(calls.find((call) => call.route === '/api/install/preview')!.init.body as string)).toEqual({ skillIds: ['go-helper', 'go-test'], targets: ['pi'], replaceConflicts: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    await waitFor(() => expect(screen.getByText('0 selected')).toBeInTheDocument())
+    expect(JSON.parse(calls.find((call) => call.route === '/api/install/apply')!.init.body as string)).toEqual({ previewId: 'preview-1' })
+    expect(calls.some((call) => call.route.endsWith('/resources'))).toBe(true)
+    expect(calls.some((call) => call.route.endsWith('/operations/latest'))).toBe(true)
+  })
+
+  it.each(['selection', 'targets', 'conflicts'])('removes a batch preview when %s changes', async (input) => {
+    installFixture()
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    if (input === 'selection') fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+    if (input === 'targets') fireEvent.click(within(screen.getByRole('group', { name: 'Installation targets' })).getByRole('checkbox', { name: 'codex' }))
+    if (input === 'conflicts') fireEvent.click(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ }))
+    expect(screen.queryByRole('heading', { name: 'Review installation' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm installation' })).not.toBeInTheDocument()
+  })
+
+  it('requests a fresh preview after stale batch apply and requires a second confirmation', async () => {
+    let applies = 0
+    const { calls } = installFixture((route) => {
+      if (route === '/api/install/apply' && ++applies === 1) return jsonResponse({ stale: true, result: { stale: true, applied: false } }, 409)
+    })
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    await waitFor(() => expect(calls.filter((call) => call.route === '/api/install/preview')).toHaveLength(2))
+    expect(await screen.findByText('The project changed after preview. Review this updated plan, then confirm again.')).toBeInTheDocument()
+    expect(applies).toBe(1)
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    await waitFor(() => expect(screen.getByText('0 selected')).toBeInTheDocument())
+    expect(JSON.parse(calls.filter((call) => call.route === '/api/install/apply')[1].init.body as string)).toEqual({ previewId: 'preview-2' })
+  })
+
+  it('retains batch selection on cancellation and failed apply', async () => {
+    installFixture((route) => route === '/api/install/apply' ? jsonResponse({ error: { code: 'apply_failed', message: 'Apply failed.' } }, 500) : undefined)
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel installation' }))
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Review installation' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+    await screen.findByRole('heading', { name: 'Review installation' })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Apply failed.')
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+  })
+
+  it('retries only recommendations while keeping catalog browsing usable', async () => {
+    let attempts = 0
+    const { calls } = installFixture((route) => route.endsWith('/recommendations') && ++attempts === 1 ? jsonResponse({ error: { code: 'scan_failed', message: 'Scan failed.' } }, 500) : undefined)
+    renderApp()
+    expect(await screen.findByRole('button', { name: /Go Helper/ })).toBeInTheDocument()
+    const recommendations = screen.getByRole('region', { name: 'Recommended Skills' })
+    expect(await within(recommendations).findByRole('alert')).toHaveTextContent('Scan failed.')
+    fireEvent.click(within(recommendations).getByRole('button', { name: 'Retry recommendations' }))
+    await waitFor(() => expect(within(recommendations).queryByRole('alert')).not.toBeInTheDocument())
+    expect(attempts).toBe(2)
+    expect(calls.filter((call) => call.route === '/api/catalog?q=')).toHaveLength(1)
+  })
+
+  it('blocks mutations on catalog failure without removing selection', async () => {
+    let fail = false
+    installFixture((route) => fail && route.startsWith('/api/catalog') ? jsonResponse({ error: { code: 'catalog_failed', message: 'Catalog failed.' } }, 500) : undefined)
+    renderApp()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    fail = true
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Catalog failed.')
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review activation plan' })).toBeDisabled()
+  })
+
+  it('checks availability independently of search and keeps missing selections visible until deselected', async () => {
+    let remove = false
+    const { calls } = installFixture((route) => {
+      if (route === '/api/catalog?q=other') return jsonResponse({ skills: [], targets: supportedTargets })
+      if (route === '/api/catalog?q=' && remove) return jsonResponse({ skills: [operationSkills[0]], targets: supportedTargets })
+    })
+    renderApp()
+    await selectBatch()
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search Skills' }), { target: { value: 'other' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    await screen.findByText('No eligible Skills found')
+    expect(screen.queryByText('go-test · Unavailable')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeEnabled()
+    remove = true
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByText('go-test · Unavailable')).toBeInTheDocument()
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect go-helper' }))
+    expect(screen.getByRole('button', { name: 'Review activation plan' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Deselect go-test' }))
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    expect(calls.filter((call) => call.route === '/api/catalog?q=')).toHaveLength(3)
+  })
+
+  it('renders installation previews with null Go slice fields', async () => {
+    installFixture((route) => route === '/api/install/preview' ? jsonResponse({ preview: { id: 'null-slices', skillIds: ['go-helper', 'go-test'], targets: ['pi'], plan: { operation: 'activate', changes: null, warnings: null } } }) : undefined)
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    expect(screen.getByRole('button', { name: 'Confirm installation' })).toBeEnabled()
+  })
+
+  it('blocks batch mutation when only the unfiltered catalog fails', async () => {
+    let fail = false
+    installFixture((route) => {
+      if (route === '/api/catalog?q=other') return jsonResponse({ skills: [], targets: supportedTargets })
+      if (route === '/api/catalog?q=' && fail) return jsonResponse({ error: { code: 'catalog_failed', message: 'Full catalog failed.' } }, 500)
+    })
+    renderApp()
+    await selectBatch()
+    fail = true
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search Skills' }), { target: { value: 'other' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Full catalog failed.')
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+  })
+
+  it('keeps batch selection when stale preview regeneration fails', async () => {
+    let previews = 0
+    installFixture((route) => {
+      if (route === '/api/install/apply') return jsonResponse({ stale: true }, 409)
+      if (route === '/api/install/preview' && ++previews === 2) return jsonResponse({ error: { code: 'preview_failed', message: 'Fresh preview failed.' } }, 500)
+    })
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Fresh preview failed.')
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm installation' })).not.toBeInTheDocument()
+  })
+
+  it('preserves single activation conflict confirmation and independent target choices', async () => {
+    const { calls } = installFixture()
+    renderApp()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
+    await screen.findByRole('heading', { name: 'activate selected skills' })
+    expect(JSON.parse(calls.find((call) => call.route.endsWith('/plans/activate'))!.init.body as string)).toEqual({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'], conflictStrategy: 'replace', forceConfirmed: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel plan' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'activate selected skills' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+    const batchTargets = screen.getByRole('group', { name: 'Installation targets' })
+    expect(within(batchTargets).getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ })).not.toBeChecked()
+    fireEvent.click(within(batchTargets).getByRole('checkbox', { name: 'pi' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+    const singleTargets = screen.getByRole('group', { name: 'Activation targets' })
+    expect(within(singleTargets).getByRole('checkbox', { name: 'codex' })).toBeChecked()
+    expect(within(singleTargets).getByRole('checkbox', { name: 'pi' })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ })).toBeChecked()
+  })
+
+  it('preserves Skill selection when an Undo review replaces an activation review', async () => {
+    installFixture((route) => {
+      if (route.endsWith('/operations/latest')) return jsonResponse({ latest: { operation: 'activate', resourceKind: 'skill', at: '2026-10-15T00:00:00Z', undoAvailable: true } })
+      if (route.endsWith('/plans/undo')) return jsonResponse({ plan: { id: 'undo-plan', operation: 'undo activate', resourceKind: 'skill', changes: [], warnings: [], expiresAt: '2026-10-15T00:10:00Z' } })
+      if (route.endsWith('/execute')) return jsonResponse({ operation: 'undo activate', status: 'completed' })
+    })
+    renderApp()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
+    await screen.findByRole('heading', { name: 'activate selected skills' })
+    fireEvent.click(screen.getByRole('button', { name: /Operations/ }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review Undo' }))
+    await screen.findByRole('heading', { name: 'undo activate' })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'undo activate' })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+  })
+
   it('bootstraps the token, reads a Skill, reviews its plan, and confirms through the local API', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
     const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: ['go'], compatibility: ['codex'], body: 'Use Go tooling.' }
@@ -195,6 +399,7 @@ describe('console entry and guarded activation', () => {
     fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
     expect(await screen.findByText('Use Go tooling.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
     fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
     expect(await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })).toBeInTheDocument()
     expect(screen.getByText('/workspace/sample/.codex/skills/go-helper')).toBeInTheDocument()
@@ -207,6 +412,7 @@ describe('console entry and guarded activation', () => {
     expect(planCall?.init.body).toBe(JSON.stringify({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'] }))
     expect(calls.some((call) => call.route.includes('tab-secret'))).toBe(false)
     expect(calls.some((call) => call.route.endsWith('/opaque-plan-id/execute'))).toBe(true)
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
   })
 
   it('drops a stale review and asks for a fresh preview after the API rejects execution', async () => {
@@ -236,11 +442,13 @@ describe('console entry and guarded activation', () => {
     await screen.findByText('sample')
     fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Review activation plan' }))
     await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Project state changed. Create a fresh preview.')
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'activate selected skills', level: 2 })).not.toBeInTheDocument()
   })
 
@@ -273,6 +481,7 @@ describe('console entry and guarded activation', () => {
     await screen.findByText('sample')
     fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Review activation plan' }))
     await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
@@ -344,4 +553,45 @@ function renderApp() {
 
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } })
+}
+
+const supportedTargets = [{ id: 'codex', label: 'codex' }, { id: 'pi', label: 'pi' }]
+const operationSkills: Skill[] = [
+  { identifier: 'go-helper', name: 'Go Helper', description: 'Go help', tags: [], compatibility: [] },
+  { identifier: 'go-test', name: 'Go Test', description: 'Go tests', tags: [], compatibility: [] },
+]
+
+function installFixture(override?: (route: string, init: RequestInit) => Response | undefined) {
+  const calls: { route: string; init: RequestInit }[] = []
+  let previews = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const route = String(input)
+    calls.push({ route, init })
+    const response = override?.(route, init)
+    if (response) return response
+    if (route === '/api/v1/system') return jsonResponse({ project: { id: 'project-session-id', name: 'sample', path: '/workspace/sample' } })
+    if (route === '/api/catalog?q=') return jsonResponse({ skills: operationSkills, targets: supportedTargets })
+    if (route.endsWith('/recommendations')) return jsonResponse({ project: '/workspace/sample', scanComplete: true, diagnostics: [], scopes: [] })
+    if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
+    if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
+    if (route.endsWith('/operations/latest')) return jsonResponse({ latest: null })
+    if (route.startsWith('/api/v1/skills/')) return jsonResponse({ skill: operationSkills.find((skill) => route.endsWith(skill.identifier)) })
+    if (route.endsWith('/plans/activate')) return jsonResponse({ plan: { id: 'single-plan', operation: 'activate selected skills', resourceKind: 'skill', changes: [], warnings: [], expiresAt: '2026-10-15T00:10:00Z' } })
+    if (route === '/api/install/preview') return jsonResponse({ preview: { id: `preview-${++previews}`, skillIds: ['go-helper', 'go-test'], targets: ['pi'], plan: { operation: 'activate', changes: [{ path: '/workspace/sample/.pi/skills/go-helper', action: 'create link' }], warnings: [] } } })
+    if (route === '/api/install/apply') return jsonResponse({ result: { applied: true, stale: false } })
+    return jsonResponse({})
+  }))
+  window.history.replaceState(null, '', '/install/#session=tab-secret')
+  return { calls }
+}
+
+async function selectBatch() {
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+  fireEvent.click(within(screen.getByRole('group', { name: 'Installation targets' })).getByRole('checkbox', { name: 'pi' }))
+}
+
+async function previewBatch() {
+  fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+  await screen.findByRole('heading', { name: 'Review installation' })
 }
