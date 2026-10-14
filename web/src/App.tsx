@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { get, post } from './api'
+import { getSkillSelectionAction, toggleSkillSelection, type SkillSelectionAction } from './skillSelection'
 import { bootstrapSession } from './session'
 import { useLanguage } from './i18n'
 import type {
   Agent,
   Finding,
   LatestOperation,
+  InstallationCatalog,
   MessageRef,
   OperationPlan,
   Project,
@@ -17,7 +19,7 @@ import type {
 } from './types'
 import styles from './App.module.css'
 
-type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations' | 'install'
+type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations'
 type PageState<T> = { data: T | null; loading: boolean; error: unknown | null }
 type PlanEnvelope = { plan: OperationPlan }
 type Toast = { kind: 'success'; text: string; values?: Record<string, string | number> } | { kind: 'error'; error: unknown }
@@ -28,7 +30,6 @@ const navItems: { id: View; label: string; eyebrow: string }[] = [
   { id: 'subagents', label: 'SubAgents', eyebrow: '03' },
   { id: 'diagnostics', label: 'Diagnostics', eyebrow: '04' },
   { id: 'operations', label: 'Operations', eyebrow: '05' },
-  { id: 'install', label: 'Skill installation', eyebrow: '06' },
 ]
 
 const initialPage = <T,>(): PageState<T> => ({ data: null, loading: false, error: null })
@@ -38,12 +39,15 @@ export function App() {
   const [token] = useState(() => bootstrapSession())
   const [project, setProject] = useState<Project | null>(null)
   const [projectPath, setProjectPath] = useState('')
-  const [view, setView] = useState<View>('workspace')
+  const [view, setView] = useState<View>(() => /^\/install\/?$/.test(window.location.pathname) ? 'skills' : 'workspace')
   const [workspace, setWorkspace] = useState<PageState<{ agents: Agent[]; recommendations: RecommendationResult; resources: Resource[] }>>(initialPage)
-  const [skills, setSkills] = useState<PageState<Skill[]>>(initialPage)
+  const [skills, setSkills] = useState<PageState<InstallationCatalog>>(initialPage)
   const [subagents, setSubagents] = useState<PageState<{ definitions: SubAgent[]; diagnostics: SubAgentDiagnostic[] }>>(initialPage)
   const [findings, setFindings] = useState<PageState<Finding[]>>(initialPage)
   const [latest, setLatest] = useState<PageState<LatestOperation>>(initialPage)
+  const [recommendations, setRecommendations] = useState<PageState<RecommendationResult>>(initialPage)
+  const [selectedSkillIDs, setSelectedSkillIDs] = useState<string[]>([])
+  const selectionAction: SkillSelectionAction = getSkillSelectionAction(selectedSkillIDs)
   const [query, setQuery] = useState('')
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
   const [targets, setTargets] = useState<string[]>(['codex'])
@@ -113,14 +117,28 @@ export function App() {
   const loadSkills = async (searchTerm = query) => {
     if (!token) return
     setSkills((current) => ({ ...current, loading: true, error: null }))
-    setSelectedSkill(null)
     try {
-      const result = await get<{ skills: Skill[] }>(token, `/api/v1/skills?q=${encodeURIComponent(searchTerm)}`)
-      setSkills({ data: result.skills, loading: false, error: null })
+      const result = await get<InstallationCatalog>(token, `/api/catalog?q=${encodeURIComponent(searchTerm)}`)
+      setSkills({ data: result, loading: false, error: null })
     } catch (error) {
       setSkills({ data: null, loading: false, error })
     }
   }
+
+  const loadRecommendations = useCallback(async (id: string) => {
+    if (!token) return
+    setRecommendations((current) => ({ ...current, loading: true, error: null }))
+    try {
+      const result = await get<RecommendationResult>(token, `/api/v1/projects/${id}/recommendations`)
+      setRecommendations({ data: result, loading: false, error: null })
+    } catch (error) {
+      setRecommendations({ data: null, loading: false, error })
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (project && view === 'skills') void loadRecommendations(project.id)
+  }, [project, view, loadRecommendations])
 
   const openSkill = async (skill: Skill) => {
     setSelectedSkill(skill)
@@ -306,6 +324,10 @@ export function App() {
         />}
         {view === 'skills' && <SkillsPage
           page={skills}
+          recommendations={recommendations}
+          selectedSkillIDs={selectedSkillIDs}
+          selectionAction={selectionAction}
+          onToggleSkill={(identifier) => setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier))}
           query={query}
           setQuery={setQuery}
           onSearch={(event) => { event.preventDefault(); void loadSkills(query) }}
@@ -321,7 +343,6 @@ export function App() {
         {view === 'subagents' && <SubAgentsPage page={subagents} />}
         {view === 'diagnostics' && <DiagnosticsPage page={findings} onRefresh={() => void loadDiagnostics()} />}
         {view === 'operations' && <OperationsPage page={latest} onUndo={() => void createUndoPlan()} busy={busy} />}
-        {view === 'install' && <iframe className={styles.installationFrame} title={t('Skill installation')} src={`/install/?embedded=1#session=${encodeURIComponent(token)}`} />}
       </>}
       <footer className={styles.pageFooter}><span>AGENT MANAGER</span><span>{t('LOCAL SESSION · NO NETWORK CONTENT')}</span></footer>
     </main>
@@ -413,8 +434,12 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
   </div>
 }
 
-function SkillsPage({ page, query, setQuery, onSearch, selected, onSelect, targets, onToggleTarget, forceReplace, setForceReplace, onActivate, busy }: {
-  page: PageState<Skill[]>
+function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, onToggleSkill, query, setQuery, onSearch, selected, onSelect, targets, onToggleTarget, forceReplace, setForceReplace, onActivate, busy }: {
+  page: PageState<InstallationCatalog>
+  recommendations: PageState<RecommendationResult>
+  selectedSkillIDs: string[]
+  selectionAction: SkillSelectionAction
+  onToggleSkill: (identifier: string) => void
   query: string
   setQuery: (value: string) => void
   onSearch: (event: React.FormEvent<HTMLFormElement>) => void
@@ -427,16 +452,34 @@ function SkillsPage({ page, query, setQuery, onSearch, selected, onSelect, targe
   onActivate: (skill: Skill) => void
   busy: boolean
 }) {
-  const { t } = useLanguage()
-  return <div className={styles.libraryLayout}>
-    <section className={`${styles.panel} ${styles.libraryPanel}`}>
-      <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.length.toString().padStart(2, '0') ?? '—'}</span></div>
-      <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit">{t('Search')}</button></form>
-      {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.length ? <div className={styles.skillList}>{page.data.map((skill) => <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} key={skill.identifier} onClick={() => onSelect(skill)}>
-        <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
-      </button>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
+  const { t, message } = useLanguage()
+  return <>
+    <p data-selection-action={selectionAction} aria-live="polite">{t('{count} selected', { count: selectedSkillIDs.length })}</p>
+    <section className={styles.panel} aria-label={t('Recommended Skills')}>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOMMENDED SKILLS')}</span></div>
+      {recommendations.loading ? <LoadingState label={t('Reading this project…')} /> : recommendations.error ? <ErrorState error={recommendations.error} /> : recommendations.data?.scopes.some((scope) => scope.recommendations.length) ? <>
+        {!recommendations.data.scanComplete && <div className={styles.inlineWarning}>{t('Partial scan · review scan diagnostics')}</div>}
+        {recommendations.data.scopes.map((scope, scopeIndex) => <div key={`${scope.path}-${scopeIndex}`}>
+          <p className={styles.mutedText}>{scope.path}</p>
+          {scope.recommendations.map((item, itemIndex) => <article className={styles.recommendationRow} key={`${item.identifier}-${itemIndex}`}>
+            <input type="checkbox" aria-label={t('Select {identifier}', { identifier: item.identifier })} checked={selectedSkillIDs.includes(item.identifier)} onChange={() => onToggleSkill(item.identifier)} />
+            <div><strong>{item.identifier}</strong><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span></div>
+            <div className={styles.recommendationAction}><span className={styles.pill}>{statusLabel(item.confidence, t)} · {item.score}</span><button type="button" className={styles.textButton} onClick={() => onSelect({ identifier: item.identifier, name: item.identifier, description: item.description, tags: [], compatibility: [] })}>{t('Read details →')}</button></div>
+          </article>)}
+        </div>)}
+      </> : <EmptyInline title={t('No matching Skills')} detail={t('Search the eligible library to browse available Skills.')} />}
     </section>
-    <section className={`${styles.panel} ${styles.skillDetailPanel}`}>
+    <div className={styles.libraryLayout}>
+    <section className={`${styles.panel} ${styles.libraryPanel}`} aria-label={t('Eligible library')}>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.skills.length.toString().padStart(2, '0') ?? '—'}</span></div>
+      <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit">{t('Search')}</button></form>
+      {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
+        <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} onChange={() => onToggleSkill(skill.identifier)} />
+        <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
+        <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
+      </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
+    </section>
+    <section className={`${styles.panel} ${styles.skillDetailPanel}`} aria-label={t('Skill detail')}>
       {selected ? <>
         <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL DETAIL / {identifier}', { identifier: selected.identifier })}</span><span className={styles.pill}>{selected.provenance || t('Local library')}</span></div>
         <h2>{selected.name || selected.identifier}</h2><p className={styles.detailLead}>{selected.description}</p>
@@ -449,6 +492,7 @@ function SkillsPage({ page, query, setQuery, onSearch, selected, onSelect, targe
       </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}
     </section>
   </div>
+  </>
 }
 
 function SubAgentsPage({ page }: { page: PageState<{ definitions: SubAgent[]; diagnostics: SubAgentDiagnostic[] }> }) {

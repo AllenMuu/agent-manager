@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { LanguageProvider } from './i18n'
@@ -63,6 +63,104 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByText('Any')).toBeInTheDocument()
   })
 
+  it('unifies ordered recommendations, catalog selection, search, and one detail panel', async () => {
+    const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
+    const skill: Skill = { identifier: 'shared', name: 'Shared Skill', description: 'Catalog shared entry', tags: ['go'], compatibility: ['codex'], body: 'Shared detail content.' }
+    const recommendations = {
+      project: project.path, scanComplete: true, diagnostics: [],
+      scopes: ['z', 'a'].map((scope, scopeIndex) => ({
+        path: `${project.path}/${scope}`, status: 'detected', technologies: [], evidence: [], diagnostics: [], nextAction: 'none',
+        recommendations: Array.from({ length: scopeIndex === 0 ? 2 : 5 }, (_, index) => ({
+          identifier: scopeIndex === 0 && index === 0 ? 'shared' : `${scope}-${index}`, description: `${scope} item ${index}`,
+          matchReason: 'fallback reason', matchReasonRef: { key: 'recommendation.matched_evidence' }, matchingEvidence: [{ technology: 'go', field: 'tags' }], confidence: 'high', score: index + 3,
+        })),
+      })),
+    }
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      calls.push(route)
+      if (route === '/api/v1/system') return jsonResponse({ project })
+      if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
+      if (route.endsWith('/recommendations')) return jsonResponse(recommendations)
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [skill], targets: [{ id: 'codex', label: 'Codex' }] })
+      if (route === '/api/catalog?q=other') return jsonResponse({ skills: [], targets: [{ id: 'codex', label: 'Codex' }] })
+      if (route === '/api/v1/skills/shared') return jsonResponse({ skill })
+      return jsonResponse({})
+    }))
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    await screen.findByText('sample')
+    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
+    const recommended = await screen.findByRole('region', { name: 'Recommended Skills' })
+    const catalog = screen.getByRole('region', { name: 'Eligible library' })
+    await within(recommended).findByRole('checkbox', { name: 'Select shared' })
+    expect(recommended.compareDocumentPosition(catalog) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(recommended).getAllByRole('checkbox').map((item) => item.getAttribute('aria-label'))).toEqual(['Select shared', 'Select z-1', 'Select a-0', 'Select a-1', 'Select a-2', 'Select a-3', 'Select a-4'])
+    expect(within(recommended).getAllByText('Matched project evidence: go · tags')).toHaveLength(7)
+    expect(within(recommended).getAllByText('High · 3')).toHaveLength(2)
+    expect(within(recommended).getByText('/workspace/sample/z')).toBeInTheDocument()
+    expect(within(recommended).getByText('/workspace/sample/a')).toBeInTheDocument()
+    expect(screen.getByRole('searchbox', { name: 'Search Skills' })).toBeInTheDocument()
+    expect(screen.getAllByRole('region', { name: 'Skill detail' })).toHaveLength(1)
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    const recommendationSelection = within(recommended).getByRole('checkbox', { name: 'Select shared' })
+    const catalogSelection = await within(catalog).findByRole('checkbox', { name: 'Select shared' })
+    fireEvent.click(recommendationSelection)
+    expect(catalogSelection).toBeChecked()
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    fireEvent.click(catalogSelection)
+    expect(recommendationSelection).not.toBeChecked()
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    fireEvent.click(within(recommended).getAllByRole('button', { name: 'Read details →' })[0])
+    expect(await screen.findByText('Shared detail content.')).toBeInTheDocument()
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    fireEvent.click(within(catalog).getByRole('button', { name: /Shared Skill/ }))
+    expect(await screen.findByText('Shared detail content.')).toBeInTheDocument()
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    fireEvent.click(recommendationSelection)
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search Skills' }), { target: { value: 'other' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    await waitFor(() => expect(within(catalog).queryByRole('checkbox')).not.toBeInTheDocument())
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    expect(recommendationSelection).toBeChecked()
+    expect(calls).toContain('/api/catalog?q=other')
+    expect(calls.some((route) => route.includes('/plans/') || route.includes('/api/install'))).toBe(false)
+    expect(screen.queryByRole('button', { name: /Skill installation/ })).not.toBeInTheDocument()
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it('keeps the catalog available when the recommendation service fails', async () => {
+    const skill: Skill = { identifier: 'local', name: 'Local Skill', description: 'Available locally', tags: [], compatibility: [] }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({ project: { id: 'project-session-id', name: 'sample', path: '/workspace/sample' } })
+      if (route.endsWith('/recommendations')) return jsonResponse({ error: { code: 'scan_failed', message: 'Recommendation scan failed.' } }, 500)
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [skill], targets: [] })
+      return jsonResponse({})
+    }))
+    window.history.replaceState(null, '', '/install/#session=tab-secret')
+    renderApp()
+    expect(await screen.findByRole('button', { name: /Local Skill/ })).toBeInTheDocument()
+    const recommended = screen.getByRole('region', { name: 'Recommended Skills' })
+    expect(await within(recommended).findByRole('alert')).toHaveTextContent('Recommendation scan failed.')
+  })
+
+  it('opens Skills for the compatibility installation pathname', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({ project: { id: 'project-session-id', name: 'sample', path: '/workspace/sample' } })
+      if (route.endsWith('/recommendations')) return jsonResponse({ scopes: [], scanComplete: true, diagnostics: [] })
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [], targets: [] })
+      return jsonResponse({})
+    }))
+    window.history.replaceState(null, '', '/install/#session=tab-secret')
+    renderApp()
+    expect(screen.getByRole('button', { name: /Skills/ })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('searchbox', { name: 'Search Skills' })).toBeInTheDocument()
+  })
+
   it('bootstraps the token, reads a Skill, reviews its plan, and confirms through the local API', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
     const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: ['go'], compatibility: ['codex'], body: 'Use Go tooling.' }
@@ -80,7 +178,7 @@ describe('console entry and guarded activation', () => {
       else if (route.endsWith('/agents')) payload = { agents: [] }
       else if (route.endsWith('/recommendations')) payload = { project: project.path, scanComplete: true, diagnostics: [], scopes: [] }
       else if (route.endsWith('/resources')) payload = { resources: [] }
-      else if (route === '/api/v1/skills?q=') payload = { skills: [{ ...skill, body: undefined }] }
+      else if (route === '/api/catalog?q=') payload = { skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] }
       else if (route === '/api/v1/skills/go-helper') payload = { skill }
       else if (route.endsWith('/plans/activate')) payload = { plan }
       else if (route.endsWith('/execute')) payload = { operation: plan.operation, status: 'completed' }
@@ -125,7 +223,7 @@ describe('console entry and guarded activation', () => {
       if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
       if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
       if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
-      if (route === '/api/v1/skills?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }] })
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] })
       if (route === '/api/v1/skills/go-helper') return jsonResponse({ skill })
       if (route.endsWith('/plans/activate')) return jsonResponse({ plan })
       if (route.endsWith('/execute')) return jsonResponse({ error: { code: 'stale_plan', message: 'Project state changed. Create a fresh preview.' } }, 409)
@@ -162,7 +260,7 @@ describe('console entry and guarded activation', () => {
       if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
       if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
       if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
-      if (route === '/api/v1/skills?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }] })
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] })
       if (route === '/api/v1/skills/go-helper') return jsonResponse({ skill })
       if (route.endsWith('/plans/activate')) return jsonResponse({ plan })
       if (route.endsWith('/execute')) return jsonResponse({ error: { code: 'journal_committed', message: 'The operation was applied and its journal record was published.' } }, 500)

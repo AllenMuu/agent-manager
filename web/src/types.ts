@@ -85,3 +85,11 @@ export type LatestOperation = {
   undoAvailable: boolean
   undoPreview?: { operation: string; operationRef?: MessageRef; changes: PlanChange[]; warnings: string[]; warningRefs?: (MessageRef | null)[] }
 } | null
+
+export type InstallationCatalog = { skills: Skill[]; targets: { id: string; label: string }[] }
+export type InstallationPreview = {
+  id: string
+  skillIds: string[]
+  targets: string[]
+  plan: { operation: string; changes: { path: string; action: string; detail?: string }[]; warnings: string[] }
+}
