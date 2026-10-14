@@ -62,3 +62,31 @@ func TestTrustedAccessResolvesPrivateFileSecretOnlyAfterAuthorizedRead(t *testin
 		t.Fatal("private reference escaped")
 	}
 }
+
+func TestLoadAccessAcceptsPiWithExplicitProjectOwner(t *testing.T) {
+	root := t.TempDir()
+	access := filepath.Join(root, "pi-access.json")
+	data := []byte(`{"agent":"pi","owner":{"kind":"PROJECT","projectId":"shared-project"},"allowWeakWrites":true,"provider":{"version":"v1","id":"shared","provider":"mem0","configuration":{"kind":"file","name":"/private/provider.json"},"scopes":["project"]}}`)
+	if err := os.WriteFile(access, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := memoryintegration.LoadAccess(access)
+	if err != nil {
+		t.Fatalf("Pi project access rejected: %v", err)
+	}
+	if config.Agent != "pi" || config.Owner.ProjectID != "shared-project" || !config.AllowWeakWrites {
+		t.Fatalf("Pi access was changed: %+v", config.SessionConfig)
+	}
+}
+
+func TestLoadAccessRejectsClaudeOutsideIssue23Scope(t *testing.T) {
+	root := t.TempDir()
+	access := filepath.Join(root, "claude-access.json")
+	data := []byte(`{"agent":"claude-code","owner":{"kind":"PROJECT","projectId":"shared-project"},"provider":{"version":"v1","id":"shared","provider":"mem0","configuration":{"kind":"file","name":"/private/provider.json"},"scopes":["project"]}}`)
+	if err := os.WriteFile(access, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryintegration.LoadAccess(access); err == nil {
+		t.Fatal("Claude access unexpectedly included in the Codex/Pi issue scope")
+	}
+}

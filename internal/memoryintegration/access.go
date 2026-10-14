@@ -29,7 +29,7 @@ func LoadAccess(path string) (AccessConfig, error) {
 	if memory.ValidateCanonicalJSON(data) != nil || d.Decode(&c) != nil || d.Decode(new(any)) != io.EOF {
 		return c, memory.ErrInvalidInput
 	}
-	if c.Agent != "codex" && c.Agent != "claude-code" || c.Owner.Kind != memory.OwnerProject || memory.ValidateOwner(c.Owner) != nil || c.Provider.Validate() != nil {
+	if c.Agent != "codex" && c.Agent != "pi" || c.Owner.Kind != memory.OwnerProject || memory.ValidateOwner(c.Owner) != nil || c.Provider.Validate() != nil {
 		return c, memory.ErrInvalidInput
 	}
 	hasProject := false

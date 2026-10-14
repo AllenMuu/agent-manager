@@ -61,7 +61,7 @@ type arguments struct {
 }
 
 func NewServer(g *memory.Gateway, c SessionConfig) (*mcp.Server, error) {
-	if g == nil || memory.ValidateOwner(c.Owner) != nil || c.Owner.Kind != memory.OwnerProject || (c.Agent != "codex" && c.Agent != "claude-code") {
+	if g == nil || memory.ValidateOwner(c.Owner) != nil || c.Owner.Kind != memory.OwnerProject || (c.Agent != "codex" && c.Agent != "pi") {
 		return nil, memory.ErrInvalidInput
 	}
 	support := g.IntegrationCapabilities(c.Owner)
@@ -94,6 +94,9 @@ func NewServer(g *memory.Gateway, c SessionConfig) (*mcp.Server, error) {
 	calls := 0
 	previews := map[string]memory.WeakPreview{}
 	add := func(name, description string, properties map[string]any, required []string, action func(context.Context, arguments) (any, error)) {
+		if required == nil {
+			required = []string{}
+		}
 		server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			finish := func(value any, err error) *mcp.CallToolResult {
 				if c.Observer != nil {

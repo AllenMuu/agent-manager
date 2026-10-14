@@ -1,4 +1,4 @@
-# Explicit shared Memory access for Codex and Claude Code
+# Explicit shared Memory access for Codex and Pi
 
 The opt-in stdio MCP delivery client exposes one authorized PROJECT owner through
 one Memory Gateway. It does not install native configuration, copy canonical
@@ -34,8 +34,11 @@ verified separately.
 
 Select the existing registered project identity when granting access to an
 existing project; a synthetic demo may use an explicitly selected isolated
-PROJECT owner. Do not put `agentId` into the owner merely to distinguish Codex
-from Claude: that would partition their data. The `claude-code` access file uses
+PROJECT owner. The Issue #23 native acceptance runner additionally requires
+its synthetic `projectId` to begin with `issue23-`; choose a fresh isolated
+value for each run. This naming check is a fail-closed scope guard, not an
+authorization mechanism. Do not put `agentId` into the owner merely to
+distinguish Codex or Pi: that would partition their data. Each agent access file uses
 the same owner/provider and separately chosen write permission. Provider selection
 uses the existing [Mem0 opt-in configuration](mem0-memory-provider.md), including the
 explicit tested contract and `allowNetwork`. For this server, an external secret
@@ -48,12 +51,17 @@ committed files. Ordinary factory selection retains its environment-secret defau
 agent-manager memory integration-status --access /private/operator/codex-access.json
 agent-manager memory integration-config --agent codex \
   --binary /absolute/agent-manager --access /private/operator/codex-access.json
-agent-manager memory integration-config --agent claude-code \
-  --binary /absolute/agent-manager --access /private/operator/claude-access.json
+agent-manager memory integration-config --agent pi \
+  --binary /absolute/agent-manager --access /private/operator/pi-access.json
 ```
 
 These commands print status or access-only native snippets. They do not write
-`AGENTS.md`, `CLAUDE.md`, private memory files, or global native configuration.
+project instructions, private memory files, or global native configuration.
+Pi's snippet is a project `.mcp.json` for [`pi-mcp-adapter`](https://github.com/nicobailon/pi-mcp-adapter):
+it limits direct tools to the six Memory operations, uses the `mcp` prefix and
+keeps the configured server alive for the session. On Pi versions without built-in
+MCP, install the adapter once with `pi install npm:pi-mcp-adapter`. The CLI does
+not install extensions or dependencies.
 Remove the explicit native session configuration to disable access without
 removing shared records. Run the server directly only as the native stdio child:
 
@@ -120,54 +128,88 @@ acceptance evidence, not a canonical store or private Memory feature.
 
 ## Actual two-agent acceptance
 
-The opt-in runner requires an **already running** pinned Mem0 service, actual
-Codex/Claude binaries, preserved native authentication, and two trusted access
-files. It never starts/installs services or changes account/configuration state.
+The opt-in #23 runner requires an **already running** pinned Mem0 service, actual
+Codex/Pi binaries, preserved native authentication, and two trusted access files.
+It never starts/installs services or changes account/configuration state. This
+delivery covers Codex and Pi only. Parent #7 remains open with its broader
+acceptance checklist; its current Definition of Done names Codex, Pi, or another
+coding agent, and it schedules Claude/Hermes adapters incrementally after #23.
 Run only after explicitly authorizing synthetic weak writes:
 
 ```bash
 python3 scripts/memory-two-agent-demo.py \
   --binary /absolute/agent-manager \
   --codex-access /private/operator/codex-access.json \
-  --claude-access /private/operator/claude-access.json \
+  --pi-access /private/operator/pi-access.json \
+  --pi-binary /absolute/pi \
+  --pi-agent-dir /private/operator/pi-validation-profile \
+  --pi-model gpt-5.6-luna \
   --mem0-source /task-owned/pinned-mem0-source \
   --mem0-python /task-owned/mem0-venv/bin/python \
   --mem0-pid <actual-running-uvicorn-pid> \
   --output /new/private/task-evidence-directory
 ```
 
-The runner verifies process/package/source pin and records binary hash/versions,
-then requires actual native tool results paired with server events: Codex create,
-Claude read the same ID, Claude explicitly replace, both read v2 and separately
-inspect v1 provenance, cross-project denial, and a native read-only status. A
+The runner requires both access files to resolve to the same pinned, numeric
+loopback Mem0 endpoint and file-backed provider configuration. Start the service
+manually from a clean checkout of the pinned source, using the selected virtual
+environment and the exact server application path:
+
+```bash
+cd "$MEM0_SOURCE/server"
+"$MEM0_VENV/bin/python" -B -I -m uvicorn main:app \
+  --app-dir "$MEM0_SOURCE/server" --host 127.0.0.1 --port 8765
+```
+
+Use absolute paths and set `MEM0_SOURCE` to the resolved checkout path; keep the
+virtualenv and acceptance output directory outside that checkout. `-B` prevents
+Python bytecode from dirtying the pinned source while the server runs.
+
+The runner checks that the pinned Git source has no tracked, untracked or ignored
+changes; the process disables bytecode writes and uses isolated Python mode, the
+exact selected virtualenv and `server/main.py`; `uvicorn` resolves from that
+virtualenv; and `mem0` resolves from that virtualenv or the pinned source tree.
+It checks the configured endpoint against the exact listener owned by the
+supplied process ID and reads the process argument vector without flattening
+argument boundaries, so paths containing spaces remain verifiable. It records
+the requested and resolved Python executable paths, resolved application/package
+import paths, package version, source commit, binary hash and agent versions.
+This rejects a different environment that happens to share the same base
+interpreter or an alternate Uvicorn app directory.
+It then requires actual native tool results paired with server events: Codex create, Pi reads the same ID and
+explicitly replaces it, both read v2 and separately inspect v1 provenance, both
+reject cross-project access, and Pi reports its configured read-only status. A
 failed stage stops without write replay or service/model substitution. The output
-directory must be new. Full native logs remain private. Source/package checking
-is independent process evidence, not automatic server version detection.
+directory must be new. Full native logs remain private. Source/package/listener
+checks are independent runtime evidence, not automatic Mem0 API version detection.
 
 Codex uses ephemeral read-only sessions with shell/private memories disabled,
 exact enabled tools and session-only per-tool approval overrides. The tested
-0.157.1 schema supports `tools.<tool>.approval_mode="approve"`. Claude uses strict
-MCP configuration, no builtin tools/private memory/session persistence/chrome or
-Skills, exact allowed MCP names, and session-only disabled hooks/plugins. On the
-tested 2.1.236 installation, empty `--setting-sources` hides existing auth, so the
-runner preserves `user` authentication sources and disables discovered enabled
-plugins via session overrides. Managed settings may override isolation choices;
-the runner verifies actual startup/tool/hook evidence rather than treating flags
-as proof. It refuses unexpected tools/plugins/Skills/hooks.
+0.157.1 schema supports `tools.<tool>.approval_mode="approve"`. Pi runs in JSON
+mode without session persistence, built-in tools, discovered extensions, Skills
+or context files. The runner loads only `pi-mcp-adapter` and a task-owned guard,
+uses an isolated HOME plus a temporary project `.mcp.json`, and refuses proxy
+operations or direct tools outside the configured Memory allowlist. It records
+Pi, adapter and model versions. The runner verifies actual tool/server events;
+flags and configuration alone are not proof.
 
-At the initial #23 checkpoint, Codex and real Mem0 completed a preparatory native
-create/read. Claude reached the configured MCP server but its existing inference
-service rejected requests because its subscription was inactive. No actual
-Claude Memory tool ran. The user chose to restore that same service; this is
-pending, and no provider switch is authorized. The final runner has only help
-and syntax verification so far, not native acceptance. The
-[M5 delivery matrix](research/issue23-memory-delivery-matrix.md) preserves this
-literal gap. Neither #23 nor parent #7 is accepted by offline fixtures alone.
+The native runner passed the Codex/Pi two-agent acceptance on 2026-10-14 against
+Mem0 OSS Python 2.2.1 at commit
+`94c3fe9f238f3dbf29c9ce98643bd71eb13077cd`. It verified Codex creation, Pi read
+and explicit replacement, both agents' v2 recall and separate v1 provenance
+inspection, foreign-project denial for both agents, and Pi's native read-only
+status. The recorded environment includes actual process/import/listener binding
+and both native client versions. Final private evidence, including the rerun
+with API-key environment variables excluded from both child agents, is at
+`/private/tmp/agent-manager-issue23-final/native-evidence-env-sanitized-final2-20261014/`;
+failed attempts and the fixes they exposed are described in the
+[M5 delivery matrix](research/issue23-memory-delivery-matrix.md). This completes
+the #23 Codex/Pi acceptance slice. It provides the real Mem0 cross-agent
+evidence described by #7, while the parent issue remains open for its broader
+acceptance checklist. Claude/Hermes adapters are follow-on work after #23.
 
 Primary protocol sources: [stdio](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
 [lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
 [official SDK pin](https://github.com/modelcontextprotocol/go-sdk/tree/v1.4.0),
 [Codex pinned schema](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/core/config.schema.json),
-[Claude CLI](https://code.claude.com/docs/en/cli-reference),
-[Claude hooks](https://code.claude.com/docs/en/hooks), and
-[auto-memory environment control](https://code.claude.com/docs/en/env-vars).
+[Pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter).

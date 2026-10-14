@@ -103,10 +103,10 @@ Versions are observable metadata counters, not compare-and-swap guarantees.
 No second canonical content mirror is maintained.
 
 
-## Explicit shared stdio delivery (Issue #23 partial checkpoint)
+## Explicit shared stdio delivery (Issue #23 Codex/Pi checkpoint)
 
 A separately configured stdio MCP client uses the same authorized Gateway and
-provider for Codex and Claude Code. Trusted startup agent attribution is separate
+provider for Codex and Pi. Trusted startup agent attribution is separate
 from the shared PROJECT owner; native client labels never establish authority.
 Default role and CLI provider selections remain unchanged. Access snippets do
 not replace project instructions or populate agent-private Memory stores.
@@ -124,7 +124,11 @@ The delivery transport pins official Go MCP SDK v1.4.0 and restricts lifecycle,
 JSON sizes, tool count, previews, deadlines and registered Memory operations.
 Opaque file-secret references resolve inside the server, not native configuration
 or native agent environment. Fixture-tested capability status cannot attest native
-identity or live acceptance. Actual two-agent Mem0 acceptance remains pending
-while the user restores the existing Claude inference subscription. See the
+identity or live acceptance. Actual Codex/Pi Mem0 acceptance passed on 2026-10-14
+against Mem0 OSS Python 2.2.1 at the pinned source commit; details and private
+evidence location are recorded in the [delivery matrix](../research/issue23-memory-delivery-matrix.md).
+Parent #7 remains open with its broader acceptance checklist; its current
+Definition of Done names Codex, Pi, or another coding agent, with Claude/Hermes
+adapters scheduled incrementally after #23. See the
 [access guide](../shared-memory-mcp.md) and
 [exact delivery matrix](../research/issue23-memory-delivery-matrix.md).

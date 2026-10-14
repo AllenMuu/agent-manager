@@ -23,7 +23,7 @@ func TestReadOnlyMCPExposesBoundedSharedRecordAndTruthfulStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	g, _ := memory.NewGateway(p, memory.Access{ReadOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
-	server, err := memoryintegration.NewServer(g, memoryintegration.SessionConfig{Agent: "claude-code", Owner: owner})
+	server, err := memoryintegration.NewServer(g, memoryintegration.SessionConfig{Agent: "pi", Owner: owner})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +71,70 @@ func TestReadOnlyMCPExposesBoundedSharedRecordAndTruthfulStatus(t *testing.T) {
 	json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &status)
 	if status.Write || status.Mechanism != "stdio-mcp" || status.LiveIdentity != "unverified-client-claims" {
 		t.Fatalf("truthful status: %+v", status)
+	}
+}
+
+func TestMCPToolSchemasEncodeEmptyRequiredAsArray(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner := memory.Owner{Kind: memory.OwnerProject, ProjectID: "shared-project"}
+	g, err := memory.NewGateway(memory.NewInMemoryProvider(), memory.Access{
+		ReadOwners: []memory.Owner{owner}, WriteOwners: []memory.Owner{owner}, AllowWeakWrites: true,
+	}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := memoryintegration.NewServer(g, memoryintegration.SessionConfig{Agent: "pi", Owner: owner, AllowWeakWrites: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client, err := mcp.NewClient(&mcp.Implementation{Name: "pi-mcp-adapter", Version: "5.3.0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	listed, err := client.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) < 4 {
+		t.Fatalf("expected Memory tools with weak writes, got %d", len(listed.Tools))
+	}
+	statusFound := false
+	for _, tool := range listed.Tools {
+		encoded, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal(encoded, &wire); err != nil {
+			t.Fatal(err)
+		}
+		var schema map[string]json.RawMessage
+		if err := json.Unmarshal(wire["inputSchema"], &schema); err != nil {
+			t.Fatalf("%s input schema: %v", tool.Name, err)
+		}
+		required, ok := schema["required"]
+		if !ok || string(required) == "null" {
+			t.Fatalf("%s required must be an array, got %s", tool.Name, required)
+		}
+		var fields []string
+		if err := json.Unmarshal(required, &fields); err != nil {
+			t.Fatalf("%s required must be an array: %s", tool.Name, required)
+		}
+		if tool.Name == "memory_status" && len(fields) != 0 {
+			t.Fatalf("memory_status should require no arguments: %v", fields)
+		}
+		statusFound = statusFound || tool.Name == "memory_status"
+	}
+	if !statusFound {
+		t.Fatal("memory_status tool missing")
 	}
 }
 
@@ -178,7 +242,7 @@ func TestSessionEventsUseTrustedAgentAndNeverMirrorCanonicalContent(t *testing.T
 	st, ct := mcp.NewInMemoryTransports()
 	ss, _ := server.Connect(ctx, st, nil)
 	defer ss.Close()
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "claude-code-forged-human", Version: "999"}, nil).Connect(ctx, ct, nil)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "pi-forged-human", Version: "999"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +254,7 @@ func TestSessionEventsUseTrustedAgentAndNeverMirrorCanonicalContent(t *testing.T
 	mu.Lock()
 	b, _ := json.Marshal(events)
 	mu.Unlock()
-	if !bytes.Contains(b, []byte(`"agent":"codex"`)) || bytes.Contains(b, []byte("claude-code-forged-human")) || bytes.Contains(b, []byte("canonical-content-never-in-events")) || !bytes.Contains(b, []byte(`"tool":"memory_get"`)) {
+	if !bytes.Contains(b, []byte(`"agent":"codex"`)) || bytes.Contains(b, []byte("pi-forged-human")) || bytes.Contains(b, []byte("canonical-content-never-in-events")) || !bytes.Contains(b, []byte(`"tool":"memory_get"`)) {
 		t.Fatalf("unsafe or missing observation: %s", b)
 	}
 }
@@ -240,5 +304,55 @@ func TestMCPStartupOwnerCannotBeBroadenedByGatewayOrClientClaims(t *testing.T) {
 	response, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "memory_get", Arguments: map[string]any{"owner": foreign, "id": r.ID}})
 	if err != nil || !response.IsError || response.Content[0].(*mcp.TextContent).Text != "ownership-denied" {
 		t.Fatalf("startup owner broadened: %+v %v", response, err)
+	}
+}
+
+func TestPiMCPUsesTrustedAgentAttribution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner := memory.Owner{Kind: memory.OwnerProject, ProjectID: "shared-project"}
+	var mu sync.Mutex
+	var events []memoryintegration.Event
+	gateway, err := memory.NewGateway(memory.NewInMemoryProvider(), memory.Access{ReadOwners: []memory.Owner{owner}}, memory.RetrievalPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := memoryintegration.NewServer(
+		gateway,
+		memoryintegration.SessionConfig{Agent: "pi", Owner: owner, Observer: func(event memoryintegration.Event) {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+		}},
+	)
+	if err != nil {
+		t.Fatalf("Pi MCP session rejected: %v", err)
+	}
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client, err := mcp.NewClient(&mcp.Implementation{Name: "pi-mcp-adapter", Version: "5.3.0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "memory_status", Arguments: map[string]any{}})
+	if err != nil || result.IsError {
+		t.Fatalf("Pi MCP status: result=%+v err=%v", result, err)
+	}
+	var status memoryintegration.MechanismStatus
+	if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Agent != "pi" || status.LiveIdentity != "unverified-client-claims" {
+		t.Fatalf("Pi capability status: %+v", status)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) < 2 || events[len(events)-1].Agent != "pi" || events[len(events)-1].Tool != "memory_status" {
+		t.Fatalf("Pi runtime event attribution: %+v", events)
 	}
 }

@@ -3,13 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/AllenMuu/skill-manager/internal/memory"
-	"github.com/AllenMuu/skill-manager/internal/memoryintegration"
-	"github.com/spf13/cobra"
 	"io"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/memoryintegration"
+	"github.com/spf13/cobra"
 )
 
 func newMemoryServeCommand() *cobra.Command {
@@ -59,19 +60,27 @@ func newMemoryServeCommand() *cobra.Command {
 func newMemoryIntegrationConfigCommand() *cobra.Command {
 	var agent, access, binary string
 	cmd := &cobra.Command{Use: "integration-config", Short: "Print access-only native MCP configuration; no private memories or instructions are written", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		if agent != "codex" && agent != "claude-code" || !filepath.IsAbs(access) || !filepath.IsAbs(binary) {
+		if !filepath.IsAbs(access) || !filepath.IsAbs(binary) {
 			return memory.ErrInvalidInput
 		}
-		if agent == "claude-code" {
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"mcpServers": map[string]any{"shared_memory": map[string]any{"command": binary, "args": []string{"memory", "serve-mcp", "--access", access}}}})
+		switch agent {
+		case "pi":
+			server := map[string]any{"command": binary, "args": []string{"memory", "serve-mcp", "--access", access}}
+			server["directTools"] = []string{"memory_get", "memory_search", "memory_retained_history", "memory_status", "memory_preview_weak", "memory_confirm_weak"}
+			server["toolPrefix"] = "mcp"
+			server["lifecycle"] = "keep-alive"
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"mcpServers": map[string]any{"shared_memory": server}})
+		case "codex":
+			// JSON string quoting is also valid TOML basic string syntax for these paths.
+			b, _ := json.Marshal(binary)
+			a, _ := json.Marshal(access)
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "[mcp_servers.shared_memory]\ncommand = %s\nargs = [\"memory\", \"serve-mcp\", \"--access\", %s]\n", b, a)
+			return err
+		default:
+			return memory.ErrInvalidInput
 		}
-		// JSON string quoting is also valid TOML basic string syntax for these paths.
-		b, _ := json.Marshal(binary)
-		a, _ := json.Marshal(access)
-		_, err := fmt.Fprintf(cmd.OutOrStdout(), "[mcp_servers.shared_memory]\ncommand = %s\nargs = [\"memory\", \"serve-mcp\", \"--access\", %s]\n", b, a)
-		return err
 	}}
-	cmd.Flags().StringVar(&agent, "agent", "", "codex or claude-code")
+	cmd.Flags().StringVar(&agent, "agent", "", "codex or pi")
 	cmd.Flags().StringVar(&access, "access", "", "absolute trusted session access file")
 	cmd.Flags().StringVar(&binary, "binary", "", "absolute Agent Manager executable")
 	for _, flag := range []string{"agent", "access", "binary"} {
