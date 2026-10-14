@@ -144,43 +144,55 @@ func TestConsoleAssetsHaveSecurityHeaders(t *testing.T) {
 }
 
 func TestEmbeddedAssetsLoadFromDeepSPARoutes(t *testing.T) {
-	server, err := New(Options{Origin: "http://127.0.0.1:8787", LibraryPath: t.TempDir(), HomeDir: t.TempDir(), DataRoot: t.TempDir()})
+	server, err := New(Options{Origin: "http://127.0.0.1:8787", LibraryPath: t.TempDir(), HomeDir: t.TempDir(), DataRoot: t.TempDir(), ProjectPath: t.TempDir(), SkillInstallation: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := httptest.NewRecorder()
-	server.ServeHTTP(route, httptest.NewRequest(http.MethodGet, "/subagents/reviewer", nil))
-	if route.Code != http.StatusOK {
-		t.Fatalf("deep route status = %d, want 200", route.Code)
+	root := httptest.NewRecorder()
+	server.ServeHTTP(root, httptest.NewRequest(http.MethodGet, "/", nil))
+	if root.Code != http.StatusOK {
+		t.Fatalf("root console status = %d, want 200", root.Code)
 	}
-	markup := route.Body.String()
-	assetsChecked := 0
-	for _, attribute := range []string{`src="`, `href="`} {
-		for remaining := markup; ; {
-			index := strings.Index(remaining, attribute)
-			if index < 0 {
-				break
+	for _, routePath := range []string{"/subagents/reviewer", "/install", "/install/"} {
+		t.Run(routePath, func(t *testing.T) {
+			route := httptest.NewRecorder()
+			server.ServeHTTP(route, httptest.NewRequest(http.MethodGet, routePath, nil))
+			if route.Code != http.StatusOK {
+				t.Fatalf("deep route status = %d, want 200", route.Code)
 			}
-			remaining = remaining[index+len(attribute):]
-			end := strings.IndexByte(remaining, '"')
-			if end < 0 {
-				break
+			markup := route.Body.String()
+			if markup != root.Body.String() {
+				t.Fatalf("route %q did not serve the console index.html", routePath)
 			}
-			asset := remaining[:end]
-			remaining = remaining[end+1:]
-			if !strings.HasPrefix(asset, "/assets/") {
-				continue
+			assetsChecked := 0
+			for _, attribute := range []string{`src="`, `href="`} {
+				for remaining := markup; ; {
+					index := strings.Index(remaining, attribute)
+					if index < 0 {
+						break
+					}
+					remaining = remaining[index+len(attribute):]
+					end := strings.IndexByte(remaining, '"')
+					if end < 0 {
+						break
+					}
+					asset := remaining[:end]
+					remaining = remaining[end+1:]
+					if !strings.HasPrefix(asset, "/assets/") {
+						continue
+					}
+					assetResponse := httptest.NewRecorder()
+					server.ServeHTTP(assetResponse, httptest.NewRequest(http.MethodGet, asset, nil))
+					if assetResponse.Code != http.StatusOK {
+						t.Errorf("deep route asset %q status = %d, want 200", asset, assetResponse.Code)
+					}
+					assetsChecked++
+				}
 			}
-			assetResponse := httptest.NewRecorder()
-			server.ServeHTTP(assetResponse, httptest.NewRequest(http.MethodGet, asset, nil))
-			if assetResponse.Code != http.StatusOK {
-				t.Errorf("deep route asset %q status = %d, want 200", asset, assetResponse.Code)
+			if assetsChecked < 2 {
+				t.Fatalf("deep route markup exposed %d root assets, want script and stylesheet: %s", assetsChecked, markup)
 			}
-			assetsChecked++
-		}
-	}
-	if assetsChecked < 2 {
-		t.Fatalf("deep route markup exposed %d root assets, want script and stylesheet: %s", assetsChecked, markup)
+		})
 	}
 }
 
