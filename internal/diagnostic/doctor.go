@@ -12,6 +12,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/resource"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 // Finding is one non-mutating diagnostic result. Code is a stable,
@@ -457,13 +458,28 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	if err != nil {
 		return operation.Plan{}, err
 	}
-	path := managedResource.Provenance.Source
-	ok, err := skillHandler.Eligible(identifier, path)
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	path, err := repository.IdentityPath(identifier)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	ok, err := skillHandler.ManagesSource(library, identifier, managedResource.Provenance.Source)
 	if err != nil {
 		return operation.Plan{}, err
 	}
 	if !ok {
 		return operation.Plan{}, fmt.Errorf("refusing ineligible library skill %q", identifier)
+	}
+	identityInfo, err := os.Lstat(path)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	identityChecksum, err := skillrepo.ChecksumTree(path)
+	if err != nil {
+		return operation.Plan{}, err
 	}
 	plan := operation.NewPlan("delete library skill")
 	plan.Changes = []operation.Change{{Path: path, Action: "delete library skill"}}
@@ -471,13 +487,21 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	if confirm == nil || !confirm(plan) {
 		return plan, operation.ErrNotConfirmed
 	}
-	// Revalidate after confirmation: an attacker or concurrent process may have
-	// replaced the directory with an unmanaged path while the plan was visible.
-	ok, err = skillHandler.Eligible(identifier, path)
+	// Revalidate the whole identity after confirmation: the user reviewed this
+	// complete repository entry, not only its currently selected version.
+	currentPath, err := repository.IdentityPath(identifier)
 	if err != nil {
 		return plan, err
 	}
-	if !ok {
+	currentInfo, err := os.Lstat(currentPath)
+	if err != nil {
+		return plan, err
+	}
+	currentChecksum, err := skillrepo.ChecksumTree(currentPath)
+	if err != nil {
+		return plan, err
+	}
+	if filepath.Clean(currentPath) != filepath.Clean(path) || !os.SameFile(identityInfo, currentInfo) || identityChecksum != currentChecksum {
 		return plan, operation.ErrUnexpectedState
 	}
 	journal := operation.New(filepath.Join(filepath.Dir(library), ".skill-manager", "journal.json"))
@@ -488,24 +512,89 @@ func DeleteLibrarySkill(library, identifier string, force bool, confirm func(ope
 	if err != nil {
 		return plan, err
 	}
+	// Capture can race with a replacement after confirmation. Verify the same
+	// identity once more before moving it into the private deletion stage.
+	currentInfo, err = os.Lstat(path)
+	if err != nil {
+		return plan, err
+	}
+	currentChecksum, err = skillrepo.ChecksumTree(path)
+	if err != nil {
+		return plan, err
+	}
+	if !os.SameFile(identityInfo, currentInfo) || identityChecksum != currentChecksum {
+		return plan, operation.ErrUnexpectedState
+	}
 	stage, err := os.MkdirTemp(filepath.Dir(path), ".skill-manager-delete-")
 	if err != nil {
 		return plan, err
 	}
-	defer os.RemoveAll(stage)
+	retainStage := false
+	defer func() {
+		if !retainStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
 	moved := filepath.Join(stage, identifier)
 	if err := os.Rename(path, moved); err != nil {
 		return plan, err
 	}
+	movedInfo, err := os.Lstat(moved)
+	if err != nil {
+		retainStage = true
+		return plan, err
+	}
+	movedChecksum, err := skillrepo.ChecksumTree(moved)
+	if err != nil {
+		retainStage = true
+		return plan, err
+	}
+	if !os.SameFile(identityInfo, movedInfo) || identityChecksum != movedChecksum {
+		if _, pathErr := os.Lstat(path); os.IsNotExist(pathErr) {
+			if restoreErr := os.Rename(moved, path); restoreErr != nil {
+				retainStage = true
+				return plan, errors.Join(operation.ErrUnexpectedState, restoreErr)
+			}
+		} else {
+			retainStage = true
+		}
+		return plan, operation.ErrUnexpectedState
+	}
+	if _, err := os.Lstat(path); err == nil {
+		retainStage = true
+		return plan, operation.ErrUnexpectedState
+	} else if !os.IsNotExist(err) {
+		retainStage = true
+		return plan, err
+	}
 	after, err := journal.Capture([]string{path})
 	if err != nil {
-		return plan, errors.Join(err, journal.Restore(before))
+		if _, pathErr := os.Lstat(path); os.IsNotExist(pathErr) {
+			return plan, errors.Join(err, journal.Restore(before))
+		}
+		retainStage = true
+		return plan, errors.Join(err, operation.ErrUnexpectedState)
+	}
+	if len(after) != 1 || after[0].Exists {
+		retainStage = true
+		return plan, operation.ErrUnexpectedState
 	}
 	if err := journal.RecordPlan(plan, before, after); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return plan, err
 		}
-		return plan, errors.Join(err, journal.Restore(before))
+		if _, pathErr := os.Lstat(path); os.IsNotExist(pathErr) {
+			return plan, errors.Join(err, journal.Restore(before))
+		}
+		retainStage = true
+		return plan, errors.Join(err, operation.ErrUnexpectedState)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		retainStage = true
+		return plan, operation.ErrUnexpectedState
+	} else if !os.IsNotExist(err) {
+		retainStage = true
+		return plan, err
 	}
 	if err := os.RemoveAll(moved); err != nil {
 		return plan, err

@@ -25,7 +25,7 @@ func TestSearchCommandRendersDeterministicJSON(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	want := "[{\"identifier\":\"alpha\",\"description\":\"Go tooling\",\"tags\":[\"catalog\"],\"compatibility\":[\"codex\"]},{\"identifier\":\"zebra\",\"description\":\"Go tooling\",\"tags\":[\"go\"],\"compatibility\":[\"codex\"]}]\n"
+	want := "[{\"identifier\":\"alpha\",\"description\":\"Go tooling\",\"tags\":[\"catalog\"],\"compatibility\":[\"codex\"],\"version\":\"unknown\",\"versionKey\":\"legacy\",\"versions\":[{\"version\":\"unknown\",\"key\":\"legacy\",\"trustLevel\":\"unknown\",\"verificationStatus\":\"unknown\",\"tags\":[\"catalog\"],\"compatibility\":[\"codex\"]}],\"trustLevel\":\"unknown\",\"verificationStatus\":\"unknown\"},{\"identifier\":\"zebra\",\"description\":\"Go tooling\",\"tags\":[\"go\"],\"compatibility\":[\"codex\"],\"version\":\"unknown\",\"versionKey\":\"legacy\",\"versions\":[{\"version\":\"unknown\",\"key\":\"legacy\",\"trustLevel\":\"unknown\",\"verificationStatus\":\"unknown\",\"tags\":[\"go\"],\"compatibility\":[\"codex\"]}],\"trustLevel\":\"unknown\",\"verificationStatus\":\"unknown\"}]\n"
 	if got := output.String(); got != want {
 		t.Errorf("JSON output = %q, want %q", got, want)
 	}
@@ -48,8 +48,28 @@ func TestSearchCommandUsesConfiguredLibrary(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if got, want := output.String(), "configured\tsearchable\ttags: tag\tcompatibility: codex\n"; got != want {
+	if got, want := output.String(), "configured\tsearchable\tversion: unknown (key: legacy)\ttags: tag\tcompatibility: codex\tsource: unknown\ttype: unknown\tpublisher: unknown\tref: unknown\tchecksum: unknown\ttrust: unknown\tverification: unknown\n"; got != want {
 		t.Errorf("human output = %q, want %q", got, want)
+	}
+}
+
+func TestSearchCommandDoesNotMergeLegacyLibraryIntoDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeSkill(t, filepath.Join(home, ".agent-manager", "skills"), "canonical", "Canonical helper", "default marker", "new\n")
+	writeSkill(t, filepath.Join(home, ".agents", "skills"), "legacy", "Legacy helper", "default marker", "old\n")
+
+	root := cli.NewRootCommand()
+	output := &bytes.Buffer{}
+	root.SetOut(output)
+	root.SetErr(output)
+	root.SetArgs([]string{"search", "default marker"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got, want := output.String(), "canonical\tdefault marker\tversion: unknown (key: legacy)\ttags: new\tcompatibility: codex\tsource: unknown\ttype: unknown\tpublisher: unknown\tref: unknown\tchecksum: unknown\ttrust: unknown\tverification: unknown\n"; got != want {
+		t.Fatalf("human output = %q, want only canonical library result %q", got, want)
 	}
 }
 

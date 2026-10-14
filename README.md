@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Agent Manager governs local agent resources across a shared Skill library, agent-wide locations, and individual repositories. Its first managed resource domain is Skills: it discovers Skills from a configurable local library, activates them per project through machine-local soft links, and keeps filesystem mutations guarded, journaled, and reversible.
+Agent Manager focuses on project-aware Skills and shared Project Memory across coding agents. Its Skill repository is separate from agent auto-discovery directories; it activates selected versions through guarded, journaled local links. Project Memory follows the Skill core in the product roadmap.
 
 Agent Manager never executes managed-resource code and never installs dependencies.
 
@@ -23,18 +23,34 @@ Choose either interface to install Skills from your configured local library:
 # Install several explicitly selected Skills in one operation
 agent-manager install go-helper review --project . --target codex --yes
 
+# Or activate a Skill globally for selected agents
+agent-manager install go-helper --global --target codex --yes
+
 # Or open the local Web app, then select Skills from its installation tab
 agent-manager web --project .
+```
+
+The default repository is `~/.agent-manager/skills`. To inspect the former
+`~/.agents/skills` library, preview all candidates or a selected batch, then
+copy the displayed confirmation token into the apply command:
+
+```sh
+agent-manager skill import
+agent-manager skill import go-helper
+agent-manager skill import go-helper --confirm-token TOKEN_FROM_PREVIEW --yes
+agent-manager skill versions go-helper
+agent-manager install go-helper --version go-helper=1.2.0 --project . --target codex --yes
 ```
 
 The Web UI is included with the CLI; stop it with `Ctrl+C`.
 
 ## How activation works
 
-- **Skill library** — the authoritative local collection of reusable skills (default `~/.agents/skills`, configurable). Each skill is a directory containing `SKILL.md` and optional companion metadata (`.skill-manager.yaml`).
+- **Skill repository** — the authoritative, configurable local collection at `~/.agent-manager/skills`. Each stable Skill identity stores version directories and `metadata.json`; selected Skills are materialized into agent-owned paths. `~/.agents/skills` is an explicit copy-import source only, never an implicit fallback.
 - **Project activation** — selected skills appear in a repository's agent-recognized skill location (`.claude/skills/<id>`, `.codex/skills/<id>`, or `.pi/skills/<id>`) as absolute soft links into the library. Activation is machine-local by design: it is not a committed manifest and is not portable between machines.
+- **Global activation** — selected skills appear in the current user's agent-level Skill directory as absolute soft links into the library. `--global` is explicit and cannot be combined with `--project`; global links can be listed, removed, and undone with the same guarded journal behavior.
 - **Target agents** — Claude Code, Codex, and Pi have registered Skill adapters. Pi supports Skill placement only; its native layout has no verified SubAgent definition format, so SubAgent installation for Pi is reported as unsupported without a write. A project can activate the same Skill for multiple agents.
-- **Global baseline** — a deliberately small set of resources installed agent-wide. Only `init` touches global locations; project commands never do.
+- **Global Operator baseline** — `init` installs or updates the minimal Operator Skill. Other global Skills are managed explicitly with `install --global`, `list --global`, `remove --global`, and `undo --global`.
 
 ## Build
 
@@ -69,10 +85,10 @@ and the installation UI in `internal/webui/dist`. Their source entry points are
 Agent Manager reads a small YAML file with the Skill library location:
 
 ```yaml
-library: ~/.agents/skills
+  library: ~/.agent-manager/skills
 ```
 
-Pass it with `--config <path>`; without it the default `~/.agents/skills` is used.
+Pass it with `--config <path>`; without it the default `~/.agent-manager/skills` is used. A custom library path replaces that default for the command and is never merged with other locations.
 
 The legacy Memory foundation optionally accepts one file-backed provider with
 read-only discovery. Only an external reference is stored; the referenced file
@@ -113,10 +129,16 @@ remains available.
 agent-manager init --yes            # verify CLI and install the global Operator skill
 agent-manager web --project .      # open the management console and Skill installation tab
 agent-manager search <query>        # find Skills in the library
+agent-manager skill import          # preview legacy ~/.agents/skills candidates
+agent-manager skill versions <id>   # inspect stored versions and provenance
 agent-manager select --project .    # interactive search, multi-select, and activation
-agent-manager add <skill> --project . --target codex --yes
+agent-manager add <skill> --project . --target codex --version <id>=<version> --yes
 agent-manager install go-helper review --project . --target codex --yes
+agent-manager install go-helper --global --target codex --yes
 agent-manager list --project .      # show managed/unmanaged/orphaned Skills
+agent-manager list --global         # inspect global Skill links
+agent-manager remove go-helper --global --target codex --yes
+agent-manager undo --global --yes
 agent-manager agents --project . --json # inspect registered agent adapters
 agent-manager subagents list        # list canonical SubAgent definitions
 agent-manager subagents install <id> --project . --target claude-code --yes
@@ -142,19 +164,20 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `init` | Verify the CLI and install or update the minimal global Operator skill (guarded, confirmed) |
 | `web` | Start the authenticated local Web app with the management console and Skill installation tab on `127.0.0.1` |
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
+| `skill import [skill-id...]` | Preview the legacy `.agents/skills` library; selected entries require the displayed token and `--yes` to copy |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
 | `memory promote` | Explicitly append confirmed text or typed lessons to the configured provider |
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
-| `install <skill-id>...` | Preview and install explicitly selected library Skills in one operation |
-| `list` | Inventory project skills with their status |
-| `remove <skill>` | Remove one managed project link |
+| `install <skill-id>...` | Preview and install explicitly selected Skills into a project or, with `--global`, the current user's global agent directories |
+| `list` | Inventory project skills; use `--global` for global links |
+| `remove <skill>` | Remove one managed project link; use `--global` for a global link |
 | `adopt <skill>` | Move an eligible project skill into the library and link it back |
 | `fork <skill>` | Replace a managed link with an independent project-local copy |
 | `doctor` | Report invalid library entries, orphaned links, unsupported agents, and Git tracking state |
 | `reconcile` | Repair orphaned managed links after a library move (confirmed) |
-| `undo` | Restore the pre-operation state of the latest journaled operation |
+| `undo` | Restore the latest journaled project operation; use `--global` for the global journal |
 | `delete <skill>` | Delete an eligible library skill (requires `--force`, refuses by default) |
 | `agents` | Inventory registered and unsupported local agent locations (read-only) |
 | `roles` | List agent-neutral planner/implementer/reviewer/verifier contracts |
@@ -213,7 +236,7 @@ Every Skill/resource filesystem-mutating command previews its plan, requires con
 SubAgent definitions are read from `<agent-manager-root>/subagents` as versioned,
 agent-neutral YAML. By default, the root is `~/.agents`; use `--root <path>` to
 inspect another root. Skill references are checked against the configured Skill
-library (the default `~/.agents/skills`, or `--config <path>`/`--library <path>`).
+library (the default `~/.agent-manager/skills`, or `--config <path>`/`--library <path>`).
 These inspection commands never render or modify target-native agent files.
 
 The machine-readable `subagents list --json` response is an envelope so registry
@@ -385,9 +408,11 @@ no-network-default, journal, or provider-ownership rules.
 
 ## Roadmap
 
-- **Autonomous delegation** — future work can consume the versioned artifact
-  and role contracts without inventing a runtime-specific task-state format.
-- **Wails** — future desktop packaging for the local Web app.
+The Skill repository, explicit legacy import, version selection, and guarded
+Global/Project materialization are the current priority. Shared Project Memory
+is the following phase; the existing Codex/Pi shared-memory capability remains
+available. See the [product roadmap](docs/product-roadmap.md) for sequencing and
+the runtime/control-plane boundary.
 
 
 The explicitly selected [Mem0 OSS Memory provider](docs/mem0-memory-provider.md)

@@ -1,4 +1,4 @@
-// Package config loads the local Skill Manager configuration.
+// Package config loads the local Agent Manager configuration.
 package config
 
 import (
@@ -104,7 +104,7 @@ func defaultLibraryPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return filepath.Join(home, ".agents", "skills"), nil
+	return filepath.Join(home, ".agent-manager", "skills"), nil
 }
 
 func parseConfiguration(contents string) (string, string, *memory.ProviderConfig, error) {

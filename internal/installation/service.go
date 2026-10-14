@@ -1,5 +1,5 @@
 // Package installation coordinates catalog selection, guarded previews, and
-// project Skill activation for CLI and WebUI clients.
+// Global or Project Skill activation for CLI and WebUI clients.
 package installation
 
 import (
@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/resource"
 )
 
 var (
@@ -29,21 +31,26 @@ var (
 
 const previewLifetime = 5 * time.Minute
 
-// Request identifies Skills and project targets selected by the operator.
+// Request identifies Skills, activation scope, and target agents selected by
+// the operator. Project holds the project root or, for Global, the user's home.
 type Request struct {
 	Project  string            `json:"project"`
+	Global   bool              `json:"global,omitempty"`
 	SkillIDs []string          `json:"skillIds"`
+	Versions map[string]string `json:"versions,omitempty"`
 	Targets  []adapter.Target  `json:"targets"`
 	Options  lifecycle.Options `json:"options"`
 }
 
 // Preview is the immutable plan shown to an operator before installation.
 type Preview struct {
-	ID       string           `json:"id"`
-	Project  string           `json:"project"`
-	SkillIDs []string         `json:"skillIds"`
-	Targets  []adapter.Target `json:"targets"`
-	Plan     operation.Plan   `json:"plan"`
+	ID       string            `json:"id"`
+	Project  string            `json:"project"`
+	Global   bool              `json:"global,omitempty"`
+	SkillIDs []string          `json:"skillIds"`
+	Versions map[string]string `json:"versions,omitempty"`
+	Targets  []adapter.Target  `json:"targets"`
+	Plan     operation.Plan    `json:"plan"`
 }
 
 // ApplyResult distinguishes a completed operation from a stale preview.
@@ -85,11 +92,13 @@ func (s *Service) Preview(session string, request Request) (Preview, error) {
 	if err != nil {
 		return Preview{}, err
 	}
-	life := lifecycle.New(s.LibraryPath, journal(normalized.Project), nil)
-	plan, err := life.PreviewMany(normalized.Project, skills, normalized.Targets, normalized.Options)
+	life := lifecycle.New(s.LibraryPath, journal(normalized.Project, normalized.Global), nil)
+	plan, err := previewLifecycle(life, normalized, skills)
 	preview := Preview{
 		Project:  normalized.Project,
+		Global:   normalized.Global,
 		SkillIDs: append([]string{}, normalized.SkillIDs...),
+		Versions: cloneVersions(normalized.Versions),
 		Targets:  append([]adapter.Target{}, normalized.Targets...),
 		Plan:     plan,
 	}
@@ -128,7 +137,7 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 	delete(s.pending, previewID)
 	s.mu.Unlock()
 
-	operationJournal := journal(pending.request.Project)
+	operationJournal := journal(pending.request.Project, pending.request.Global)
 	unlock, err := operationJournal.LockOperation()
 	if err != nil {
 		return ApplyResult{}, err
@@ -145,10 +154,10 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 		return ApplyResult{}, fmt.Errorf("inspect installation preview state: %w", err)
 	}
 	if state != pending.state {
-		plan, _ := life.PreviewMany(normalized.Project, skills, normalized.Targets, normalized.Options)
+		plan, _ := previewLifecycle(life, normalized, skills)
 		return ApplyResult{Stale: true, Plan: plan}, nil
 	}
-	plan, err := life.ApplyMany(normalized.Project, skills, normalized.Targets, pending.plan, true, normalized.Options)
+	plan, err := applyLifecycle(life, normalized, skills, pending.plan)
 	if errors.Is(err, lifecycle.ErrPlanChanged) {
 		return ApplyResult{Stale: true, Plan: plan}, nil
 	}
@@ -169,6 +178,9 @@ func filesystemState(request Request, skills []catalog.Skill) ([32]byte, error) 
 		for _, target := range request.Targets {
 			a, _ := adapter.For(target)
 			destination := a.ProjectSkillPath(request.Project, skill.Identifier)
+			if request.Global {
+				destination = a.GlobalSkillPath(request.Project, skill.Identifier)
+			}
 			paths = append(paths, destination)
 			fullTree[destination] = true
 			for parent := filepath.Dir(destination); parent != request.Project && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
@@ -198,6 +210,20 @@ func filesystemState(request Request, skills []catalog.Skill) ([32]byte, error) 
 	var result [32]byte
 	copy(result[:], digest.Sum(nil))
 	return result, nil
+}
+
+func previewLifecycle(life *lifecycle.Service, request Request, skills []catalog.Skill) (operation.Plan, error) {
+	if request.Global {
+		return life.PreviewGlobalMany(request.Project, skills, request.Targets, request.Options)
+	}
+	return life.PreviewMany(request.Project, skills, request.Targets, request.Options)
+}
+
+func applyLifecycle(life *lifecycle.Service, request Request, skills []catalog.Skill, expected operation.Plan) (operation.Plan, error) {
+	if request.Global {
+		return life.ApplyGlobalMany(request.Project, skills, request.Targets, expected, true, request.Options)
+	}
+	return life.ApplyMany(request.Project, skills, request.Targets, expected, true, request.Options)
 }
 
 func hashParentPath(digest hash.Hash, path string) error {
@@ -314,19 +340,37 @@ func (s *Service) resolve(request Request) (Request, []catalog.Skill, error) {
 	if len(request.Targets) == 0 {
 		return Request{}, nil, fmt.Errorf("%w: select at least one target agent", ErrInvalidRequest)
 	}
-	project, err := filepath.Abs(request.Project)
+	projectRoot := request.Project
+	if request.Global {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Request{}, nil, fmt.Errorf("resolve current user's home directory: %w", err)
+		}
+		home, err = filepath.Abs(home)
+		if err != nil {
+			return Request{}, nil, fmt.Errorf("resolve current user's home directory: %w", err)
+		}
+		if projectRoot != "" {
+			requestedRoot, err := filepath.Abs(projectRoot)
+			if err != nil || filepath.Clean(requestedRoot) != filepath.Clean(home) {
+				return Request{}, nil, fmt.Errorf("%w: global scope must use the current user's home directory", ErrInvalidRequest)
+			}
+		}
+		projectRoot = home
+	}
+	project, err := filepath.Abs(projectRoot)
 	if err != nil {
-		return Request{}, nil, fmt.Errorf("resolve project path: %w", err)
+		return Request{}, nil, fmt.Errorf("resolve installation root: %w", err)
 	}
 	info, err := os.Stat(project)
 	if err != nil {
-		return Request{}, nil, fmt.Errorf("inspect project %s: %w", project, err)
+		return Request{}, nil, fmt.Errorf("inspect installation root %s: %w", project, err)
 	}
 	if !info.IsDir() {
-		return Request{}, nil, fmt.Errorf("project path %s is not a directory", project)
+		return Request{}, nil, fmt.Errorf("installation root %s is not a directory", project)
 	}
 	if _, err := os.ReadDir(project); err != nil {
-		return Request{}, nil, fmt.Errorf("read project %s: %w", project, err)
+		return Request{}, nil, fmt.Errorf("read installation root %s: %w", project, err)
 	}
 	if request.Options.Conflict != "" && request.Options.Conflict != lifecycle.ConflictReplace {
 		return Request{}, nil, fmt.Errorf("%w: unsupported conflict strategy %q", ErrInvalidRequest, request.Options.Conflict)
@@ -348,6 +392,11 @@ func (s *Service) resolve(request Request) (Request, []catalog.Skill, error) {
 		}
 		seenIDs[id] = true
 	}
+	for id, version := range request.Versions {
+		if !seenIDs[id] || strings.TrimSpace(version) != version || version == "" {
+			return Request{}, nil, fmt.Errorf("%w: version selection must name a selected Skill and a non-empty version", ErrInvalidRequest)
+		}
+	}
 	skills, _, err := catalog.Discover(s.LibraryPath)
 	if err != nil {
 		return Request{}, nil, err
@@ -357,17 +406,43 @@ func (s *Service) resolve(request Request) (Request, []catalog.Skill, error) {
 		byID[skill.Identifier] = skill
 	}
 	selected := make([]catalog.Skill, 0, len(request.SkillIDs))
+	selectedVersions := make(map[string]string, len(request.SkillIDs))
+	handler := resource.NewSkillHandler()
 	for _, id := range request.SkillIDs {
-		skill, ok := byID[id]
-		if !ok {
-			return Request{}, nil, fmt.Errorf("Skill %q not found in configured library", id)
+		version := request.Versions[id]
+		var skill catalog.Skill
+		if version != "" {
+			resolved, resolveErr := handler.Resolve(s.LibraryPath, id, version)
+			if resolveErr != nil {
+				return Request{}, nil, fmt.Errorf("resolve Skill %q version %q: %w", id, version, resolveErr)
+			}
+			skill = resolved
+		} else {
+			var ok bool
+			skill, ok = byID[id]
+			if !ok {
+				return Request{}, nil, fmt.Errorf("Skill %q not found in configured library", id)
+			}
 		}
+		selectedVersions[id] = skill.VersionKey
 		selected = append(selected, skill)
 	}
 	request.Project = project
 	request.SkillIDs = append([]string{}, request.SkillIDs...)
+	request.Versions = selectedVersions
 	request.Targets = append([]adapter.Target{}, request.Targets...)
 	return request, selected, nil
+}
+
+func cloneVersions(versions map[string]string) map[string]string {
+	if len(versions) == 0 {
+		return nil
+	}
+	copy := make(map[string]string, len(versions))
+	for identifier, version := range versions {
+		copy[identifier] = version
+	}
+	return copy
 }
 
 func (s *Service) expireLocked(now time.Time) {
@@ -378,8 +453,11 @@ func (s *Service) expireLocked(now time.Time) {
 	}
 }
 
-func journal(project string) *operation.Journal {
-	return operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+func journal(project string, global bool) *operation.Journal {
+	if global {
+		return operation.GlobalJournal(project)
+	}
+	return operation.ProjectJournal(project)
 }
 
 func newPreviewID() (string, error) {

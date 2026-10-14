@@ -14,6 +14,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 func TestPreviewAndApplyInstallSelectedSkills(t *testing.T) {
@@ -127,6 +128,59 @@ func TestApplyIsSessionScopedAndRejectsStalePlan(t *testing.T) {
 	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
 	if _, ok, err := journal.Latest(); err != nil || ok {
 		t.Fatalf("stale apply journal = (ok=%v, err=%v), want no entry", ok, err)
+	}
+}
+
+func TestApplyRejectsStaleGlobalPlanWithoutChangingUnmanagedDestination(t *testing.T) {
+	library := t.TempDir()
+	writeSkill(t, library, "known")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	svc := installation.New(library)
+	preview, err := svc.Preview("session", installation.Request{
+		Project: home, Global: true, SkillIDs: []string{"known"}, Targets: []adapter.Target{adapter.Codex},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(home, ".codex", "skills", "known")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("unmanaged global data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Apply("session", preview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Stale || result.Applied {
+		t.Fatalf("global apply result = %#v, want stale", result)
+	}
+	contents, err := os.ReadFile(destination)
+	if err != nil || string(contents) != "unmanaged global data" {
+		t.Fatalf("unmanaged global destination = %q, %v", contents, err)
+	}
+	journal := operation.GlobalJournal(home)
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("stale global apply journal = (ok=%v, err=%v), want no entry", ok, err)
+	}
+}
+
+func TestGlobalScopeRejectsNonHomeRoot(t *testing.T) {
+	library := t.TempDir()
+	writeSkill(t, library, "known")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	otherRoot := t.TempDir()
+	service := installation.New(library)
+	if _, err := service.Preview("session", installation.Request{
+		Project: otherRoot, Global: true, SkillIDs: []string{"known"}, Targets: []adapter.Target{adapter.Codex},
+	}); !errors.Is(err, installation.ErrInvalidRequest) {
+		t.Fatalf("global preview error = %v, want current-home validation", err)
+	}
+	if _, err := os.Lstat(filepath.Join(otherRoot, ".codex")); !os.IsNotExist(err) {
+		t.Fatalf("invalid global scope changed the supplied root: %v", err)
 	}
 }
 
@@ -269,4 +323,67 @@ func writeSkill(t *testing.T, library, id string) {
 	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestPreviewAndApplyUseExplicitHistoricalRepositoryVersion(t *testing.T) {
+	library := t.TempDir()
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSource := writeVersionedSkill(t, t.TempDir(), "demo", "1.0.0")
+	old, err := repository.AddVersion("demo", oldSource, skillrepo.VersionMetadata{Version: "1.0.0", SourceType: "git", Publisher: "Example"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSource := writeVersionedSkill(t, t.TempDir(), "demo", "2.0.0")
+	newVersion, err := repository.AddVersion("demo", newSource, skillrepo.VersionMetadata{Version: "2.0.0"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	service := installation.New(library)
+	preview, err := service.Preview("history-selection", installation.Request{
+		Project: project, SkillIDs: []string{"demo"}, Versions: map[string]string{"demo": "1.0.0"}, Targets: []adapter.Target{adapter.ClaudeCode, adapter.Codex, adapter.Pi},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Versions["demo"] != old.Key || preview.Versions["demo"] == newVersion.Key {
+		t.Fatalf("preview selected version map = %#v, want key %q", preview.Versions, old.Key)
+	}
+	result, err := service.Apply("history-selection", preview.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied {
+		t.Fatalf("Apply() = %#v, want applied", result)
+	}
+	for _, location := range []string{
+		filepath.Join(project, ".claude", "skills", "demo"),
+		filepath.Join(project, ".codex", "skills", "demo"),
+		filepath.Join(project, ".pi", "skills", "demo"),
+	} {
+		if got, err := os.Readlink(location); err != nil || got != old.Path {
+			t.Fatalf("activation link %q = %q, %v, want selected historical version %q", location, got, err, old.Path)
+		}
+	}
+	for _, entry := range []skillrepo.Entry{old, newVersion} {
+		if _, err := os.Stat(filepath.Join(entry.Path, "SKILL.md")); err != nil {
+			t.Fatalf("repository version %q was not retained: %v", entry.Key, err)
+		}
+	}
+}
+
+func writeVersionedSkill(t *testing.T, parent, identifier, version string) string {
+	t.Helper()
+	path := filepath.Join(parent, identifier)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "---\nname: " + identifier + "\ndescription: version " + version + "\n---\n"
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
@@ -10,16 +11,28 @@ import (
 
 func newInstallCommand(options *rootOptions) *cobra.Command {
 	var project string
+	var global bool
 	var targets []string
+	var versions []string
 	var allDetected bool
 	var yes bool
 	var conflict string
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "install <skill-id>...",
-		Short: "Install selected library skills into a project",
+		Short: "Install selected library Skills into a project or globally",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if global && cmd.Flags().Changed("project") {
+				return fmt.Errorf("--global cannot be combined with --project")
+			}
+			if global {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return err
+				}
+				project = home
+			}
 			if len(targets) == 0 && !allDetected {
 				return fmt.Errorf("at least one --target is required (or use --all-detected)")
 			}
@@ -30,12 +43,20 @@ func newInstallCommand(options *rootOptions) *cobra.Command {
 				return fmt.Errorf("conflict strategy %q requires --force confirmation", conflict)
 			}
 			if allDetected {
-				targets = detectedTargets(project)
+				if global {
+					targets = detectedGlobalTargets(project)
+				} else {
+					targets = detectedTargets(project)
+				}
 			}
 			if len(targets) == 0 {
 				return fmt.Errorf("no target agents detected")
 			}
 			parsedTargets, err := parseTargets(targets)
+			if err != nil {
+				return err
+			}
+			selectedVersions, err := parseSkillVersionOverrides(versions)
 			if err != nil {
 				return err
 			}
@@ -46,7 +67,9 @@ func newInstallCommand(options *rootOptions) *cobra.Command {
 			service := installation.New(lib)
 			preview, previewErr := service.Preview("cli", installation.Request{
 				Project:  project,
+				Global:   global,
 				SkillIDs: args,
+				Versions: selectedVersions,
 				Targets:  parsedTargets,
 				Options: lifecycle.Options{
 					Conflict: lifecycle.ConflictStrategy(conflict),
@@ -75,7 +98,9 @@ func newInstallCommand(options *rootOptions) *cobra.Command {
 		},
 	}
 	projectFlag(cmd, &project)
+	cmd.Flags().BoolVar(&global, "global", false, "install into the selected agents' global Skill directories")
 	cmd.Flags().StringSliceVar(&targets, "target", nil, "target agent (claude-code, codex, or pi)")
+	cmd.Flags().StringArrayVar(&versions, "version", nil, "select a Skill version as <skill-id>=<version-or-key>; repeat as needed")
 	cmd.Flags().BoolVar(&allDetected, "all-detected", false, "install for every detected supported target agent")
 	cmd.Flags().StringVar(&conflict, "conflict", "", "conflict strategy for existing destination paths (replace)")
 	cmd.Flags().BoolVar(&force, "force", false, "supply force confirmation for the selected conflict strategy")

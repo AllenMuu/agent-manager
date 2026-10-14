@@ -1,8 +1,8 @@
 # Agent Manager
 
 **Agent Manager**:
-The local control plane that governs agent resources across a shared Skill library, agent-wide locations, and individual repositories. Skills are the first managed resource kind; the product name does not replace Skill-domain vocabulary.
-_Avoid_: Skill Manager (except when referring to the compatibility CLI or pre-migration state)
+The project-aware local manager for reusable Skills and shared Project Memory across AI coding agents. It manages portable project resources and their agent-specific placement; it does not own agent reasoning or execution. The product name does not replace Skill-domain vocabulary.
+_Avoid_: Skill Manager (except when referring to the compatibility CLI or pre-migration state), agent runtime
 
 ## Language
 
@@ -15,19 +15,39 @@ Names, descriptions, instructions, identifiers, and paths read from a registered
 _Avoid_: translated console copy
 
 **Skill library**:
-The independent, authoritative local collection of reusable skills. It is the source from which project skills are selected and installed; the initial library is `~/.agents/skills`, with a configurable location.
-_Avoid_: skill repository, global skill folder
+The independent, authoritative local collection of reusable Skills. It is the source from which Global and Project activations are selected; the default is `~/.agent-manager/skills`, with a configurable location. It is separate from agent-recognized Skill directories.
+_Avoid_: global skill folder
+
+**Skill version**:
+A distinct, addressable state of one managed Skill whose content and metadata remain available when a later version is added.
+_Avoid_: overwrite, latest copy
+
+**Skill provenance**:
+Evidence about where a Skill version came from and what trust or verification status is known. Missing evidence is represented as unknown rather than inferred from Skill content.
+_Avoid_: publisher claim without evidence
+
+**Legacy Skill library**:
+The pre-migration collection at `~/.agents/skills`. It is an explicit import source for selected Skills, not an automatic fallback or a second catalog source.
+_Avoid_: default library
+
+**Skill library import**:
+The previewed and explicitly confirmed copy of selected Skills from a legacy or alternate library into the canonical Skill library. Import leaves source Skills and existing project activations unchanged.
+_Avoid_: automatic migration, adoption
 
 **Global baseline**:
-The intentionally small set of agent resources kept available in an agent's global location, including the Agent Manager CLI usage skill.
-_Avoid_: global skills, root skills
+The minimal Operator Skill installed by `init` for safe Agent Manager use. Other reusable Skills can be explicitly activated globally from a selected repository version.
+_Avoid_: global library, auto-loaded library
+
+**Global activation**:
+The current user's selected managed Skill version represented by an absolute soft link in one target agent's global Skill directory.
+_Avoid_: global baseline, global sync
 
 **Project activation**:
 The resulting installation of selected managed skills for one repository, represented by their project-local soft links rather than a committed manifest.
 _Avoid_: project configuration, project sync
 
 **Managed skill**:
-A Skill whose presence in a project or global baseline is controlled by Agent Manager from the Skill library.
+A Skill whose Project or Global activation is controlled by Agent Manager from the Skill library.
 _Avoid_: copied skill, local skill
 
 **Project skill**:
@@ -43,7 +63,7 @@ The explicit conversion of one managed project skill into an independent project
 _Avoid_: detach, local override
 
 **Target agent**:
-An agent integration selected to receive a project's managed-skill soft links. A project may have multiple target agents.
+An agent integration selected to receive Global or Project managed-Skill soft links. Each scope may select multiple target agents.
 _Avoid_: platform, provider
 
 **Operator skill**:

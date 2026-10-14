@@ -4,7 +4,7 @@ Developers using multiple coding agents currently accumulate a large, undifferen
 
 ## What Changes
 
-- Add a Go CLI that treats `~/.agents/skills` as the default configurable skill library and manages directory skills containing `SKILL.md`.
+- Add a Go CLI that treats `~/.agent-manager/skills` as the default configurable Skill repository and manages directory Skills containing `SKILL.md`.
 - Add searchable, scriptable, and interactive terminal skill selection, with target-agent selection for Claude Code and Codex.
 - Add project skill lifecycle operations: activate, list, remove, adopt existing project skills, and fork managed skills back to independent project skills.
 - Add explicit global initialization that verifies the CLI and installs a minimal Operator skill for Claude Code and Codex.

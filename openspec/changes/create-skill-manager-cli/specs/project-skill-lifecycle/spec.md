@@ -34,11 +34,11 @@ The system SHALL remove only the selected project-side managed soft link and SHA
 - **THEN** the system refuses the operation without changing that directory
 
 ### Requirement: Adoption of an existing project skill
-The system SHALL allow an existing eligible project directory skill to be adopted into the library. Adoption SHALL place the skill content in the library and replace the former project directory with a managed soft link only after the user confirms the displayed plan.
+The system SHALL allow an existing eligible project directory skill to be adopted into the versioned Skill repository. Adoption SHALL create a version record with unknown version and provenance where they are not available, then replace the former project directory with a managed soft link to that exact version only after the user confirms the displayed plan.
 
 #### Scenario: Existing skill is adopted
 - **WHEN** the user confirms adoption of an eligible independent project skill whose library identifier is unused
-- **THEN** the skill is added to the library and its former project location becomes a link to the added library skill
+- **THEN** the skill is stored under its versioned repository identity and its former project location becomes a link to that exact version directory
 
 #### Scenario: Adoption has a conflicting library identifier
 - **WHEN** the library already contains a skill with the proposed identifier

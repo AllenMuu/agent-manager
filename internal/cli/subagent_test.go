@@ -162,7 +162,7 @@ instructions: Review changes.
 skills:
   - go-helper
 `)
-	writeSkill(t, filepath.Join(dataRoot, "skills"), "go-helper", "Go helper", "helper", "go\n")
+	writeSkill(t, filepath.Join(home, ".agent-manager", "skills"), "go-helper", "Go helper", "helper", "go\n")
 
 	command := cli.NewRootCommand()
 	output := &bytes.Buffer{}

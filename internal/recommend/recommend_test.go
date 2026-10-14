@@ -134,9 +134,19 @@ func TestRecommendExcludesEntriesWithoutSkillMarkdown(t *testing.T) {
 	}
 }
 
-func TestRecommendRejectsUnreadableLibrary(t *testing.T) {
-	if _, err := recommend.Recommend(t.TempDir(), filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("missing library accepted")
+func TestRecommendMissingLibraryReturnsEmptyCatalog(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, filepath.Join(project, "go.mod"), "module demo\n")
+	library := filepath.Join(t.TempDir(), "missing")
+	result, err := recommend.Recommend(project, library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Scopes) != 1 || result.Scopes[0].Status != recommend.StatusNoCatalogMatch || len(result.Scopes[0].Recommendations) != 0 {
+		t.Fatalf("result = %#v; want a no-catalog-match scope", result)
+	}
+	if _, err := os.Lstat(library); !os.IsNotExist(err) {
+		t.Fatalf("recommend created missing library: %v", err)
 	}
 }
 

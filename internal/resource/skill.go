@@ -7,19 +7,52 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 	"gopkg.in/yaml.v3"
 )
 
 // SkillCatalogEntry is an eligible directory Skill discovered in a local catalog.
 type SkillCatalogEntry struct {
-	Identifier    string
-	SourcePath    string
-	Name          string
-	Description   string
-	Body          string
-	Tags          []string
-	Compatibility []string
-	Provenance    string
+	Identifier          string             `json:"identifier"`
+	SourcePath          string             `json:"sourcePath"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Body                string             `json:"body,omitempty"`
+	Tags                []string           `json:"tags,omitempty"`
+	Compatibility       []string           `json:"compatibility,omitempty"`
+	SupportedLanguages  []string           `json:"supportedLanguages,omitempty"`
+	SupportedFrameworks []string           `json:"supportedFrameworks,omitempty"`
+	SupportedAgents     []string           `json:"supportedAgents,omitempty"`
+	Provenance          string             `json:"provenance,omitempty"`
+	Version             string             `json:"version,omitempty"`
+	VersionKey          string             `json:"versionKey,omitempty"`
+	Versions            []SkillVersionInfo `json:"versions,omitempty"`
+	Source              string             `json:"source,omitempty"`
+	SourceType          string             `json:"sourceType,omitempty"`
+	Publisher           string             `json:"publisher,omitempty"`
+	ImmutableRef        string             `json:"immutableRef,omitempty"`
+	Checksum            string             `json:"checksum,omitempty"`
+	TrustLevel          string             `json:"trustLevel,omitempty"`
+	VerificationStatus  string             `json:"verificationStatus,omitempty"`
+}
+
+// SkillVersionInfo is an addressable version in the configured repository.
+type SkillVersionInfo struct {
+	Version             string   `json:"version,omitempty"`
+	Key                 string   `json:"key"`
+	Source              string   `json:"source,omitempty"`
+	SourceType          string   `json:"sourceType,omitempty"`
+	Publisher           string   `json:"publisher,omitempty"`
+	ImmutableRef        string   `json:"immutableRef,omitempty"`
+	Checksum            string   `json:"checksum,omitempty"`
+	TrustLevel          string   `json:"trustLevel,omitempty"`
+	VerificationStatus  string   `json:"verificationStatus,omitempty"`
+	Tags                []string `json:"tags,omitempty"`
+	Compatibility       []string `json:"compatibility,omitempty"`
+	SupportedLanguages  []string `json:"supportedLanguages,omitempty"`
+	SupportedFrameworks []string `json:"supportedFrameworks,omitempty"`
+	SupportedAgents     []string `json:"supportedAgents,omitempty"`
+	LegacyProvenance    string   `json:"legacyProvenance,omitempty"`
 }
 
 // Diagnostic explains why a catalog entry is not eligible for management.
@@ -35,26 +68,117 @@ func (h SkillHandler) Discover(root string) ([]SkillCatalogEntry, []Diagnostic, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve skill library path: %w", err)
 	}
-	entries, err := os.ReadDir(absRoot)
+	repository, err := skillrepo.Open(absRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	entries, repositoryDiagnostics, err := repository.Discover()
 	if err != nil {
 		return nil, nil, fmt.Errorf("read skill library: %w", err)
 	}
-
-	var skills []SkillCatalogEntry
-	var diagnostics []Diagnostic
+	skills := make([]SkillCatalogEntry, 0, len(entries))
+	diagnostics := make([]Diagnostic, 0, len(repositoryDiagnostics))
+	for _, diagnostic := range repositoryDiagnostics {
+		diagnostics = append(diagnostics, Diagnostic{Path: diagnostic.Path, Message: diagnostic.Message})
+	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		path := filepath.Join(absRoot, entry.Name())
-		skill, err := readSkill(path, entry.Name())
+		skill, err := readSkill(entry.Path, entry.Identifier)
 		if err != nil {
-			diagnostics = append(diagnostics, Diagnostic{Path: path, Message: err.Error()})
+			diagnostics = append(diagnostics, Diagnostic{Path: entry.Path, Message: err.Error()})
 			continue
 		}
+		skill.Version = entry.Version
+		skill.VersionKey = entry.Key
+		skill.Source = entry.Metadata.Source
+		skill.SourceType = entry.Metadata.SourceType
+		skill.Publisher = entry.Metadata.Publisher
+		skill.ImmutableRef = entry.Metadata.ImmutableRef
+		skill.Checksum = entry.Metadata.Checksum
+		skill.TrustLevel = entry.Metadata.TrustLevel
+		skill.VerificationStatus = entry.Metadata.VerificationStatus
+		if entry.Metadata.LegacyProvenance != "" {
+			skill.Provenance = entry.Metadata.LegacyProvenance
+		}
+		applyVersionMetadata(&skill, entry.Metadata)
+		versions, err := repository.VersionRecords(entry.Identifier)
+		if err != nil {
+			diagnostics = append(diagnostics, Diagnostic{Path: entry.Path, Message: fmt.Sprintf("read Skill versions: %v", err)})
+			continue
+		}
+		skill.Versions = versionInfos(versions)
 		skills = append(skills, skill)
 	}
 	return skills, diagnostics, nil
+}
+
+// Resolve returns one addressable repository version without exposing other
+// version directories as independent catalog identities.
+func (h SkillHandler) Resolve(root, identifier, version string) (SkillCatalogEntry, error) {
+	repository, err := skillrepo.Open(root)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	entry, err := repository.Resolve(identifier, version)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	skill, err := readSkill(entry.Path, entry.Identifier)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	applyVersion(&skill, entry)
+	versions, err := repository.VersionRecords(identifier)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	skill.Versions = versionInfos(versions)
+	return skill, nil
+}
+
+func applyVersion(skill *SkillCatalogEntry, entry skillrepo.Entry) {
+	skill.Version = entry.Version
+	skill.VersionKey = entry.Key
+	skill.Source = entry.Metadata.Source
+	skill.SourceType = entry.Metadata.SourceType
+	skill.Publisher = entry.Metadata.Publisher
+	skill.ImmutableRef = entry.Metadata.ImmutableRef
+	skill.Checksum = entry.Metadata.Checksum
+	skill.TrustLevel = entry.Metadata.TrustLevel
+	skill.VerificationStatus = entry.Metadata.VerificationStatus
+	if entry.Metadata.LegacyProvenance != "" {
+		skill.Provenance = entry.Metadata.LegacyProvenance
+	}
+	applyVersionMetadata(skill, entry.Metadata)
+}
+
+func applyVersionMetadata(skill *SkillCatalogEntry, metadata skillrepo.VersionMetadata) {
+	if len(metadata.Tags) > 0 {
+		skill.Tags = append([]string(nil), metadata.Tags...)
+	}
+	if len(metadata.Compatibility) > 0 {
+		skill.Compatibility = append([]string(nil), metadata.Compatibility...)
+	}
+	skill.SupportedLanguages = append([]string(nil), metadata.SupportedLanguages...)
+	skill.SupportedFrameworks = append([]string(nil), metadata.SupportedFrameworks...)
+	skill.SupportedAgents = append([]string(nil), metadata.SupportedAgents...)
+}
+
+func versionInfos(versions []skillrepo.Entry) []SkillVersionInfo {
+	infos := make([]SkillVersionInfo, 0, len(versions))
+	for _, version := range versions {
+		infos = append(infos, SkillVersionInfo{
+			Version: version.Version, Key: version.Key, Source: version.Metadata.Source,
+			SourceType: version.Metadata.SourceType, Publisher: version.Metadata.Publisher,
+			ImmutableRef: version.Metadata.ImmutableRef, Checksum: version.Metadata.Checksum,
+			TrustLevel: version.Metadata.TrustLevel, VerificationStatus: version.Metadata.VerificationStatus,
+			Tags: append([]string(nil), version.Metadata.Tags...), Compatibility: append([]string(nil), version.Metadata.Compatibility...),
+			SupportedLanguages:  append([]string(nil), version.Metadata.SupportedLanguages...),
+			SupportedFrameworks: append([]string(nil), version.Metadata.SupportedFrameworks...),
+			SupportedAgents:     append([]string(nil), version.Metadata.SupportedAgents...),
+			LegacyProvenance:    version.Metadata.LegacyProvenance,
+		})
+	}
+	return infos
 }
 
 // Catalog returns the agent-neutral resource envelopes for eligible Skills.
@@ -107,12 +231,42 @@ func (h SkillHandler) Eligible(identifier, source string) (bool, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return false, nil
 	}
-	skills, _, err := h.Discover(filepath.Dir(source))
-	if err != nil {
-		return false, fmt.Errorf("discover skill source %s: %w", source, err)
+	repositoryRoot := filepath.Dir(source)
+	versionDirectory := filepath.Dir(source)
+	skillDirectory := filepath.Dir(versionDirectory)
+	if filepath.Base(versionDirectory) == "versions" && filepath.Base(skillDirectory) == identifier {
+		repositoryRoot = filepath.Dir(skillDirectory)
 	}
-	for _, skill := range skills {
-		if skill.Identifier == identifier && skill.SourcePath == source {
+	repository, err := skillrepo.Open(repositoryRoot)
+	if err != nil {
+		return false, fmt.Errorf("open skill repository for %s: %w", source, err)
+	}
+	versions, err := repository.VersionRecords(identifier)
+	if err != nil {
+		if errors.Is(err, skillrepo.ErrNotFound) || os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("resolve Skill source %s: %w", source, err)
+	}
+	absSource, err := filepath.Abs(source)
+	if err != nil {
+		return false, err
+	}
+	for _, version := range versions {
+		if filepath.Clean(version.Path) == filepath.Clean(absSource) {
+			selected, err := repository.Resolve(identifier, version.Key)
+			if err != nil {
+				if errors.Is(err, skillrepo.ErrNotFound) || os.IsNotExist(err) {
+					return false, nil
+				}
+				return false, fmt.Errorf("resolve Skill source %s: %w", source, err)
+			}
+			if filepath.Clean(selected.Path) != filepath.Clean(absSource) {
+				return false, nil
+			}
+			if _, err := readSkill(selected.Path, identifier); err != nil {
+				return false, nil
+			}
 			return true, nil
 		}
 	}
@@ -142,20 +296,41 @@ func (h SkillHandler) LibraryResource(libraryPath, identifier string) (ManagedRe
 	if err != nil {
 		return ManagedResource{}, fmt.Errorf("resolve skill library path: %w", err)
 	}
-	return h.ManagedResource(SkillCatalogEntry{
-		Identifier: identifier,
-		SourcePath: filepath.Join(absLibrary, identifier),
-	})
+	skill, err := h.Resolve(absLibrary, identifier, "")
+	if err != nil {
+		if !errors.Is(err, skillrepo.ErrNotFound) {
+			return ManagedResource{}, err
+		}
+		// Adoption plans need a stable destination before the new identifier
+		// exists. Existing repository entries always resolve to their selected
+		// content version above.
+		skill = SkillCatalogEntry{Identifier: identifier, SourcePath: filepath.Join(absLibrary, identifier)}
+	}
+	return h.ManagedResource(skill)
+}
+
+// LibraryResourceVersion resolves an explicit repository version for a
+// selected catalog entry.
+func (h SkillHandler) LibraryResourceVersion(libraryPath, identifier, version string) (ManagedResource, error) {
+	absLibrary, err := filepath.Abs(libraryPath)
+	if err != nil {
+		return ManagedResource{}, fmt.Errorf("resolve skill library path: %w", err)
+	}
+	skill, err := h.Resolve(absLibrary, identifier, version)
+	if err != nil {
+		return ManagedResource{}, err
+	}
+	return h.ManagedResource(skill)
 }
 
 // ManagesSource reports whether source is the canonical configured-library
 // source for identifier.
 func (h SkillHandler) ManagesSource(libraryPath, identifier, source string) (bool, error) {
-	managed, err := h.LibraryResource(libraryPath, identifier)
+	repository, err := skillrepo.Open(libraryPath)
 	if err != nil {
 		return false, err
 	}
-	return source == managed.Provenance.Source, nil
+	return repository.OwnsPath(identifier, source)
 }
 
 // PlanLifecycle validates Skill identity and filesystem semantics and returns
@@ -194,16 +369,27 @@ func (h SkillHandler) planActivation(request SkillLifecycleRequest) (SkillLifecy
 	if err := h.Validate(managed); err != nil {
 		return plan, errors.Join(ErrUnsafeLifecycle, err)
 	}
-	canonical, err := h.LibraryResource(request.LibraryPath, managed.ID)
-	if err != nil {
-		return plan, errors.Join(ErrUnsafeLifecycle, err)
-	}
 	source, err := filepath.Abs(managed.Provenance.Source)
 	if err != nil {
 		return plan, err
 	}
-	if source != canonical.Provenance.Source {
-		return plan, fmt.Errorf("%w: skill source is not configured library entry", ErrUnsafeLifecycle)
+	if request.CatalogEntry != nil {
+		version := request.CatalogEntry.VersionKey
+		canonical, err := h.LibraryResourceVersion(request.LibraryPath, managed.ID, version)
+		if err != nil {
+			return plan, errors.Join(ErrUnsafeLifecycle, err)
+		}
+		if source != canonical.Provenance.Source {
+			return plan, fmt.Errorf("%w: skill source is not the selected repository version", ErrUnsafeLifecycle)
+		}
+	} else {
+		owned, err := h.ManagesSource(request.LibraryPath, managed.ID, source)
+		if err != nil {
+			return plan, errors.Join(ErrUnsafeLifecycle, err)
+		}
+		if !owned {
+			return plan, fmt.Errorf("%w: skill source is not a configured repository version", ErrUnsafeLifecycle)
+		}
 	}
 	eligible, err := h.Eligible(managed.ID, source)
 	if err != nil {
@@ -243,7 +429,20 @@ func (h SkillHandler) planActivation(request SkillLifecycleRequest) (SkillLifecy
 
 func (h SkillHandler) planManagedLink(request SkillLifecycleRequest, action string) (SkillLifecyclePlan, error) {
 	plan := SkillLifecyclePlan{Action: request.Action}
-	managed, err := h.LibraryResource(request.LibraryPath, request.Identifier)
+	var managed ManagedResource
+	var err error
+	if request.Action == LifecycleRemove {
+		library, absErr := filepath.Abs(request.LibraryPath)
+		if absErr != nil {
+			return plan, absErr
+		}
+		managed, err = h.ManagedResource(SkillCatalogEntry{
+			Identifier: request.Identifier,
+			SourcePath: filepath.Join(library, request.Identifier),
+		})
+	} else {
+		managed, err = h.LibraryResource(request.LibraryPath, request.Identifier)
+	}
 	if err != nil {
 		return plan, errors.Join(ErrUnsafeLifecycle, err)
 	}
@@ -251,13 +450,14 @@ func (h SkillHandler) planManagedLink(request SkillLifecycleRequest, action stri
 	if request.PlacementPath == "" {
 		return plan, nil
 	}
-	source, owned, err := h.managedLink(request.PlacementPath, managed)
+	source, owned, err := h.managedLink(request.LibraryPath, request.Identifier, request.PlacementPath)
 	if err != nil {
 		return plan, err
 	}
 	if !owned {
 		return plan, ErrUnsafeLifecycle
 	}
+	managed.Provenance.Source = source
 	plan.SourcePath = source
 	plan.CurrentSource = source
 	plan.Applicable = true
@@ -285,17 +485,34 @@ func (h SkillHandler) planAdoption(request SkillLifecycleRequest) (SkillLifecycl
 	if !eligible {
 		return plan, fmt.Errorf("%w: project directory is not an eligible skill", ErrUnsafeLifecycle)
 	}
-	libraryPath := managed.Provenance.Source
-	if _, err := os.Lstat(libraryPath); err == nil {
+	projectSkill, err := filepath.Abs(request.PlacementPath)
+	if err != nil {
+		return plan, fmt.Errorf("resolve project Skill path: %w", err)
+	}
+	libraryRoot, err := filepath.Abs(request.LibraryPath)
+	if err != nil {
+		return plan, fmt.Errorf("resolve Skill repository path: %w", err)
+	}
+	identityPath := filepath.Join(libraryRoot, request.Identifier)
+	if _, err := os.Lstat(identityPath); err == nil {
 		return plan, ErrLifecycleConflict
 	} else if !os.IsNotExist(err) {
 		return plan, err
 	}
-	plan.SourcePath = request.PlacementPath
+	checksum, err := skillrepo.ChecksumTree(projectSkill)
+	if err != nil {
+		return plan, fmt.Errorf("checksum project Skill: %w", err)
+	}
+	versionKey := "legacy-" + checksum[:12]
+	libraryPath := filepath.Join(identityPath, "versions", versionKey)
+	managed.Provenance.Source = libraryPath
+	plan.Resource = managed
+	plan.SourcePath = projectSkill
+	plan.SourceChecksum = checksum
 	plan.Applicable = true
 	plan.Changes = []LifecycleChange{
-		{Path: libraryPath, Action: "copy project skill into library", Detail: request.PlacementPath},
-		{Path: request.PlacementPath, Action: "replace directory with managed link", Detail: libraryPath},
+		{Path: libraryPath, Action: "copy project skill into versioned library", Detail: projectSkill},
+		{Path: projectSkill, Action: "replace directory with managed link", Detail: libraryPath},
 	}
 	return plan, nil
 }
@@ -350,7 +567,7 @@ func (h SkillHandler) planReconciliation(request SkillLifecycleRequest) (SkillLi
 	return plan, nil
 }
 
-func (h SkillHandler) managedLink(path string, managed ManagedResource) (string, bool, error) {
+func (h SkillHandler) managedLink(libraryPath, identifier, path string) (string, bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -365,7 +582,11 @@ func (h SkillHandler) managedLink(path string, managed ManagedResource) (string,
 	if err != nil {
 		return "", false, fmt.Errorf("read managed link %s: %w", path, err)
 	}
-	return target, target == managed.Provenance.Source, nil
+	managed, err := h.ManagesSource(libraryPath, identifier, target)
+	if err != nil {
+		return "", false, err
+	}
+	return target, managed, nil
 }
 
 func skillPlacementConflicts(path, source string) (bool, error) {
@@ -394,7 +615,7 @@ func containsString(values []string, want string) bool {
 }
 
 func readSkill(path, identifier string) (SkillCatalogEntry, error) {
-	contents, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
+	contents, err := readSkillMarkdown(filepath.Join(path, "SKILL.md"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return SkillCatalogEntry{}, fmt.Errorf("missing SKILL.md")
@@ -413,21 +634,46 @@ func readSkill(path, identifier string) (SkillCatalogEntry, error) {
 		Description: description,
 		Body:        body,
 	}
-	metadata, err := os.ReadFile(filepath.Join(path, ".skill-manager.yaml"))
+	metadata, err := readRegularFile(filepath.Join(path, ".skill-manager.yaml"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return skill, nil
 		}
 		return SkillCatalogEntry{}, fmt.Errorf("read companion metadata: %w", err)
 	}
-	tags, compatibility, provenance, err := parseCompanionMetadata(string(metadata))
+	tags, compatibility, provenance, languages, frameworks, agents, err := parseCompanionMetadata(string(metadata))
 	if err != nil {
 		return SkillCatalogEntry{}, fmt.Errorf("parse companion metadata: %w", err)
 	}
 	skill.Tags = tags
 	skill.Compatibility = compatibility
 	skill.Provenance = provenance
+	skill.SupportedLanguages = languages
+	skill.SupportedFrameworks = frameworks
+	skill.SupportedAgents = agents
 	return skill, nil
+}
+
+func readRegularFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return os.ReadFile(path)
+}
+
+func readSkillMarkdown(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular SKILL.md file", path)
+	}
+	return os.ReadFile(path)
 }
 
 func parseSkillMarkdown(contents string) (name, description, body string, err error) {
@@ -458,14 +704,17 @@ func parseSkillMarkdown(contents string) (name, description, body string, err er
 	return frontmatter.Name, frontmatter.Description, strings.Join(lines[frontmatterEnd+1:], ""), nil
 }
 
-func parseCompanionMetadata(contents string) (tags, compatibility []string, provenance string, err error) {
+func parseCompanionMetadata(contents string) (tags, compatibility []string, provenance string, languages, frameworks, agents []string, err error) {
 	var metadata struct {
-		Tags          []string `yaml:"tags"`
-		Compatibility []string `yaml:"compatibility"`
-		Provenance    string   `yaml:"provenance"`
+		Tags                []string `yaml:"tags"`
+		Compatibility       []string `yaml:"compatibility"`
+		Provenance          string   `yaml:"provenance"`
+		SupportedLanguages  []string `yaml:"supportedLanguages"`
+		SupportedFrameworks []string `yaml:"supportedFrameworks"`
+		SupportedAgents     []string `yaml:"supportedAgents"`
 	}
 	if err := yaml.Unmarshal([]byte(contents), &metadata); err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, nil, nil, err
 	}
-	return metadata.Tags, metadata.Compatibility, metadata.Provenance, nil
+	return metadata.Tags, metadata.Compatibility, metadata.Provenance, metadata.SupportedLanguages, metadata.SupportedFrameworks, metadata.SupportedAgents, nil
 }

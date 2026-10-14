@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/AllenMuu/skill-manager/internal/cli"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 func recommendFixture(t *testing.T) (library, project, configPath string) {
@@ -204,6 +205,80 @@ func TestRecommendHumanOutputShowsEvidenceAndReason(t *testing.T) {
 	}
 }
 
+func TestRecommendReadsOnlyCurrentConfiguredRepositoryVersionWithoutWrites(t *testing.T) {
+	library := t.TempDir()
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSource := filepath.Join(t.TempDir(), "go-helper")
+	writeRecommendationSkill(t, oldSource, "old version")
+	if _, err := repository.AddVersion("go-helper", oldSource, skillrepo.VersionMetadata{Version: "1.0.0"}, true); err != nil {
+		t.Fatal(err)
+	}
+	currentSource := filepath.Join(t.TempDir(), "go-helper")
+	writeRecommendationSkill(t, currentSource, "current version")
+	current, err := repository.AddVersion("go-helper", currentSource, skillrepo.VersionMetadata{Version: "2.0.0"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module recommend-version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("library: "+library+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := cli.NewRootCommand()
+	output := &bytes.Buffer{}
+	command.SetOut(output)
+	command.SetErr(output)
+	command.SetArgs([]string{"--config", configPath, "recommend", "--project", project, "--json"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Scopes []struct {
+			Recommendations []struct {
+				Identifier string `json:"identifier"`
+				Version    string `json:"version"`
+				VersionKey string `json:"versionKey"`
+			} `json:"recommendations"`
+		} `json:"scopes"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatalf("decode recommendation: %v; output=%s", err, output.String())
+	}
+	if len(report.Scopes) != 1 || len(report.Scopes[0].Recommendations) != 1 {
+		t.Fatalf("recommendation report = %#v", report)
+	}
+	recommendation := report.Scopes[0].Recommendations[0]
+	if recommendation.Identifier != "go-helper" || recommendation.Version != "2.0.0" || recommendation.VersionKey != current.Key {
+		t.Fatalf("recommendation = %#v; want current configured version %q", recommendation, current.Key)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".codex", "skills", "go-helper")); !os.IsNotExist(err) {
+		t.Fatalf("recommendation activated a Skill: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".skill-manager", "journal.json")); !os.IsNotExist(err) {
+		t.Fatalf("recommendation wrote a journal: %v", err)
+	}
+}
+
+func writeRecommendationSkill(t *testing.T, path, marker string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := "---\nname: Go Helper\ndescription: Go coding helper\n---\n" + marker + "\n"
+	if err := os.WriteFile(filepath.Join(path, "SKILL.md"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, ".skill-manager.yaml"), []byte("tags: [go]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecommendMonorepoReportsIndependentScopes(t *testing.T) {
 	library := t.TempDir()
 	writeSkill(t, library, "go-helper", "Go helper", "helps with go", "go\n")
@@ -289,7 +364,7 @@ func TestRecommendInvalidProjectRendersStructuredError(t *testing.T) {
 	}
 }
 
-func TestRecommendUnavailableCatalogRendersStructuredError(t *testing.T) {
+func TestRecommendMissingCatalogReturnsEmptyRecommendations(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-library")
 	project := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -301,15 +376,25 @@ func TestRecommendUnavailableCatalogRendersStructuredError(t *testing.T) {
 	root.SetOut(out)
 	root.SetErr(&bytes.Buffer{})
 	root.SetArgs([]string{"--config", configPath, "recommend", "--project", project, "--json"})
-	if err := root.Execute(); err == nil {
-		t.Fatal("missing library accepted")
+	if err := root.Execute(); err != nil {
+		t.Fatalf("recommend with missing, empty library: %v", err)
 	}
 	var doc struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+		Scopes []struct {
+			Recommendations []struct {
+				Identifier string `json:"identifier"`
+			} `json:"recommendations"`
+		} `json:"scopes"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Error.Code != "catalog_unavailable" {
-		t.Fatalf("error JSON = %q (%v)", out.String(), err)
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("recommendation JSON = %q (%v)", out.String(), err)
+	}
+	for _, scope := range doc.Scopes {
+		if len(scope.Recommendations) != 0 {
+			t.Fatalf("missing library produced recommendations: %#v", scope.Recommendations)
+		}
+	}
+	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
+		t.Fatalf("recommend created the missing library: %v", err)
 	}
 }

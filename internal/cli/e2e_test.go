@@ -11,6 +11,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/cli"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 	"github.com/spf13/cobra"
 )
 
@@ -537,10 +538,18 @@ func TestEndToEndAdoptAndFork(t *testing.T) {
 	}
 
 	runCLI(t, configPath, "adopt", "adopted", "--project", project, "--target", "codex", "--yes")
-	if _, err := os.Stat(filepath.Join(library, "adopted", "SKILL.md")); err != nil {
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := repository.Resolve("adopted", "")
+	if err != nil {
+		t.Fatalf("resolve adopted skill version: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(adopted.Path, "SKILL.md")); err != nil {
 		t.Fatalf("adopted skill missing from library: %v", err)
 	}
-	if got, err := os.Readlink(adoptable); err != nil || got != filepath.Join(library, "adopted") {
+	if got, err := os.Readlink(adoptable); err != nil || got != adopted.Path {
 		t.Fatalf("adopted path = %q, %v; want library link", got, err)
 	}
 

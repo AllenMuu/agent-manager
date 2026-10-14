@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestLoadUsesAgentsSkillsInHomeDirectoryByDefault(t *testing.T) {
+func TestLoadUsesAgentManagerSkillsInHomeDirectoryByDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -19,9 +19,26 @@ func TestLoadUsesAgentsSkillsInHomeDirectoryByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	want := filepath.Join(home, ".agents", "skills")
+	want := filepath.Join(home, ".agent-manager", "skills")
 	if loaded.LibraryPath != want {
 		t.Errorf("LibraryPath = %q, want %q", loaded.LibraryPath, want)
+	}
+}
+
+func TestLoadKeepsLegacyLibraryAvailableAsExplicitOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("library: ~/.agents/skills\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if want := filepath.Join(home, ".agents", "skills"); loaded.LibraryPath != want {
+		t.Fatalf("LibraryPath=%q, want explicit legacy path %q", loaded.LibraryPath, want)
 	}
 }
 

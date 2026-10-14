@@ -1,4 +1,4 @@
-// Package lifecycle manages project-local skill links without interpreting skill content.
+// Package lifecycle manages machine-local Skill links without interpreting Skill content.
 package lifecycle
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/resource"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 var (
@@ -106,7 +107,15 @@ func (e *preservePathsError) Error() string { return e.cause.Error() }
 func (e *preservePathsError) Unwrap() error { return e.cause }
 
 func preservePath(cause error, path string) error {
-	return &preservePathsError{cause: cause, paths: map[string]struct{}{path: {}}}
+	return preservePaths(cause, path)
+}
+
+func preservePaths(cause error, paths ...string) error {
+	preserved := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		preserved[path] = struct{}{}
+	}
+	return &preservePathsError{cause: cause, paths: preserved}
 }
 
 // New constructs a lifecycle service. A nil confirmation function declines mutations.
@@ -246,12 +255,29 @@ func (s *Service) PreviewMany(project string, skills []catalog.Skill, targets []
 	return s.PreviewAddMany(project, skills, targets, opts...)
 }
 
+// PreviewGlobalMany builds a mutation-free plan for global Skill links beneath
+// the selected user's home directory.
+func (s *Service) PreviewGlobalMany(home string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
+	preview, err := s.buildAddManyPreview(home, skills, targets, optionsOf(opts), true)
+	return preview.plan, err
+}
+
 // ApplyMany applies a confirmed installation only while its plan still matches.
 func (s *Service) ApplyMany(project string, skills []catalog.Skill, targets []adapter.Target, expected operation.Plan, confirmed bool, opts ...Options) (operation.Plan, error) {
+	return s.applyMany(project, skills, targets, expected, confirmed, false, opts...)
+}
+
+// ApplyGlobalMany applies a confirmed global installation only while its plan
+// still matches the selected repository versions and global destinations.
+func (s *Service) ApplyGlobalMany(home string, skills []catalog.Skill, targets []adapter.Target, expected operation.Plan, confirmed bool, opts ...Options) (operation.Plan, error) {
+	return s.applyMany(home, skills, targets, expected, confirmed, true, opts...)
+}
+
+func (s *Service) applyMany(project string, skills []catalog.Skill, targets []adapter.Target, expected operation.Plan, confirmed, global bool, opts ...Options) (operation.Plan, error) {
 	if !confirmed {
 		return expected, ErrNotConfirmed
 	}
-	current, err := s.PreviewMany(project, skills, targets, opts...)
+	current, err := s.previewMany(project, skills, targets, global, opts...)
 	if !samePlan(expected, current) {
 		return current, ErrPlanChanged
 	}
@@ -260,7 +286,14 @@ func (s *Service) ApplyMany(project string, skills []catalog.Skill, targets []ad
 	}
 	service := *s
 	service.confirm = func(plan operation.Plan) bool { return samePlan(expected, plan) }
-	return service.AddMany(project, skills, targets, opts...)
+	return service.addMany(project, skills, targets, global, opts...)
+}
+
+func (s *Service) previewMany(project string, skills []catalog.Skill, targets []adapter.Target, global bool, opts ...Options) (operation.Plan, error) {
+	if global {
+		return s.PreviewGlobalMany(project, skills, targets, opts...)
+	}
+	return s.PreviewMany(project, skills, targets, opts...)
 }
 
 func samePlan(left, right operation.Plan) bool {
@@ -302,11 +335,21 @@ func placementConflict(path, source string) (bool, error) {
 
 // AddMany activates an explicit selection as one confirmed, journaled transaction.
 func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
+	return s.addMany(project, skills, targets, false, opts...)
+}
+
+// AddGlobalMany activates an explicit selection through guarded links in the
+// selected targets' user-level Skill directories.
+func (s *Service) AddGlobalMany(home string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
+	return s.addMany(home, skills, targets, true, opts...)
+}
+
+func (s *Service) addMany(project string, skills []catalog.Skill, targets []adapter.Target, global bool, opts ...Options) (operation.Plan, error) {
 	options := optionsOf(opts)
 	if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
 		return operation.Plan{}, err
 	}
-	preview, err := s.buildAddManyPreview(project, skills, targets, options)
+	preview, err := s.buildAddManyPreview(project, skills, targets, options, global)
 	if err != nil {
 		return preview.plan, err
 	}
@@ -352,7 +395,7 @@ func (s *Service) AddMany(project string, skills []catalog.Skill, targets []adap
 			return err
 		}
 		for i := range requests {
-			if err := adapter.ValidateProjectPlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], requests[i].Resource.ID); err != nil {
+			if err := validateLifecyclePlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], requests[i].Resource.ID, requests[i].GlobalScope); err != nil {
 				return err
 			}
 			replanned, err := s.planSkill(requests[i])
@@ -415,11 +458,11 @@ type addManyPreview struct {
 // PreviewAddMany builds the exact guarded activation plan without staging
 // snapshots or changing the project, library, or journal.
 func (s *Service) PreviewAddMany(project string, skills []catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
-	preview, err := s.buildAddManyPreview(project, skills, targets, optionsOf(opts))
+	preview, err := s.buildAddManyPreview(project, skills, targets, optionsOf(opts), false)
 	return preview.plan, err
 }
 
-func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, targets []adapter.Target, options Options) (addManyPreview, error) {
+func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, targets []adapter.Target, options Options, global bool) (addManyPreview, error) {
 	preview := addManyPreview{plan: operation.NewPlan("activate selected skills")}
 	project, err := filepath.Abs(project)
 	if err != nil {
@@ -436,7 +479,7 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 			return preview, err
 		}
 		for _, target := range targets {
-			placement, err := s.resourcePlacement(project, target, base.Resource)
+			placement, err := s.resourcePlacementInScope(project, target, base.Resource, global)
 			if err != nil {
 				return preview, err
 			}
@@ -449,6 +492,7 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 				Action:        resource.LifecycleActivate,
 				LibraryPath:   s.LibraryPath,
 				ProjectPath:   project,
+				GlobalScope:   global,
 				Resource:      base.Resource,
 				PlacementPath: path,
 				Target:        string(target),
@@ -532,6 +576,71 @@ func (s *Service) List(project string) ([]Item, error) {
 	return items, nil
 }
 
+// ListGlobal inventories global Skill directories for the supported targets.
+// It only classifies symlinks into the configured repository as managed.
+func (s *Service) ListGlobal(home string) ([]Item, error) {
+	home, err := filepath.Abs(home)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(home)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("%w: global skill home must be a real directory", ErrUnsafePath)
+	}
+	items := make([]Item, 0)
+	handler := resource.NewSkillHandler()
+	for _, target := range adapter.Supported() {
+		agent, ok := adapter.ForAgent(target.Target())
+		if !ok {
+			continue
+		}
+		root := filepath.Dir(agent.GlobalSkillPath(home, "placeholder"))
+		if err := adapter.ValidateGlobalResourcePlacement(target.Target(), home, agent.GlobalSkillPath(home, "placeholder"), resource.Skill, "placeholder"); err != nil {
+			return nil, err
+		}
+		entries, err := os.ReadDir(root)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect %s global Skills: %w", target.Target(), err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(root, entry.Name())
+			item := Item{Target: target.Target(), Identifier: entry.Name(), Path: path, Status: Unmanaged}
+			pathInfo, err := os.Lstat(path)
+			if err != nil {
+				return nil, err
+			}
+			if pathInfo.Mode()&os.ModeSymlink != 0 {
+				source, err := os.Readlink(path)
+				if err != nil {
+					return nil, err
+				}
+				item.SourcePath = source
+				owned, err := handler.ManagesSource(s.LibraryPath, entry.Name(), source)
+				if err != nil {
+					return nil, err
+				}
+				if owned {
+					if _, err := os.Stat(source); os.IsNotExist(err) {
+						item.Status = Orphaned
+					} else if err != nil {
+						return nil, err
+					} else {
+						item.Status = Managed
+					}
+				}
+			}
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
 // unsupportedProjectSkills inventories agent-shaped project locations without
 // an adapter. Such entries are visible to operators but cannot be targets for
 // lifecycle mutations because no adapter is registered for them.
@@ -562,7 +671,16 @@ func unsupportedProjectSkills(project string) ([]Item, error) {
 
 // Remove removes only a managed project-side soft link.
 func (s *Service) Remove(project string, target adapter.Target, identifier string) (operation.Plan, error) {
-	plan, project, placement, request, planned, err := s.buildRemovePreview(project, target, identifier)
+	return s.removeInScope(project, target, identifier, false)
+}
+
+// RemoveGlobal removes only a managed global Skill link beneath home.
+func (s *Service) RemoveGlobal(home string, target adapter.Target, identifier string) (operation.Plan, error) {
+	return s.removeInScope(home, target, identifier, true)
+}
+
+func (s *Service) removeInScope(root string, target adapter.Target, identifier string, global bool) (operation.Plan, error) {
+	plan, root, placement, request, planned, err := s.buildRemovePreviewInScope(root, target, identifier, global)
 	if err != nil {
 		return plan, err
 	}
@@ -570,7 +688,7 @@ func (s *Service) Remove(project string, target adapter.Target, identifier strin
 		return plan, ErrNotConfirmed
 	}
 	return plan, s.mutate(plan, []string{placement.Destination}, func() error {
-		if err := adapter.ValidateProjectPlacement(target, project, placement.Destination, identifier); err != nil {
+		if err := validateLifecyclePlacement(target, root, placement.Destination, identifier, global); err != nil {
 			return err
 		}
 		replanned, err := s.planSkill(request)
@@ -582,7 +700,7 @@ func (s *Service) Remove(project string, target adapter.Target, identifier strin
 		}
 		return nil
 	}, func() error {
-		if err := adapter.ValidateProjectPlacement(target, project, placement.Destination, identifier); err != nil {
+		if err := validateLifecyclePlacement(target, root, placement.Destination, identifier, global); err != nil {
 			return err
 		}
 		replanned, err := s.planSkill(request)
@@ -597,7 +715,7 @@ func (s *Service) Remove(project string, target adapter.Target, identifier strin
 				return err
 			}
 		}
-		return adapter.RemoveManagedLink(project, placement.Destination, planned.CurrentSource)
+		return adapter.RemoveManagedLink(root, placement.Destination, planned.CurrentSource)
 	})
 }
 
@@ -608,18 +726,28 @@ func (s *Service) PreviewRemove(project string, target adapter.Target, identifie
 	return plan, err
 }
 
+// PreviewRemoveGlobal builds a read-only plan for removing a global Skill link.
+func (s *Service) PreviewRemoveGlobal(home string, target adapter.Target, identifier string) (operation.Plan, error) {
+	plan, _, _, _, _, err := s.buildRemovePreviewInScope(home, target, identifier, true)
+	return plan, err
+}
+
 func (s *Service) buildRemovePreview(project string, target adapter.Target, identifier string) (operation.Plan, string, adapter.Placement, resource.SkillLifecycleRequest, resource.SkillLifecyclePlan, error) {
+	return s.buildRemovePreviewInScope(project, target, identifier, false)
+}
+
+func (s *Service) buildRemovePreviewInScope(project string, target adapter.Target, identifier string, global bool) (operation.Plan, string, adapter.Placement, resource.SkillLifecycleRequest, resource.SkillLifecyclePlan, error) {
 	plan := operation.NewPlan("remove")
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return plan, "", adapter.Placement{}, resource.SkillLifecycleRequest{}, resource.SkillLifecyclePlan{}, err
 	}
-	baseRequest := resource.SkillLifecycleRequest{Action: resource.LifecycleRemove, LibraryPath: s.LibraryPath, ProjectPath: project, Identifier: identifier}
+	baseRequest := resource.SkillLifecycleRequest{Action: resource.LifecycleRemove, LibraryPath: s.LibraryPath, ProjectPath: project, GlobalScope: global, Identifier: identifier}
 	base, err := s.planSkill(baseRequest)
 	if err != nil {
 		return plan, project, adapter.Placement{}, baseRequest, resource.SkillLifecyclePlan{}, err
 	}
-	placement, err := s.resourcePlacement(project, target, base.Resource)
+	placement, err := s.resourcePlacementInScope(project, target, base.Resource, global)
 	if err != nil {
 		return plan, project, adapter.Placement{}, baseRequest, resource.SkillLifecyclePlan{}, err
 	}
@@ -656,12 +784,13 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 	}
 	path := placement.Destination
 	libraryPath := planned.Resource.Provenance.Source
+	libraryRoot := filepath.Join(s.LibraryPath, identifier)
 	plan := operation.NewPlan("adopt")
 	appendSkillPlan(&plan, planned)
 	if !s.confirmed(plan) {
 		return plan, ErrNotConfirmed
 	}
-	return plan, s.mutate(plan, []string{path, libraryPath}, func() error {
+	return plan, s.mutate(plan, []string{path, libraryRoot}, func() error {
 		if err := adapter.ValidateProjectPlacement(target, project, path, identifier); err != nil {
 			return err
 		}
@@ -669,7 +798,7 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 		if err != nil {
 			return err
 		}
-		if replanned.SourcePath != planned.SourcePath || replanned.Resource.Provenance.Source != libraryPath {
+		if replanned.SourcePath != planned.SourcePath || replanned.SourceChecksum != planned.SourceChecksum || replanned.Resource.Provenance.Source != libraryPath {
 			return ErrUnsafePath
 		}
 		return nil
@@ -679,9 +808,12 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 		}
 		replanned, err := s.planSkill(request)
 		if err != nil {
+			if errors.Is(err, ErrConflict) {
+				return preservePath(err, libraryRoot)
+			}
 			return err
 		}
-		if replanned.SourcePath != planned.SourcePath || replanned.Resource.Provenance.Source != libraryPath {
+		if replanned.SourcePath != planned.SourcePath || replanned.SourceChecksum != planned.SourceChecksum || replanned.Resource.Provenance.Source != libraryPath {
 			return ErrUnsafePath
 		}
 		projectAnchor, err := capturePathAnchor(filepath.Dir(path))
@@ -695,8 +827,33 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 		if err := libraryAnchor.validate(); err != nil {
 			return err
 		}
-		if err := stagedCopy(path, libraryPath, libraryAnchor.path); err != nil {
+		repository, err := skillrepo.Open(s.LibraryPath)
+		if err != nil {
 			return err
+		}
+		entry, err := repository.AddVersion(identifier, path, skillrepo.VersionMetadata{
+			Key: filepath.Base(libraryPath), Version: "unknown", Source: path,
+			SourceType: "local-adoption", Publisher: "unknown", ImmutableRef: "unknown",
+			Checksum: planned.SourceChecksum, TrustLevel: "unknown", VerificationStatus: "unknown",
+			LegacyProvenance: "adopted from project",
+		}, true)
+		if err != nil {
+			if errors.Is(err, skillrepo.ErrConflict) {
+				return preservePath(err, libraryRoot)
+			}
+			if errors.Is(err, skillrepo.ErrUnsafe) {
+				checksum, checksumErr := skillrepo.ChecksumTree(path)
+				if checksumErr != nil || checksum != planned.SourceChecksum {
+					return preservePaths(errors.Join(ErrUnsafePath, errConcurrentEdit, err, checksumErr), path, libraryRoot)
+				}
+				if _, statErr := os.Lstat(libraryRoot); statErr == nil || !os.IsNotExist(statErr) {
+					return preservePath(errors.Join(ErrUnsafePath, err), libraryRoot)
+				}
+			}
+			return err
+		}
+		if entry.Path != libraryPath {
+			return errors.Join(ErrUnsafePath, fmt.Errorf("adopted Skill version was published at unexpected path %s", entry.Path))
 		}
 		if err := libraryAnchor.validate(); err != nil {
 			return err
@@ -706,18 +863,12 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 				return err
 			}
 		}
-		if err := libraryAnchor.validate(); err != nil {
-			return err
-		}
 		equal, err := sameTree(path, libraryPath)
 		if err != nil {
 			return errors.Join(ErrUnsafePath, err)
 		}
 		if !equal {
-			if err := os.RemoveAll(libraryPath); err != nil {
-				return errors.Join(ErrUnsafePath, errConcurrentEdit, err)
-			}
-			return errors.Join(ErrUnsafePath, errConcurrentEdit)
+			return preservePath(errors.Join(ErrUnsafePath, errConcurrentEdit), path)
 		}
 		if err := projectAnchor.validate(); err != nil {
 			return err
@@ -730,13 +881,7 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 		}
 		if err := stagedDirectoryLink(path, libraryPath, hook, projectAnchor); err != nil {
 			if errors.Is(err, errConcurrentEdit) {
-				var cleanupErr error
-				if anchorErr := libraryAnchor.validate(); anchorErr != nil {
-					cleanupErr = anchorErr
-				} else {
-					cleanupErr = os.RemoveAll(libraryPath)
-				}
-				return preservePath(errors.Join(ErrUnsafePath, err, cleanupErr), path)
+				return preservePath(errors.Join(ErrUnsafePath, err), path)
 			}
 			return err
 		}
@@ -872,6 +1017,31 @@ func (s *Service) resourcePlacement(project string, target adapter.Target, manag
 	return a.PlanPlacement(adapter.PlacementRequest{Project: project, Resource: managed})
 }
 
+func (s *Service) resourcePlacementInScope(root string, target adapter.Target, managed resource.ManagedResource, global bool) (adapter.Placement, error) {
+	if !global {
+		return s.resourcePlacement(root, target, managed)
+	}
+	a, ok := adapter.ForAgent(target)
+	if !ok {
+		return adapter.Placement{}, fmt.Errorf("unsupported target %q", target)
+	}
+	if managed.Kind != resource.Skill {
+		return adapter.Placement{}, &adapter.UnsupportedResourceKindError{Target: target, Kind: managed.Kind}
+	}
+	destination := a.GlobalSkillPath(root, managed.ID)
+	if err := adapter.ValidateGlobalResourcePlacement(target, root, destination, managed.Kind, managed.ID); err != nil {
+		return adapter.Placement{}, err
+	}
+	return adapter.Placement{Target: target, Kind: managed.Kind, Identifier: managed.ID, Destination: destination}, nil
+}
+
+func validateLifecyclePlacement(target adapter.Target, root, destination, identifier string, global bool) error {
+	if global {
+		return adapter.ValidateGlobalResourcePlacement(target, root, destination, resource.Skill, identifier)
+	}
+	return adapter.ValidateProjectPlacement(target, root, destination, identifier)
+}
+
 func (s *Service) planSkill(request resource.SkillLifecycleRequest) (resource.SkillLifecyclePlan, error) {
 	planned, err := s.resourceHandler.PlanLifecycle(request)
 	if err != nil {
@@ -918,12 +1088,12 @@ func (s *Service) mutateWithBefore(plan operation.Plan, paths []string, before [
 		}
 	}
 	if err := change(); err != nil {
-		if errors.Is(err, errConcurrentEdit) {
-			return err
-		}
 		var preserve *preservePathsError
 		if errors.As(err, &preserve) {
 			return rollbackError(err, s.Journal.Restore(excludingPaths(before, preserve.paths)))
+		}
+		if errors.Is(err, errConcurrentEdit) {
+			return err
 		}
 		return rollbackError(err, s.Journal.Restore(before))
 	}
@@ -1007,6 +1177,7 @@ func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.Skill
 		Project:            request.ProjectPath,
 		Target:             adapter.Target(request.Target),
 		Destination:        request.PlacementPath,
+		GlobalScope:        request.GlobalScope,
 		Conflict:           adapter.ConflictStrategy(request.Conflict),
 		Force:              request.Force,
 		Journal:            journal,

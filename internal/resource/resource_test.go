@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/AllenMuu/skill-manager/internal/resource"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 func TestValidateAcceptsVersionedResourceContract(t *testing.T) {
@@ -124,6 +125,147 @@ func TestSkillHandlerOwnsCatalogDiscoveryAndManagedResourceConversion(t *testing
 	}
 	if !reflect.DeepEqual(inspected, managed) {
 		t.Fatalf("Inspect() = %#v, want %#v", inspected, managed)
+	}
+}
+
+func TestSkillHandlerResolvesOnlyTheSelectedVersionAndRecognizesRetainedVersions(t *testing.T) {
+	library := t.TempDir()
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSource := filepath.Join(t.TempDir(), "demo")
+	writeSkill(t, oldSource)
+	old, err := repository.AddVersion("demo", oldSource, skillrepo.VersionMetadata{Version: "1.0.0", SourceType: "git", Publisher: "Example"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSource := filepath.Join(t.TempDir(), "demo")
+	writeSkill(t, newSource)
+	newVersion, err := repository.AddVersion("demo", newSource, skillrepo.VersionMetadata{Version: "2.0.0"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := resource.NewSkillHandler()
+	catalog, diagnostics, err := handler.Discover(library)
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	if len(diagnostics) != 0 || len(catalog) != 1 {
+		t.Fatalf("Discover() = (%#v, %#v), want one identity and no diagnostics", catalog, diagnostics)
+	}
+	if catalog[0].SourcePath != newVersion.Path || catalog[0].Version != "2.0.0" || len(catalog[0].Versions) != 2 {
+		t.Fatalf("catalog entry = %#v, want current version and both addressable versions", catalog[0])
+	}
+	if catalog[0].Versions[0].Version != "1.0.0" || catalog[0].Versions[0].Publisher != "Example" {
+		t.Fatalf("catalog versions omitted prior provenance: %#v", catalog[0].Versions)
+	}
+
+	selected, err := handler.Resolve(library, "demo", "1.0.0")
+	if err != nil {
+		t.Fatalf("Resolve(1.0.0) error = %v", err)
+	}
+	placement := filepath.Join(t.TempDir(), "codex", "demo")
+	planned, err := handler.PlanLifecycle(resource.SkillLifecycleRequest{
+		Action:        resource.LifecycleActivate,
+		LibraryPath:   library,
+		CatalogEntry:  &selected,
+		PlacementPath: placement,
+		Target:        "codex",
+	})
+	if err != nil {
+		t.Fatalf("PlanLifecycle(selected old version) error = %v", err)
+	}
+	activation := planned.(resource.SkillLifecyclePlan)
+	if activation.SourcePath != old.Path {
+		t.Fatalf("activation source=%q, want explicitly selected retained version %q", activation.SourcePath, old.Path)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(placement), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(old.Path, placement); err != nil {
+		t.Fatal(err)
+	}
+	removal, err := handler.PlanLifecycle(resource.SkillLifecycleRequest{
+		Action: resource.LifecycleRemove, LibraryPath: library, Identifier: "demo", PlacementPath: placement,
+	})
+	if err != nil {
+		t.Fatalf("PlanLifecycle(remove retained version) error = %v", err)
+	}
+	if got := removal.(resource.SkillLifecyclePlan).SourcePath; got != old.Path {
+		t.Fatalf("removal source=%q, want retained version %q", got, old.Path)
+	}
+}
+
+func TestSkillHandlerUsesOnlySelectedVersionContentForResolveActivationAndRemoval(t *testing.T) {
+	for _, state := range []string{"corrupt", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			library := t.TempDir()
+			repository, err := skillrepo.Open(library)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldSource := filepath.Join(t.TempDir(), "demo")
+			writeSkill(t, oldSource)
+			old, err := repository.AddVersion("demo", oldSource, skillrepo.VersionMetadata{Version: "1.0.0"}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentSource := filepath.Join(t.TempDir(), "demo")
+			writeSkill(t, currentSource)
+			current, err := repository.AddVersion("demo", currentSource, skillrepo.VersionMetadata{Version: "2.0.0"}, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch state {
+			case "corrupt":
+				if err := os.WriteFile(filepath.Join(current.Path, "SKILL.md"), []byte("corrupted"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := os.RemoveAll(current.Path); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			handler := resource.NewSkillHandler()
+			selected, err := handler.Resolve(library, "demo", "1.0.0")
+			if err != nil {
+				t.Fatalf("Resolve(1.0.0) with %s unselected current version: %v", state, err)
+			}
+			if selected.SourcePath != old.Path {
+				t.Fatalf("Resolve(1.0.0) source=%q, want %q", selected.SourcePath, old.Path)
+			}
+			activation, err := handler.PlanLifecycle(resource.SkillLifecycleRequest{
+				Action: resource.LifecycleActivate, LibraryPath: library, CatalogEntry: &selected,
+				PlacementPath: filepath.Join(t.TempDir(), "codex", "demo"), Target: "codex",
+			})
+			if err != nil {
+				t.Fatalf("PlanLifecycle(activate 1.0.0) with %s unselected current version: %v", state, err)
+			}
+			if got := activation.(resource.SkillLifecyclePlan).SourcePath; got != old.Path {
+				t.Fatalf("activation source=%q, want selected version %q", got, old.Path)
+			}
+
+			placement := filepath.Join(t.TempDir(), "codex", "demo")
+			if err := os.MkdirAll(filepath.Dir(placement), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(old.Path, placement); err != nil {
+				t.Fatal(err)
+			}
+			planned, err := handler.PlanLifecycle(resource.SkillLifecycleRequest{
+				Action: resource.LifecycleRemove, LibraryPath: library, Identifier: "demo", PlacementPath: placement,
+			})
+			if err != nil {
+				t.Fatalf("PlanLifecycle(remove) with %s unselected current version: %v", state, err)
+			}
+			if got := planned.(resource.SkillLifecyclePlan).SourcePath; got != old.Path {
+				t.Fatalf("removal source=%q, want retained version %q", got, old.Path)
+			}
+		})
 	}
 }
 
@@ -247,7 +389,12 @@ func TestSkillHandlerPlansAdoptionAndReconciliation(t *testing.T) {
 		t.Fatalf("PlanLifecycle(adopt) error = %v", err)
 	}
 	adopt := planned.(resource.SkillLifecyclePlan)
-	if adopt.SourcePath != projectSkill || adopt.Resource.Provenance.Source != filepath.Join(library, "demo") || len(adopt.Changes) != 2 {
+	checksum, err := skillrepo.ChecksumTree(projectSkill)
+	if err != nil {
+		t.Fatalf("ChecksumTree(project skill) error = %v", err)
+	}
+	wantAdoptedVersion := filepath.Join(library, "demo", "versions", "legacy-"+checksum[:12])
+	if adopt.SourcePath != projectSkill || adopt.Resource.Provenance.Source != wantAdoptedVersion || adopt.SourceChecksum != checksum || len(adopt.Changes) != 2 {
 		t.Fatalf("PlanLifecycle(adopt) = %#v", adopt)
 	}
 
@@ -274,6 +421,20 @@ func TestSkillHandlerPlansAdoptionAndReconciliation(t *testing.T) {
 	reconcile := planned.(resource.SkillLifecyclePlan)
 	if !reconcile.Applicable || reconcile.CurrentSource != old || reconcile.SourcePath != filepath.Join(library, "demo") || len(reconcile.Changes) != 1 {
 		t.Fatalf("PlanLifecycle(reconcile) = %#v", reconcile)
+	}
+}
+
+func TestDiscoverTreatsMissingRepositoryAsEmptyWithoutCreatingIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not-created", "skills")
+	skills, diagnostics, err := resource.NewSkillHandler().Discover(root)
+	if err != nil {
+		t.Fatalf("Discover(missing root) error = %v", err)
+	}
+	if len(skills) != 0 || len(diagnostics) != 0 {
+		t.Fatalf("Discover(missing root) = skills %#v, diagnostics %#v; want an empty catalog", skills, diagnostics)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("Discover created the missing repository: %v", err)
 	}
 }
 
