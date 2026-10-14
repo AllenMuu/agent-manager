@@ -361,13 +361,15 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
   if (page.error) return <ErrorState error={page.error} />
   if (!page.data) return <EmptyState title={t('Workspace is ready')} detail={t('Refresh to read the project inventory.')} />
   const { agents, recommendations, resources } = page.data
+  const hiddenAgentIDs = new Set(['codebuddy', 'junie', 'lingma', 'vscode'])
+  const visibleAgents = agents.filter((agent) => !hiddenAgentIDs.has(agent.id))
   const recommended = recommendations.scopes.flatMap((scope) => scope.recommendations.map((item) => ({ ...item, scope: scope.path })))
   const technologies = recommendations.scopes.flatMap((scope) => scope.technologies.map((technology) => ({
     ...technology,
     scope: scope.path,
     evidence: scope.evidence.filter((item) => item.technology === technology.id).map((item) => item.path),
   })))
-  const unavailable = agents.filter((agent) => agent.availability === 'unavailable' || agent.status === 'unsupported').length
+  const unavailable = visibleAgents.filter((agent) => agent.availability === 'unavailable' || agent.status === 'unsupported').length
   return <div className={styles.workspaceGrid}>
     <section className={`${styles.panel} ${styles.summaryPanel}`}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('PROJECT SNAPSHOT')}</span><span className={styles.statusDot}><i /> {t('Read only')}</span></div>
@@ -378,8 +380,8 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
     </section>
 
     <section className={`${styles.panel} ${styles.agentPanel}`}>
-      <div className={styles.panelTop}><span className={styles.kicker}>{t('AGENT ADAPTERS')}</span><span className={styles.countMark}>{agents.length.toString().padStart(2, '0')}</span></div>
-      <div className={styles.agentList}>{agents.map((agent) => <div className={styles.agentRow} key={agent.id}>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('AGENT ADAPTERS')}</span><span className={styles.countMark}>{visibleAgents.length.toString().padStart(2, '0')}</span></div>
+      <div className={styles.agentList}>{visibleAgents.map((agent) => <div className={styles.agentRow} key={agent.id}>
         <span className={`${styles.agentGlyph} ${agent.status === 'unsupported' ? styles.agentGlyphMuted : ''}`}>{agent.id.slice(0, 1).toUpperCase()}</span>
         <div className={styles.agentInfo}><strong>{agent.id}</strong><span>{agent.capabilities.length ? agent.capabilities.join(' · ') : statusLabel(agent.status, t)}</span></div>
         <span className={`${styles.pill} ${agent.availability === 'configured' ? styles.pillReady : agent.status === 'unsupported' ? styles.pillMuted : styles.pillQuiet}`}>{statusLabel(agent.availability, t)}</span>
