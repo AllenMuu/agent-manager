@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { APIError, get, post } from './api'
 import { getSkillSelectionAction, toggleSkillSelection, type SkillSelectionAction } from './skillSelection'
 import { bootstrapSession } from './session'
@@ -24,6 +24,7 @@ import styles from './App.module.css'
 type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations'
 type PageState<T> = { data: T | null; loading: boolean; error: unknown | null }
 type PlanEnvelope = { plan: OperationPlan }
+type PendingInstallationPreview = InstallationPreview & { inputGeneration: number }
 type Toast = { kind: 'success'; text: string; values?: Record<string, string | number> } | { kind: 'error'; error: unknown }
 
 const navItems: { id: View; label: string; eyebrow: string }[] = [
@@ -56,12 +57,18 @@ export function App() {
   const [targets, setTargets] = useState<string[]>(['codex'])
   const [batchTargets, setBatchTargets] = useState<string[]>([])
   const [batchReplaceConflicts, setBatchReplaceConflicts] = useState(false)
-  const [batchPreview, setBatchPreview] = useState<InstallationPreview | null>(null)
+  const [batchPreview, setBatchPreview] = useState<PendingInstallationPreview | null>(null)
   const [pendingActivation, setPendingActivation] = useState(false)
   const [forceReplace, setForceReplace] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<OperationPlan | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [busy, setBusy] = useState(false)
+  const mutationRequestInFlight = useRef(false)
+  const batchInputGeneration = useRef(0)
+  const invalidateBatchPreview = useCallback(() => {
+    batchInputGeneration.current += 1
+    setBatchPreview(null)
+  }, [])
 
   const availableSkillIDs = new Set(fullCatalog.data?.skills.map((skill) => skill.identifier))
   const unavailableSkillIDs = fullCatalog.data ? selectedSkillIDs.filter((id) => !availableSkillIDs.has(id)) : []
@@ -101,6 +108,9 @@ export function App() {
   }, [project, view, loadWorkspace])
 
   const runRequest = useCallback(async <T,>(action: () => Promise<T>, onSuccess: (value: T) => void, onError?: (error: unknown) => void) => {
+    // Ref ownership is synchronous, so navigation or same-tick events cannot overlap requests.
+    if (mutationRequestInFlight.current) return
+    mutationRequestInFlight.current = true
     setBusy(true)
     setToast(null)
     try {
@@ -109,6 +119,7 @@ export function App() {
       if (onError) onError(error)
       else setToast({ kind: 'error', error })
     } finally {
+      mutationRequestInFlight.current = false
       setBusy(false)
     }
   }, [])
@@ -127,10 +138,10 @@ export function App() {
   }
 
   const loadSkills = async (searchTerm = query) => {
-    if (!token || busy || skills.loading) return
+    if (!token || mutationRequestInFlight.current || skills.loading) return
     setSkills((current) => ({ ...current, loading: true, error: null }))
     setFullCatalog((current) => ({ ...current, loading: true, error: null }))
-    setBatchPreview(null)
+    invalidateBatchPreview()
     try {
       // Availability always comes from an unfiltered catalog, even during a search.
       const fullRequest = get<InstallationCatalog>(token, '/api/catalog?q=')
@@ -234,16 +245,20 @@ export function App() {
   const batchPayload = () => ({ skillIds: selectedSkillIDs, targets: batchTargets, replaceConflicts: batchReplaceConflicts })
 
   const createBatchPreview = async () => {
-    if (!token || mutationBlocked || pendingPlan || selectionAction !== 'batch-install' || !batchTargetsValid) return
-    setBatchPreview(null)
+    if (!token || mutationRequestInFlight.current || mutationBlocked || pendingPlan || selectionAction !== 'batch-install' || !batchTargetsValid) return
+    invalidateBatchPreview()
+    const inputGeneration = batchInputGeneration.current
     await runRequest(
       () => post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload()),
-      (result) => setBatchPreview(result.preview),
+      (result) => {
+        if (inputGeneration === batchInputGeneration.current) setBatchPreview({ ...result.preview, inputGeneration })
+      },
     )
   }
 
   const applyBatchPreview = async () => {
-    if (!token || !batchPreview || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid) return
+    if (!token || !batchPreview || mutationRequestInFlight.current || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid || batchPreview.inputGeneration !== batchInputGeneration.current) return
+    const inputGeneration = batchPreview.inputGeneration
     await runRequest(
       async () => {
         try {
@@ -252,18 +267,19 @@ export function App() {
           return { stale: false as const }
         } catch (error) {
           setBatchPreview(null)
-          if (!(error instanceof APIError) || error.status !== 409) throw error
+          if (!(error instanceof APIError) || error.status !== 409 || inputGeneration !== batchInputGeneration.current) throw error
           const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload())
           return { stale: true as const, preview: result.preview }
         }
       },
       (result) => {
         if (result.stale) {
-          setBatchPreview(result.preview)
+          if (inputGeneration !== batchInputGeneration.current) return
+          setBatchPreview({ ...result.preview, inputGeneration })
           setToast({ kind: 'success', text: 'The project changed after preview. Review this updated plan, then confirm again.' })
           return
         }
-        setBatchPreview(null)
+        invalidateBatchPreview()
         setSelectedSkillIDs([])
         setToast({ kind: 'success', text: 'Selected Skills installed successfully.' })
         if (project) void loadWorkspace(project.id)
@@ -276,7 +292,7 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/remove`, { skillIdentifier: resource.identifier, targetAgent: resource.target }),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(false); setBatchPreview(null) },
+      (result) => { setPendingPlan(result.plan); setPendingActivation(false); invalidateBatchPreview() },
     )
   }
 
@@ -284,7 +300,7 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/undo`, {}),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(false); setBatchPreview(null) },
+      (result) => { setPendingPlan(result.plan); setPendingActivation(false); invalidateBatchPreview() },
     )
   }
 
@@ -323,6 +339,7 @@ export function App() {
   }
 
   const navigate = (next: View) => {
+    if (next !== 'skills') invalidateBatchPreview()
     setView(next)
     setToast(null)
     setSelectedSkill(null)
@@ -384,6 +401,7 @@ export function App() {
         {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} canExecute={!pendingActivation || !mutationBlocked} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
         {view === 'workspace' && <Workspace
           page={workspace}
+          busy={busy}
           onActivate={openWorkspaceSkill}
           onRemove={(resource) => void createRemovalPlan(resource)}
           onDiagnostics={() => navigate('diagnostics')}
@@ -397,7 +415,7 @@ export function App() {
           mutationBlocked={mutationBlocked || !!pendingPlan}
           inputsLocked={busy || pendingActivation}
           onRetryRecommendations={() => void loadRecommendations(project.id)}
-          onToggleSkill={(identifier) => { setBatchPreview(null); setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier)) }}
+          onToggleSkill={(identifier) => { invalidateBatchPreview(); setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier)) }}
           query={query}
           setQuery={setQuery}
           onSearch={(event) => { event.preventDefault(); void loadSkills(query) }}
@@ -407,14 +425,14 @@ export function App() {
           onToggleTarget={(target) => setTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target])}
           supportedTargets={fullCatalog.data?.targets ?? []}
           batchTargets={batchTargets}
-          onToggleBatchTarget={(target) => { setBatchPreview(null); setBatchTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target]) }}
+          onToggleBatchTarget={(target) => { invalidateBatchPreview(); setBatchTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target]) }}
           batchReplaceConflicts={batchReplaceConflicts}
-          setBatchReplaceConflicts={(value) => { setBatchPreview(null); setBatchReplaceConflicts(value) }}
+          setBatchReplaceConflicts={(value) => { invalidateBatchPreview(); setBatchReplaceConflicts(value) }}
           batchTargetsValid={batchTargetsValid}
           batchPreview={batchPreview}
           onPreviewInstallation={() => void createBatchPreview()}
           onApplyInstallation={() => void applyBatchPreview()}
-          onCancelInstallation={() => setBatchPreview(null)}
+          onCancelInstallation={invalidateBatchPreview}
           forceReplace={forceReplace}
           setForceReplace={setForceReplace}
           onActivate={() => void createActivationPlan()}
@@ -451,11 +469,12 @@ function ProjectRegistration({ path, setPath, onSubmit, busy }: { path: string; 
   </section>
 }
 
-function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
+function Workspace({ page, busy, onActivate, onRemove, onDiagnostics }: {
   page: PageState<{ agents: Agent[]; recommendations: RecommendationResult; resources: Resource[] }>
   onActivate: (skill: Skill) => void
   onRemove: (resource: Resource) => void
   onDiagnostics: () => void
+  busy: boolean
 }) {
   const { t, message } = useLanguage()
   if (page.loading && !page.data) return <LoadingState label={t('Reading this project…')} />
@@ -503,7 +522,7 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
       <div className={styles.panelTop}><span className={styles.kicker}>{t('PROJECT INVENTORY')}</span><span className={styles.countMark}>{resources.length.toString().padStart(2, '0')}</span></div>
       {resources.length ? <div className={styles.inventoryList}>{resources.map((resource) => <div className={styles.inventoryRow} key={`${resource.target}-${resource.identifier}`}>
         <div className={styles.resourceMain}><span className={styles.pill}>{statusLabel(resource.status, t)}</span><strong>{resource.identifier}</strong><span className={styles.mutedText}>{resource.target}</span><code>{resource.path}</code></div>
-        {resource.status === 'managed' && <button className={styles.subtleDangerButton} type="button" onClick={() => onRemove(resource)}>{t('Plan removal')}</button>}
+        {resource.status === 'managed' && <button className={styles.subtleDangerButton} type="button" disabled={busy} onClick={() => onRemove(resource)}>{t('Plan removal')}</button>}
       </div>)}</div> : <EmptyInline title={t('No project Skills')} detail={t('This project has no entries in supported Skill locations.')} />}
     </section>
 

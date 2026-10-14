@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { LanguageProvider } from './i18n'
@@ -365,6 +365,57 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByText('1 selected')).toBeInTheDocument()
   })
 
+  it('blocks overlapping removal while a deferred batch preview crosses navigation', async () => {
+    const delayedPreview = deferred<Response>()
+    const thirdSkill: Skill = { identifier: 'go-review', name: 'Go Review', description: 'Go review', tags: [], compatibility: [] }
+    let previews = 0
+    const { calls } = installFixture((route, init) => {
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [...operationSkills, thirdSkill], targets: supportedTargets })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [{ target: 'codex', identifier: 'installed', path: '/workspace/sample/.codex/skills/installed', status: 'managed' }] })
+      if (route.endsWith('/plans/remove')) return jsonResponse({ plan: { id: 'removal-plan', operation: 'remove selected skill', changes: [], warnings: [], expiresAt: '2026-10-15T00:10:00Z' } })
+      if (route === '/api/install/preview') {
+        if (++previews === 1) return delayedPreview.promise
+        const payload = JSON.parse(init.body as string)
+        return jsonResponse({ preview: { id: 'current-preview', skillIds: payload.skillIds, targets: payload.targets, plan: { operation: 'activate', changes: [], warnings: [] } } })
+      }
+    })
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+    await waitFor(() => expect(calls.filter((call) => call.route === '/api/install/preview')).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: /Workspace/ }))
+    const remove = await screen.findByRole('button', { name: 'Plan removal' })
+    expect(remove).toBeDisabled()
+    fireEvent.click(remove)
+    expect(calls.some((call) => call.route.endsWith('/plans/remove'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
+    expect(screen.getByRole('checkbox', { name: 'Select go-test' })).toBeDisabled()
+    await act(async () => delayedPreview.resolve(jsonResponse({ preview: { id: 'old-preview', skillIds: ['go-helper', 'go-test'], targets: ['pi'], plan: { operation: 'activate', changes: [], warnings: [] } } })))
+    expect(screen.queryByRole('button', { name: 'Confirm installation' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-review' }))
+    await previewBatch()
+    expect(JSON.parse(calls.filter((call) => call.route === '/api/install/preview')[1].init.body as string)).toEqual({ skillIds: ['go-helper', 'go-review'], targets: ['pi'], replaceConflicts: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    await waitFor(() => expect(screen.getByText('0 selected')).toBeInTheDocument())
+    expect(calls.filter((call) => call.route === '/api/install/apply').map((call) => JSON.parse(call.init.body as string))).toEqual([{ previewId: 'current-preview' }])
+  })
+
+  it('discards a deferred preview response after leaving Skills invalidates its review', async () => {
+    const delayedPreview = deferred<Response>()
+    installFixture((route) => route === '/api/install/preview' ? delayedPreview.promise : undefined)
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+    fireEvent.click(screen.getByRole('button', { name: /Workspace/ }))
+    await screen.findByText('No project Skills')
+    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
+    await act(async () => delayedPreview.resolve(jsonResponse({ preview: { id: 'late-preview', skillIds: ['go-helper', 'go-test'], targets: ['pi'], plan: { operation: 'activate', changes: [], warnings: [] } } })))
+    expect(screen.queryByRole('heading', { name: 'Review installation' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeEnabled()
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+  })
+
   it('bootstraps the token, reads a Skill, reviews its plan, and confirms through the local API', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
     const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: ['go'], compatibility: ['codex'], body: 'Use Go tooling.' }
@@ -561,7 +612,7 @@ const operationSkills: Skill[] = [
   { identifier: 'go-test', name: 'Go Test', description: 'Go tests', tags: [], compatibility: [] },
 ]
 
-function installFixture(override?: (route: string, init: RequestInit) => Response | undefined) {
+function installFixture(override?: (route: string, init: RequestInit) => Response | Promise<Response> | undefined) {
   const calls: { route: string; init: RequestInit }[] = []
   let previews = 0
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -594,4 +645,10 @@ async function selectBatch() {
 async function previewBatch() {
   fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
   await screen.findByRole('heading', { name: 'Review installation' })
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((fulfill) => { resolve = fulfill })
+  return { promise, resolve }
 }
