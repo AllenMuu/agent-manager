@@ -17,10 +17,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// These are the adapters known to Agent Manager. None currently declares a
-// native shared-Memory integration, so available providers are reported as
-// configured but unsupported for these targets until a runtime integration is
-// explicitly implemented.
+// Default delivery adapters have no ambient Memory authority. Explicit stdio
+// sessions are separately inspected with memory integration-status; installing
+// this binary alone never enables shared Memory in a native runtime.
 var memoryAgentIntegrations = []memory.AgentAccess{
 	{Agent: string(adapter.ClaudeCode)},
 	{Agent: string(adapter.Codex)},
@@ -33,6 +32,9 @@ func newMemoryCommand(rootOptions *rootOptions) *cobra.Command {
 		Short: "Inspect shared Memory provider integration",
 	}
 	command.AddCommand(newMemoryStatusCommand(rootOptions))
+	command.AddCommand(newMemoryServeCommand())
+	command.AddCommand(newMemoryIntegrationStatusCommand())
+	command.AddCommand(newMemoryIntegrationConfigCommand())
 	command.AddCommand(newMemoryPromoteCommand(rootOptions))
 	command.AddCommand(newMemoryProjectCommand(rootOptions))
 	for _, operation := range []memory.Operation{memory.OperationAdd, memory.OperationUpdate, memory.OperationSupersede, memory.OperationForget, memory.OperationImport} {

@@ -15,8 +15,10 @@ import (
 // Access is trusted caller authority, bound once at the delivery boundary.
 // Requested owner labels never add permissions to this exact allowlist.
 type Access struct {
-	ReadOwners  []Owner
-	WriteOwners []Owner
+	// AllowWeakWrites explicitly opts into operations without CAS or receipts.
+	AllowWeakWrites bool
+	ReadOwners      []Owner
+	WriteOwners     []Owner
 }
 type RetrievalPolicy struct {
 	MaxResults   int     `json:"maxResults" yaml:"maxResults"`
@@ -43,7 +45,7 @@ func NewGateway(p StructuredProvider, access Access, policy RetrievalPolicy) (*G
 			}
 		}
 	}
-	return &Gateway{provider: p, access: Access{ReadOwners: append([]Owner(nil), access.ReadOwners...), WriteOwners: append([]Owner(nil), access.WriteOwners...)}, policy: policy}, nil
+	return &Gateway{provider: p, access: Access{AllowWeakWrites: access.AllowWeakWrites, ReadOwners: append([]Owner(nil), access.ReadOwners...), WriteOwners: append([]Owner(nil), access.WriteOwners...)}, policy: policy}, nil
 }
 func (g *Gateway) authorize(owner Owner, write bool) error {
 	if g == nil {

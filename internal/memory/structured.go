@@ -151,6 +151,8 @@ var (
 // Update/Supersede describe operation support; ConditionalUpdate and
 // AtomicSupersede separately advertise the stronger concurrency guarantees.
 type StructuredCapabilities struct {
+	ObservedReplace   bool `json:"observedReplace"`
+	RetainedHistory   bool `json:"retainedHistory"`
 	BasicReplace      bool `json:"basicReplace"`
 	BasicRemove       bool `json:"basicRemove"`
 	Remember          bool `json:"remember"`

@@ -16,7 +16,11 @@ import (
 const configLimit = 64 * 1024
 
 // Open performs explicit configuration selection; it never starts or installs services.
-func Open(c memory.ProviderConfig) (memory.StructuredProvider, error) {
+func Open(c memory.ProviderConfig) (memory.StructuredProvider, error) { return OpenWithSecrets(c, nil) }
+
+// OpenWithSecrets permits trusted delivery boundaries to resolve explicit opaque references.
+// Construction never resolves credentials or accesses the backend.
+func OpenWithSecrets(c memory.ProviderConfig, resolver mem0.SecretResolver) (memory.StructuredProvider, error) {
 	if c.Provider != "mem0" {
 		return memory.OpenConfiguredProvider(c)
 	}
@@ -60,10 +64,13 @@ func Open(c memory.ProviderConfig) (memory.StructuredProvider, error) {
 	if input.TimeoutMilliseconds < 0 || input.TimeoutMilliseconds > 60000 {
 		return nil, memory.ErrInvalidInput
 	}
-	if input.SecretReference != nil && input.SecretReference.Kind != "env" {
+	if input.SecretReference != nil && input.SecretReference.Kind != "env" && resolver == nil {
 		return nil, memory.ErrUnsupported
 	}
-	return mem0.New(mem0.Config{Endpoint: input.Endpoint, Contract: input.Contract, AllowNetwork: input.AllowNetwork, Timeout: time.Duration(input.TimeoutMilliseconds) * time.Millisecond, SecretReference: input.SecretReference}, environmentSecrets{})
+	if resolver == nil {
+		resolver = environmentSecrets{}
+	}
+	return mem0.New(mem0.Config{Endpoint: input.Endpoint, Contract: input.Contract, AllowNetwork: input.AllowNetwork, Timeout: time.Duration(input.TimeoutMilliseconds) * time.Millisecond, SecretReference: input.SecretReference}, resolver)
 }
 func configuration(ref memory.ConfigReference) ([]byte, error) {
 	switch ref.Kind {

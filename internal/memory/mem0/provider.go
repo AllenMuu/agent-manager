@@ -267,7 +267,7 @@ func (p *Provider) Get(ctx context.Context, owner memory.Owner, id memory.Record
 	return r, err
 }
 func (*Provider) Capabilities() memory.StructuredCapabilities {
-	return memory.StructuredCapabilities{Remember: true, Get: true, Recall: true, ScoredRecall: true, BasicReplace: true, BasicRemove: true}
+	return memory.StructuredCapabilities{Remember: true, Get: true, Recall: true, ScoredRecall: true, BasicReplace: true, BasicRemove: true, ObservedReplace: true, RetainedHistory: true}
 }
 func (p *Provider) Health(ctx context.Context) (memory.HealthStatus, error) {
 	var out searchResponse
@@ -302,27 +302,9 @@ func (p *Provider) Replace(ctx context.Context, input memory.ReplaceRequest) (me
 	if err != nil {
 		return memory.Record{}, err
 	}
-	if old.Version == ^uint64(0) {
-		return memory.Record{}, memory.ErrConflict
-	}
-	layer := input.Record.Layer
-	if layer == "" {
-		layer = memory.LayerRaw
-	}
-	r := memory.Record{ID: old.ID, Version: old.Version + 1, Owner: input.Owner, Type: input.Record.Type, Content: input.Record.Content, Source: input.Record.Source, Evidence: input.Record.Evidence, State: memory.RecordActive, Layer: layer}
-	if err = p.request(ctx, "PUT", "/memories/"+url.PathEscape(rr.ID), map[string]any{"text": r.Content, "metadata": metadata(r)}, nil); err != nil {
-		return memory.Record{}, err
-	}
-	var out remoteRecord
-	if err = p.request(ctx, "GET", "/memories/"+url.PathEscape(rr.ID), nil, &out); err != nil {
-		return memory.Record{}, memory.ErrOutcomeUnknown
-	}
-	got, err := canonical(out, input.Owner)
-	if err != nil || !reflect.DeepEqual(got, r) {
-		return memory.Record{}, memory.ErrOutcomeUnknown
-	}
-	return got, nil
+	return p.replaceRemote(ctx, rr, old, input.Record)
 }
+
 func (p *Provider) Remove(ctx context.Context, owner memory.Owner, id memory.RecordID) error {
 	rr, err := p.locate(ctx, owner, id)
 	if err != nil {

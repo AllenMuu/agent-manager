@@ -1,9 +1,12 @@
 # Issue #22 implementation evidence
 
-Current status: implemented, validated and independently accepted, 10/10 tasks.
-Source HEAD `f07485fdb3d77b3d942a519cb9dea9661b1ddd2a`, integrated base
-`6fefae2bf02a4232b7c21d4475b3513bf9ef1401`. Publication metadata receives
-separate supplemental review; no PR, merge or Issue closure is claimed here.
+Current status: implementation accepted and merged in PR #38 at main
+`863ebc26f34b67f94b20d4d34b1f5097328f469a`; Issue #22 is CLOSED, 10/10 tasks.
+Validated/reviewed source HEAD `f07485fdb3d77b3d942a519cb9dea9661b1ddd2a`,
+integrated base `6fefae2bf02a4232b7c21d4475b3513bf9ef1401`; the publication
+metadata/body supplement passed at final head `e306fbf` before delivery.
+This postmerge specification sync/archive is branch-local pending the #23 PR.
+Earlier prepublication statements below retain their historical source context.
 
 Scope: branch `feature/issue22-mem0-memory-provider`, starting HEAD `28b8875`,
 main prerequisite `ae1745ac50e4ab6e645d7ef07bad66c61c2d8635`. Native blocker #19
@@ -227,3 +230,15 @@ This three-file acceptance-metadata update and proposed PR body receive a
 supplemental read-only gate before publication. Go source is unchanged from the
 validated and reviewed source head. Mem0 wire/live-harness evidence retains its
 precise original tested-source scope. Parent #7 remains open for M5.
+
+## Accepted main delivery and archival
+
+PR #38 merged on 2026-10-03 at main
+`863ebc26f34b67f94b20d4d34b1f5097328f469a`; Issue #22 is CLOSED.
+All ten implementation tasks and five ticket criteria were accepted before
+publication via the recorded source and supplemental read-only gates.
+Parent #7 remains open for actual M5 Codex/Claude shared-Gateway acceptance.
+The accepted five requirements / seven scenarios were synchronized verbatim
+into the main capability (only title and Requirements header transformed), then
+this completed change was archived. The postmerge archival commit is branch-local
+until the following #23 PR publishes its separate documentation commit.

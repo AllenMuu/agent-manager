@@ -88,7 +88,7 @@ non-secret external configuration explicitly sets `allowNetwork: true` and the
 tested OSS contract pin. Local defaults and managed-skill workflows remain
 offline: no skill execution, dependency installation, service startup or network
 access is added to their lifecycle. See [ticket #22](https://github.com/AllenMuu/agent-manager/issues/22)
-and [Mem0 capability](../../openspec/changes/add-mem0-memory-provider/specs/mem0-memory-provider/spec.md).
+and [Mem0 capability](../../openspec/changes/archive/2026-10-03-add-mem0-memory-provider/specs/mem0-memory-provider/spec.md).
 
 Credentials are opaque references resolved only while building authenticated
 transport requests. Status, journals, canonical metadata and errors contain no
@@ -101,3 +101,34 @@ create and explicitly unconditional replacement/removal remain distinct from
 confirmed Gateway mutations; the CLI Gateway advertises read/search only.
 Versions are observable metadata counters, not compare-and-swap guarantees.
 No second canonical content mirror is maintained.
+
+
+## Explicit shared stdio delivery (Issue #23 Codex/Pi checkpoint)
+
+A separately configured stdio MCP client uses the same authorized Gateway and
+provider for Codex and Pi. Trusted startup agent attribution is separate
+from the shared PROJECT owner; native client labels never establish authority.
+Default role and CLI provider selections remain unchanged. Access snippets do
+not replace project instructions or populate agent-private Memory stores.
+
+Mem0 weak writes require an additional explicit policy opt-in, immutable effective
+preview and exact owner/source/intent confirmation. `replace-observed-weak`
+rechecks a snapshot then performs unconditional PUT; concurrent overwrite, CAS,
+receipts and atomic supersession are not guaranteed. One attempted write consumes
+the preview, including uncertain outcomes. Strong Gateway operations retain their
+existing contracts. Provider-owned bounded metadata retains up to eight prior
+canonical snapshots (256 KiB); separate validated inspection is not complete or
+atomic backend history. An oversized retained payload rejects before PUT.
+
+The delivery transport pins official Go MCP SDK v1.4.0 and restricts lifecycle,
+JSON sizes, tool count, previews, deadlines and registered Memory operations.
+Opaque file-secret references resolve inside the server, not native configuration
+or native agent environment. Fixture-tested capability status cannot attest native
+identity or live acceptance. Actual Codex/Pi Mem0 acceptance passed on 2026-10-14
+against Mem0 OSS Python 2.2.1 at the pinned source commit; details and private
+evidence location are recorded in the [delivery matrix](../research/issue23-memory-delivery-matrix.md).
+Parent #7 remains open with its broader acceptance checklist; its current
+Definition of Done names Codex, Pi, or another coding agent, with Claude/Hermes
+adapters scheduled incrementally after #23. See the
+[access guide](../shared-memory-mcp.md) and
+[exact delivery matrix](../research/issue23-memory-delivery-matrix.md).
