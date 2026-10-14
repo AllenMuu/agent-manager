@@ -208,6 +208,15 @@ export function App() {
     )
   }
 
+  const createDiagnosticRepairPlan = async (finding: Finding) => {
+    if (!token || !project || !finding.repairAction) return
+    const route = finding.repairAction === 'reconcile' ? 'doctor-reconcile' : 'doctor-gitignore'
+    await runRequest(
+      () => post<PlanEnvelope>(token, `${projectBase}/plans/${route}`, { path: finding.path }),
+      (result) => setPendingPlan(result.plan),
+    )
+  }
+
   const executePlan = async () => {
     if (!token || !pendingPlan) return
     await runRequest(
@@ -216,12 +225,14 @@ export function App() {
         setPendingPlan(null)
         setToast({ kind: 'success', text: '{operation} completed and journaled.', values: { operation: operationLabel(result.operation, translateMessage) } })
         if (project) void loadWorkspace(project.id)
+        void loadDiagnostics()
         void loadLatest()
       },
       (error) => {
         setPendingPlan(null)
         setToast({ kind: 'error', error })
         if (project) void loadWorkspace(project.id)
+        void loadDiagnostics()
         void loadLatest()
       },
     )
@@ -319,7 +330,13 @@ export function App() {
           busy={busy}
         />}
         {view === 'subagents' && <SubAgentsPage page={subagents} />}
-        {view === 'diagnostics' && <DiagnosticsPage page={findings} onRefresh={() => void loadDiagnostics()} />}
+        {view === 'diagnostics' && <DiagnosticsPage
+          page={findings}
+          scanDiagnostics={workspace.data?.recommendations.diagnostics ?? []}
+          onRefresh={() => { void loadDiagnostics(); if (project) void loadWorkspace(project.id) }}
+          onRepair={(finding) => void createDiagnosticRepairPlan(finding)}
+          busy={busy}
+        />}
         {view === 'operations' && <OperationsPage page={latest} onUndo={() => void createUndoPlan()} busy={busy} />}
         {view === 'install' && <iframe className={styles.installationFrame} title={t('Skill installation')} src={`/install/?embedded=1#session=${encodeURIComponent(token)}`} />}
       </>}
@@ -340,7 +357,7 @@ function ProjectRegistration({ path, setPath, onSubmit, busy }: { path: string; 
   const { t } = useLanguage()
   return <section className={styles.registerPanel}>
     <div className={styles.registerIndex}>01 <span>/ {t('PROJECT')}</span></div>
-    <div className={styles.registerCopy}><span className={styles.kicker}>{t('START WITH A PROJECT')}</span><h2>{t('Choose one local workspace.')}</h2><p>{t('The console inspects this directory through Agent Manager’s existing read-only services. It does not expose general file browsing.')}</p></div>
+    <div className={styles.registerCopy}><span className={styles.kicker}>{t('START WITH A PROJECT')}</span><h2>{t('Choose one local workspace.')}</h2><p>{t('The console reads this directory locally and only changes project state through reviewed operation plans. It does not expose general file browsing.')}</p></div>
     <form className={styles.registerForm} onSubmit={onSubmit}>
       <label htmlFor="project-path">{t('Project directory')}</label>
       <div className={styles.inputAction}><input id="project-path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/Users/you/work/my-project" autoComplete="off" required /><button className={styles.primaryButton} type="submit" disabled={busy}>{busy ? t('Checking…') : t('Inspect project')}</button></div>
@@ -407,7 +424,7 @@ function Workspace({ page, onActivate, onRemove, onDiagnostics }: {
     </section>
 
     <section className={`${styles.panel} ${styles.diagnosticsStrip}`}>
-      <div><span className={styles.kicker}>{t('DIAGNOSTICS')}</span><strong>{t('{count} scan notes', { count: recommendations.diagnostics.length })}</strong><span>{t('Doctor findings are available in a read-only view.')}</span></div>
+      <div><span className={styles.kicker}>{t('PROJECT SCAN')}</span><strong>{t(recommendations.diagnostics.length === 1 ? '{count} project scan note' : '{count} project scan notes', { count: recommendations.diagnostics.length })}</strong><span>{t('Doctor findings and repair plans are on Diagnostics.')}</span></div>
       <button className={styles.secondaryButton} type="button" onClick={onDiagnostics}>{t('Open diagnostics')} <span>↗</span></button>
     </section>
   </div>
@@ -466,12 +483,38 @@ function SubAgentsPage({ page }: { page: PageState<{ definitions: SubAgent[]; di
   </div>
 }
 
-function DiagnosticsPage({ page, onRefresh }: { page: PageState<Finding[]>; onRefresh: () => void }) {
+function DiagnosticsPage({ page, scanDiagnostics, onRefresh, onRepair, busy }: {
+  page: PageState<Finding[]>
+  scanDiagnostics: Finding[]
+  onRefresh: () => void
+  onRepair: (finding: Finding) => void
+  busy: boolean
+}) {
   const { t, message } = useLanguage()
-  return <section className={styles.panel}><div className={styles.panelTop}><span className={styles.kicker}>{t('READ-ONLY DOCTOR')}</span><button className={styles.secondaryButton} type="button" onClick={onRefresh}>↻ <span>{t('Run scan')}</span></button></div>
-    <p className={styles.detailLead}>{t('Findings come from the existing doctor checks. This scan never reconciles project state.')}</p>
-    {page.loading ? <LoadingState label={t('Scanning configured resources…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.length ? page.data.map((finding, index) => <div className={styles.findingRow} key={`${finding.path}-${index}`}><span className={styles.findingIndex}>{String(index + 1).padStart(2, '0')}</span><div><strong>{message(finding.messageRef, finding.message)}</strong><code>{finding.path}</code></div></div>) : <EmptyInline title={t('No findings')} detail={t('The current read-only doctor scan returned no issues.')} />}
-  </section>
+  return <div className={styles.documentGrid}>
+    <section className={styles.panel}>
+      <div className={styles.panelTop}><h2 className={styles.panelTitle}>{t('Doctor findings')}</h2><div className={styles.panelTopActions}><span className={styles.countMark}>{(page.data?.length ?? 0).toString().padStart(2, '0')}</span><button className={styles.secondaryButton} type="button" onClick={onRefresh} disabled={busy}>↻ <span>{t('Run scan')}</span></button></div></div>
+      <p className={styles.detailLead}>{t('Available repairs are previewed, require confirmation, and are recorded for Undo.')}</p>
+      {page.loading ? <LoadingState label={t('Scanning configured resources…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.length ? page.data.map((finding, index) => <div className={styles.findingRow} key={`${finding.path}-${index}`}>
+        <span className={styles.findingIndex}>{String(index + 1).padStart(2, '0')}</span>
+        <div>
+          <div className={styles.findingHeading}><strong>{message(finding.messageRef, finding.message)}</strong><span className={`${styles.pill} ${finding.repairAction ? styles.pillReady : styles.pillQuiet}`}>{t(finding.repairAction ? 'Repair available' : 'Manual review')}</span></div>
+          <code>{finding.path}</code>
+          {(finding.guidanceRef || finding.guidance) && <p>{message(finding.guidanceRef, finding.guidance ?? '')}</p>}
+          {finding.repairAction === 'reconcile' && <button className={styles.textButton} type="button" disabled={busy} onClick={() => onRepair(finding)}>{t('Preview reconciliation')}</button>}
+          {finding.repairAction === 'add_gitignore' && <button className={styles.textButton} type="button" disabled={busy} onClick={() => onRepair(finding)}>{t('Add ignore rule')}</button>}
+        </div>
+      </div>) : <EmptyInline title={t('No Doctor findings')} detail={t('The Doctor scan completed without findings.')} />}
+    </section>
+
+    <section className={styles.panel}>
+      <div className={styles.panelTop}><h2 className={styles.panelTitle}>{t('Project scan notes')}</h2><span className={styles.countMark}>{scanDiagnostics.length.toString().padStart(2, '0')}</span></div>
+      {scanDiagnostics.length ? scanDiagnostics.map((finding, index) => <div className={styles.findingRow} key={`${finding.path}-${index}`}>
+        <span className={styles.findingIndex}>{String(index + 1).padStart(2, '0')}</span>
+        <div><strong>{message(finding.messageRef, finding.message)}</strong><code>{finding.path}</code></div>
+      </div>) : <EmptyInline title={t('No project scan notes')} detail={t('The static project scan completed without notes.')} />}
+    </section>
+  </div>
 }
 
 function OperationsPage({ page, onUndo, busy }: { page: PageState<LatestOperation>; onUndo: () => void; busy: boolean }) {
@@ -528,6 +571,8 @@ function operationLabel(value: string, translateMessage: (ref: MessageRef | unde
     activate: 'plan.operation.activate',
     'activate selected skills': 'plan.operation.activate_selected_skills',
     remove: 'plan.operation.remove',
+    reconcile: 'plan.operation.reconcile',
+    'update managed-link Git guidance': 'plan.operation.gitignore',
   }
   if (value.startsWith('undo ')) {
     const operation = keys[value.slice('undo '.length)]

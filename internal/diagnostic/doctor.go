@@ -52,24 +52,6 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 		findings = append(findings, Finding{Path: d.Path, Message: "invalid catalog entry: " + d.Message, Code: "doctor.invalid_catalog_entry", Args: map[string]string{"detail": d.Message}})
 	}
 	for _, a := range adapter.Supported() {
-		for _, kind := range a.ResourceKinds() {
-			capabilities := a.Capabilities(kind)
-			values := make([]string, len(capabilities))
-			for i, capability := range capabilities {
-				values[i] = string(capability)
-			}
-			if len(values) == 0 {
-				values = []string{"none"}
-			}
-			findings = append(findings, Finding{
-				Path:    string(a.Target()),
-				Message: fmt.Sprintf("adapter capabilities: %s supports %s (%s)", a.Target(), kind, strings.Join(values, ", ")),
-				Code:    "doctor.adapter_capabilities",
-				Args:    map[string]string{"target": string(a.Target()), "kind": string(kind), "capabilities": strings.Join(values, ", ")},
-			})
-		}
-	}
-	for _, a := range adapter.Supported() {
 		inspections, err := a.Inspect(adapter.InspectionRequest{Project: project, Kind: resource.Skill})
 		if err != nil {
 			return nil, err
@@ -278,7 +260,32 @@ func Reconcile(library, project string, journal *operation.Journal, confirm func
 	return reconcileWithHandler(library, project, journal, confirm, resource.NewSkillHandler())
 }
 
+// ReconcilePath repoints one selected orphaned managed link after confirmation.
+// The selected path must be a supported Skill placement inside the project.
+func ReconcilePath(library, project string, journal *operation.Journal, path string, confirm func(operation.Plan) bool) (operation.Plan, error) {
+	projectAbs, err := filepath.Abs(project)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	relative, err := filepath.Rel(projectAbs, pathAbs)
+	if err != nil {
+		return operation.Plan{}, err
+	}
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return operation.Plan{}, fmt.Errorf("reconciliation path is outside the project")
+	}
+	return reconcileSelectedWithHandler(library, project, journal, confirm, resource.NewSkillHandler(), map[string]struct{}{pathAbs: {}})
+}
+
 func reconcileWithHandler(library, project string, journal *operation.Journal, confirm func(operation.Plan) bool, handler resource.ResourceHandler) (operation.Plan, error) {
+	return reconcileSelectedWithHandler(library, project, journal, confirm, handler, nil)
+}
+
+func reconcileSelectedWithHandler(library, project string, journal *operation.Journal, confirm func(operation.Plan) bool, handler resource.ResourceHandler, selected map[string]struct{}) (operation.Plan, error) {
 	if journal == nil {
 		return operation.Plan{}, errors.New("operation journal is not configured")
 	}
@@ -294,6 +301,7 @@ func reconcileWithHandler(library, project string, journal *operation.Journal, c
 	var paths, targets, originals []string
 	var placementTargets []adapter.Target
 	var requests []resource.SkillLifecycleRequest
+	matchedPaths := make(map[string]struct{}, len(selected))
 	for _, a := range adapter.Supported() {
 		inspections, err := a.Inspect(adapter.InspectionRequest{Project: project, Kind: resource.Skill})
 		if err != nil {
@@ -301,6 +309,12 @@ func reconcileWithHandler(library, project string, journal *operation.Journal, c
 		}
 		for _, inspection := range inspections {
 			path := inspection.Path
+			if selected != nil {
+				if _, ok := selected[path]; !ok {
+					continue
+				}
+				matchedPaths[path] = struct{}{}
+			}
 			recorded, managed, err := journal.RecordedLinkTarget(path)
 			if err != nil {
 				return plan, err
@@ -343,6 +357,9 @@ func reconcileWithHandler(library, project string, journal *operation.Journal, c
 			placementTargets = append(placementTargets, a.Target())
 			requests = append(requests, request)
 		}
+	}
+	if selected != nil && len(matchedPaths) != len(selected) {
+		return plan, errors.New("reconciliation path is not a supported project Skill location")
 	}
 	if len(paths) == 0 {
 		return plan, nil

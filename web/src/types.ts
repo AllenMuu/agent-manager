@@ -26,7 +26,15 @@ export type Resource = {
   sourcePath?: string
   status: string
 }
-export type Finding = { path: string; message: string; messageRef?: MessageRef }
+export type Finding = {
+  path: string
+  message: string
+  code?: string
+  messageRef?: MessageRef
+  repairAction?: 'reconcile' | 'add_gitignore'
+  guidance?: string
+  guidanceRef?: MessageRef
+}
 export type Scope = {
   path: string
   status: string
