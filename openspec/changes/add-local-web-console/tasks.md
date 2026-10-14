@@ -9,7 +9,7 @@
 - [x] 1.7 Implement the in-memory operation-plan store with opaque IDs, ten-minute expiry, cancellation, single execution, and process-lifetime ownership; verify expired, unknown, cancelled, and concurrent plans are rejected.
 - [x] 1.8 Implement activation/removal plan creation and execution using lifecycle preview/mutation APIs; verify caller-supplied paths are rejected and stale/conflicting plans do not mutate state.
 - [x] 1.9 Implement Undo plan preview/execution using journal fingerprints and existing Undo safeguards; verify stale paths and changed journal state are preserved.
-- [x] 1.10 Add the `agent-manager web` command with optional initial project and port, fixed `127.0.0.1` binding, clear startup URL/token fragment, and graceful shutdown; verify requested non-loopback binding is impossible.
+- [x] 1.10 Add the `agent-manager web` command with required project and optional port, fixed `127.0.0.1` binding, clear startup URL/token fragment, and graceful shutdown; verify requested non-loopback binding is impossible.
 
 ## 2. React console
 

@@ -25,6 +25,7 @@ func newGovernanceCommands() []*cobra.Command {
 func newPoliciesCommand() *cobra.Command {
 	var jsonOutput bool
 	command := &cobra.Command{Use: "policies", Short: "Validate and inspect local AgentPolicy files"}
+	command.AddCommand(newEnforcementCommand("inspect", &jsonOutput), newEnforcementCommand("preflight", &jsonOutput))
 	command.PersistentFlags().BoolVar(&jsonOutput, "json", false, "write machine-readable JSON")
 	command.AddCommand(&cobra.Command{Use: "validate <path>", Short: "Strictly parse and validate a versioned AgentPolicy", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		p, err := loadPolicyFile(args[0])
@@ -157,6 +158,16 @@ func newRunsCommand() *cobra.Command {
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "run: %s\nstatus: %s\nruntime: %s\nproject: %s\npolicy: %s %s\npolicy_hash: %s\ncreated: %s\n", record.ID, record.Status, record.Runtime, record.ProjectRoot, record.Policy.PolicyID, record.Policy.Version, record.Policy.Hash, record.CreatedAt.Format(time.RFC3339))
 		if err != nil {
 			return err
+		}
+		if external := record.ExternalRuntime; external != nil {
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "provider: %s\nexternal_handle: %s\ngeneration: %s\nobserved_state: %s\nexecution_ready: %t\n", external.ProviderID, external.Handle, external.Generation, external.ObservedState, record.ExecutionReady()); err != nil {
+				return err
+			}
+			for _, operation := range external.Operations {
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "lifecycle: %s\t%s\t%s\treconciled=%t\n", operation.ID, operation.Request.Action, operation.Outcome, operation.Reconciled); err != nil {
+					return err
+				}
+			}
 		}
 		for _, approval := range approvals {
 			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "approval: %s\t%s\t%s\n", approval.ID, approval.Status, approval.ActionType); err != nil {

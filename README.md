@@ -6,6 +6,29 @@ Agent Manager governs local agent resources across a shared Skill library, agent
 
 Agent Manager never executes managed-resource code and never installs dependencies.
 
+## Quick start: install Skills with the CLI or Web UI
+
+From the repository root, install the CLI with Go 1.24 or later:
+
+```sh
+GOBIN="$HOME/.local/bin" go install ./cmd/agent-manager
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+To keep the command available in new zsh sessions, add the `export PATH=...` line to `~/.zshrc`.
+
+Choose either interface to install Skills from your configured local library:
+
+```sh
+# Install several explicitly selected Skills in one operation
+agent-manager install go-helper review --project . --target codex --yes
+
+# Or open the local Web app, then select Skills from its installation tab
+agent-manager web --project .
+```
+
+The Web UI is included with the CLI; stop it with `Ctrl+C`.
+
 ## How activation works
 
 - **Skill library** — the authoritative local collection of reusable skills (default `~/.agents/skills`, configurable). Each skill is a directory containing `SKILL.md` and optional companion metadata (`.skill-manager.yaml`).
@@ -88,12 +111,11 @@ remains available.
 
 ```text
 agent-manager init --yes            # verify CLI and install the global Operator skill
-agent-manager web --project .      # open the local Web console for this repository
+agent-manager web --project .      # open the management console and Skill installation tab
 agent-manager search <query>        # find Skills in the library
 agent-manager select --project .    # interactive search, multi-select, and activation
 agent-manager add <skill> --project . --target codex --yes
 agent-manager install go-helper review --project . --target codex --yes
-agent-manager webui --project .     # open the local installation UI; stop with Ctrl+C
 agent-manager list --project .      # show managed/unmanaged/orphaned Skills
 agent-manager agents --project . --json # inspect registered agent adapters
 agent-manager subagents list        # list canonical SubAgent definitions
@@ -118,7 +140,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | Command | Purpose |
 |---|---|
 | `init` | Verify the CLI and install or update the minimal global Operator skill (guarded, confirmed) |
-| `web` | Start the authenticated local Web console on `127.0.0.1` |
+| `web` | Start the authenticated local Web app with the management console and Skill installation tab on `127.0.0.1` |
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
@@ -126,7 +148,6 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
 | `install <skill-id>...` | Preview and install explicitly selected library Skills in one operation |
-| `webui` | Serve the local project installation interface on loopback |
 | `list` | Inventory project skills with their status |
 | `remove <skill>` | Remove one managed project link |
 | `adopt <skill>` | Move an eligible project skill into the library and link it back |
@@ -156,7 +177,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `subagents install <id>` | Render and install a SubAgent for Claude Code or Codex (guarded, confirmed, journaled) |
 | `subagents remove <id>` | Remove a managed SubAgent representation (guarded, confirmed, journaled) |
 
-## Local Web Console
+## Local Web App
 
 Start a one-project local session with:
 
@@ -164,14 +185,16 @@ Start a one-project local session with:
 agent-manager web --project . --port 0
 ```
 
-`--project` is optional; without it, register a project from the console. The
-default port `0` asks the operating system for an available port. The command
-always binds to IPv4 loopback (`127.0.0.1`) and prints an entry URL whose
+`--project` is required. The default port `0` asks the operating system for an
+available port. The command starts the management console and Skill installation
+tab on the same IPv4 loopback server (`127.0.0.1`) and prints one entry URL whose
 `#session=` fragment contains a random, process-lifetime token. The browser
 moves that token into tab-scoped `sessionStorage` and removes it from the
 address bar. API requests send it as a bearer token, require the exact current
 host and same origin for mutations, reject cross-site fetches, and grant no
 CORS access. Stop the command to discard the session and its pending plans.
+The management dashboard opens by default. Select **Skill installation** in the
+navigation to browse the local library and preview or confirm installations.
 
 The console registers one canonical project per process and exposes only the
 supported inventory, catalog, diagnostic, and operation APIs; it has no
@@ -364,11 +387,14 @@ no-network-default, journal, or provider-ownership rules.
 
 - **Autonomous delegation** — future work can consume the versioned artifact
   and role contracts without inventing a runtime-specific task-state format.
-- **React WebUI** — a post-CLI web interface over the same local services.
-- **Wails** — desktop packaging of the WebUI.
+- **Wails** — future desktop packaging for the local Web app.
 
 
 The explicitly selected [Mem0 OSS Memory provider](docs/mem0-memory-provider.md)
 supports canonical basic remote operations and read/search through the CLI
 Gateway. Strong conditional lifecycle and lineage/history remain unsupported.
 Local defaults and managed-skill operations remain offline.
+
+See [Offline runtime enforcement preflight](docs/runtime-enforcement-preflight.md) for the additive R1 declaration format and truthful protection boundaries.
+
+See [Recoverable runtime lifecycle](docs/runtime-enforcement-lifecycle.md) for the additive R2 provider/coordinator ports, durable operation recovery, and offline mock evidence. This boundary does not start a real model or establish sandbox protection.

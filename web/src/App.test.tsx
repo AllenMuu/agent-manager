@@ -1,19 +1,21 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { App } from './App'
+import { LanguageProvider } from './i18n'
 import { sessionStorageKey } from './session'
 import type { OperationPlan, Project, Skill } from './types'
 
 afterEach(() => {
   cleanup()
   window.sessionStorage.clear()
+  window.localStorage.clear()
   window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
 })
 
 describe('console entry and guarded activation', () => {
   it('shows the entry guidance when no tab token is available', () => {
-    render(<App />)
+    renderApp()
     expect(screen.getByRole('heading', { name: 'Open the console entry link' })).toBeInTheDocument()
   })
 
@@ -53,7 +55,7 @@ describe('console entry and guarded activation', () => {
     vi.stubGlobal('fetch', fetchMock)
     window.history.replaceState(null, '', '/#session=tab-secret')
 
-    render(<App />)
+    renderApp()
     expect(await screen.findByText(/Evidence · go\.mod/)).toBeInTheDocument()
     expect(screen.getByText('skill-6')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /SubAgents/ }))
@@ -87,7 +89,7 @@ describe('console entry and guarded activation', () => {
     vi.stubGlobal('fetch', fetchMock)
     window.history.replaceState(null, '', '/#session=tab-secret')
 
-    render(<App />)
+    renderApp()
     expect(await screen.findByText('sample')).toBeInTheDocument()
     expect(window.sessionStorage.getItem(sessionStorageKey)).toBe('tab-secret')
     expect(window.location.hash).toBe('')
@@ -132,7 +134,7 @@ describe('console entry and guarded activation', () => {
     vi.stubGlobal('fetch', fetchMock)
     window.history.replaceState(null, '', '/#session=tab-secret')
 
-    render(<App />)
+    renderApp()
     await screen.findByText('sample')
     fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
@@ -169,7 +171,7 @@ describe('console entry and guarded activation', () => {
     vi.stubGlobal('fetch', fetchMock)
     window.history.replaceState(null, '', '/#session=tab-secret')
 
-    render(<App />)
+    renderApp()
     await screen.findByText('sample')
     fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
@@ -181,7 +183,66 @@ describe('console entry and guarded activation', () => {
     expect(screen.queryByRole('heading', { name: 'activate selected skills', level: 2 })).not.toBeInTheDocument()
     await waitFor(() => expect(calls.filter((route) => route.endsWith('/resources')).length).toBeGreaterThan(1))
   })
+  it('localizes detected adapters and orphaned resources in Chinese', async () => {
+    const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({ project })
+      if (route.endsWith('/agents')) return jsonResponse({ agents: [{ id: 'codex', status: 'configured', availability: 'detected', resourceKinds: ['skill'], capabilities: [] }] })
+      if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [{ target: 'codex', identifier: 'stale-skill', path: '/workspace/sample/.codex/skills/stale-skill', status: 'orphaned' }] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+
+    renderApp()
+    expect(await screen.findByText('sample')).toBeInTheDocument()
+    expect(await screen.findByText('stale-skill')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+
+    expect(await screen.findByText('已检测')).toBeInTheDocument()
+    expect(screen.getByText('来源缺失')).toBeInTheDocument()
+  })
+
+  it('localizes undo plan headings and completion notifications in Chinese', async () => {
+    const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
+    const undoRef = { key: 'plan.operation.undo_action', args: { operation: 'plan.operation.activate' } }
+    const undoPlan: OperationPlan = {
+      id: 'undo-plan-id', projectId: project.id, operation: 'undo activate', operationRef: undoRef, version: 'v1', resourceKind: 'skill',
+      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'restore pre-operation state' }],
+      warnings: [], createdAt: '2026-09-27T00:00:00Z', expiresAt: '2026-09-27T00:10:00Z', forceReplacementConfirmed: false,
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({ project })
+      if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
+      if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
+      if (route.endsWith('/operations/latest')) return jsonResponse({ latest: { operation: 'activate', operationRef: { key: 'plan.operation.activate' }, resourceKind: 'skill', at: '2026-09-27T00:00:00Z', undoAvailable: true } })
+      if (route.endsWith('/plans/undo')) return jsonResponse({ plan: undoPlan })
+      if (route.endsWith('/execute')) return jsonResponse({ operation: 'undo activate', status: 'completed' })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+
+    renderApp()
+    expect(await screen.findByText('sample')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    fireEvent.click(screen.getByRole('button', { name: /操作记录/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '审查撤销方案' }))
+
+    expect(await screen.findByRole('heading', { name: '撤销启用', level: 2 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认并应用' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('已完成 撤销启用，并写入操作日志。')
+  })
 })
+
+function renderApp() {
+  return render(<LanguageProvider><App /></LanguageProvider>)
+}
 
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } })

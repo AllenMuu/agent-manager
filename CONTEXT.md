@@ -6,6 +6,14 @@ _Avoid_: Skill Manager (except when referring to the compatibility CLI or pre-mi
 
 ## Language
 
+**Console language**:
+The selected language for the Web console's built-in interface and Agent Manager-generated explanations. It does not translate project or Skill library source content.
+_Avoid_: project language, content language
+
+**Local source content**:
+Names, descriptions, instructions, identifiers, and paths read from a registered project or the configured Skill library and presented as stored.
+_Avoid_: translated console copy
+
 **Skill library**:
 The independent, authoritative local collection of reusable skills. It is the source from which project skills are selected and installed; the initial library is `~/.agents/skills`, with a configurable location.
 _Avoid_: skill repository, global skill folder
@@ -108,3 +116,21 @@ An exact USER or PROJECT owner, or an AGENT/SESSION partition within exactly one
 owning user or project. The identifiers partition data; they do not authenticate
 or authorize a caller. GLOBAL is not currently supported.
 _Avoid_: ambient owner, authority inferred from labels
+
+**Permission proposal**:
+An expiring request for one exact runtime capability difference, linked to a
+persisted permission denial, initiating actor/delegation, run and immutable base
+policy snapshot. A proposal decision does not apply a policy revision or resume
+execution, and remains separate from one-action approval.
+
+**Network delegation scope**:
+R3's additive mapping from an exact canonical hostname to `network:<hostname>`.
+The entire identifier must fit the existing canonical scope syntax and 128-byte
+limit. Exact equality grants one destination; wildcards, prefixes, URLs and IP
+addresses grant no authority through this mapping.
+
+**Trusted operator decision boundary**:
+A host-configured port that establishes an authorized human independently of
+runtime-supplied identity/kind/roles labels and returns proposal-bound authority
+evidence. Runtime requests cannot select or install this port. The domain
+contract does not implement live human authentication.

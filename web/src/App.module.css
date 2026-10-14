@@ -25,12 +25,19 @@
 .navItemActive .navIndex { border-color: #b84f31; color: #b84f31; }
 .sidebarFoot { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid #d9d4c8; }
 .sidebarFoot p { margin: 11px 0 0; color: #72756c; font-size: 12px; line-height: 1.55; }
+.languageSwitch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #d9d4c8; border-radius: 8px; background: #f7f4ec; }
+.languageSwitch button { min-height: 27px; padding: 3px 8px; border: 0; border-radius: 6px; background: transparent; color: #72756c; font-size: 10px; font-weight: 650; cursor: pointer; }
+.languageSwitch button[aria-pressed="true"] { background: #fffdf8; color: #252923; box-shadow: 0 0 0 1px #d9d4c8; }
+.languageSwitch button:focus-visible { outline: 2px solid #185f70; outline-offset: 1px; }
+.mobileHeader .languageSwitch { margin-left: auto; }
+.sidebarFoot .languageSwitch { margin-top: 12px; }
 .localBadge { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid #d9d4c8; border-radius: 20px; background: #fffdf8; color: #51574e; font-size: 10px; font-weight: 650; white-space: nowrap; }
 .localBadge i, .statusDot i { width: 7px; height: 7px; border-radius: 50%; background: #376b4d; }
 .mobileHeader { display: none; }
 
 .mainArea { max-width: 1490px; min-height: 100vh; margin-left: 228px; padding: 0 54px 25px; }
 .topline { display: flex; min-height: 48px; align-items: center; gap: 13px; border-bottom: 1px solid #d9d4c8; color: #53594f; font-size: 11px; font-weight: 650; }
+.installationFrame { display: block; width: 100%; min-height: 850px; height: calc(100vh - 250px); border: 0; border-radius: 10px; background: #f5f3ed; }
 .pathText { overflow: hidden; flex: 1; color: #85867b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pageHeading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 29px 0 22px; }
 .pageHeading h1 { margin: 5px 0 0; font-size: clamp(27px, 3.2vw, 39px); font-weight: 670; letter-spacing: -.045em; line-height: 1.1; }
@@ -195,17 +202,18 @@
 @media (max-width: 760px) {
   .mobileHeader { display: flex; min-height: 62px; padding: 10px 16px; border-bottom: 1px solid #d9d4c8; background: #ece8de; }
   .mobileHeader .brandMark { width: 34px; height: 34px; flex-basis: 34px; border-radius: 10px 10px 10px 4px; font-size: 16px; }
-  .mobileHeader .localBadge { margin-left: auto; }
+  .mobileHeader .localBadge { margin-left: 0; }
   .sidebar { position: static; width: 100%; padding: 9px 12px; border-right: 0; border-bottom: 1px solid #d9d4c8; }
   .sidebar .brandBlock, .sidebar .navLabel, .sidebarFoot { display: none; }
-  .navList { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
-  .navItem { min-height: 44px; flex-direction: column; justify-content: center; gap: 0; padding: 4px 3px; font-size: 9px; text-align: center; }
+  .navList { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+  .navItem { min-width: max-content; min-height: 44px; flex: 0 0 auto; flex-direction: column; justify-content: center; gap: 0; padding: 4px 8px; font-size: 9px; text-align: center; }
   .navIndex { display: none; }
   .mainArea { min-height: auto; margin: 0; padding: 0 16px 17px; }
   .topline { min-height: 40px; font-size: 10px; }
   .topline .localBadge { display: none; }
   .pageHeading { padding: 21px 0 16px; }
   .pageHeading h1 { font-size: 29px; }
+  .installationFrame { min-height: 700px; height: calc(100vh - 190px); }
   .workspaceGrid, .libraryLayout, .documentGrid { grid-template-columns: minmax(0, 1fr); }
   .agentPanel { grid-row: auto; }
   .skillDetailPanel { position: static; }
@@ -252,6 +260,12 @@
   .metadataRow { gap: 9px 14px; }
   .documentLabel { flex-direction: column; gap: 1px; }
   .pageFooter span:last-child { text-align: right; }
+}
+
+@media (max-width: 370px) {
+  .mobileHeader { gap: 8px; padding-right: 10px; padding-left: 10px; }
+  .mobileHeader .localBadge { display: none; }
+  .mobileHeader .languageSwitch { margin-left: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

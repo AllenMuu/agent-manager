@@ -45,7 +45,7 @@ func newInitCommand() *cobra.Command {
 }
 
 func newProjectCommands(options *rootOptions) []*cobra.Command {
-	return []*cobra.Command{newSelectCommand(options), newInstallCommand(options), newWebUICommand(options), newAddCommand(options), newListCommand(options), newRemoveCommand(options), newAdoptCommand(options), newForkCommand(options), newDoctorCommand(options), newReconcileCommand(options), newUndoCommand(options), newDeleteCommand(options)}
+	return []*cobra.Command{newSelectCommand(options), newInstallCommand(options), newAddCommand(options), newListCommand(options), newRemoveCommand(options), newAdoptCommand(options), newForkCommand(options), newDoctorCommand(options), newReconcileCommand(options), newUndoCommand(options), newDeleteCommand(options)}
 }
 func newSelectCommand(options *rootOptions) *cobra.Command {
 	var project string

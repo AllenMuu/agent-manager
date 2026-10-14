@@ -162,7 +162,7 @@ func TestGovernanceEvalCLIReadsRunAuditEvents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(suiteDir, "events.json"), fixtureData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := executeCLI("eval", "--governance-run-id", record.ID, "run", filepath.Dir(filepath.Dir(suiteDir)), "--json")
+	out, err := executeCLI("eval", "--governance-run-id", record.ID, "run", filepath.Dir(filepath.Dir(suiteDir)), "--project", filepath.Dir(filepath.Dir(suiteDir)), "--json")
 	if err != nil || !strings.Contains(out, snapshot.Hash) || !strings.Contains(out, `"passed":1`) {
 		t.Fatalf("eval governance output=%q err=%v", out, err)
 	}

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/AllenMuu/skill-manager/internal/webui"
 )
 
 const sessionTokenBytes = 32
@@ -29,14 +31,15 @@ var embeddedUI embed.FS
 
 // Options configures one local Web console process session.
 type Options struct {
-	Origin      string
-	LibraryPath string
-	HomeDir     string
-	DataRoot    string
-	ProjectPath string
-	TokenSource io.Reader
-	Now         func() time.Time
-	Assets      fs.FS
+	Origin            string
+	LibraryPath       string
+	HomeDir           string
+	DataRoot          string
+	ProjectPath       string
+	SkillInstallation bool
+	TokenSource       io.Reader
+	Now               func() time.Time
+	Assets            fs.FS
 }
 
 // Server is the authenticated HTTP delivery adapter for one local project.
@@ -47,6 +50,7 @@ type Server struct {
 	token                      string
 	origin                     string
 	assets                     fs.FS
+	installation               *webui.Module
 	libraryPath                string
 	homeDir                    string
 	dataRoot                   string
@@ -101,6 +105,16 @@ func New(options Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	if options.SkillInstallation {
+		if options.ProjectPath == "" {
+			return nil, fmt.Errorf("the Skill installation tab requires a registered project")
+		}
+		module, err := webui.NewModule(options.ProjectPath, options.LibraryPath, server.token)
+		if err != nil {
+			return nil, err
+		}
+		server.installation = module
+	}
 	return server, nil
 }
 
@@ -139,10 +153,38 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !s.authorizeAPI(w, r) {
 			return
 		}
+		if s.installation != nil && isInstallationAPIPath(r.URL.Path) {
+			s.installation.APIHandler().ServeHTTP(w, r)
+			return
+		}
 		s.handleAPI(w, r)
 		return
 	}
+	if s.installation != nil && (r.URL.Path == "/install" || strings.HasPrefix(r.URL.Path, "/install/")) {
+		s.serveInstallationAsset(w, r)
+		return
+	}
 	s.serveUI(w, r)
+}
+
+func isInstallationAPIPath(value string) bool {
+	return value == "/api/catalog" || value == "/api/recommend" || value == "/api/install/preview" || value == "/api/install/apply"
+}
+
+func (s *Server) serveInstallationAsset(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/install" {
+		installURL := *r.URL
+		installURL.Path = "/install/"
+		installURL.RawPath = ""
+		http.Redirect(w, r, installURL.String(), http.StatusPermanentRedirect)
+		return
+	}
+	installationRequest := r.Clone(r.Context())
+	installationRequest.URL.Path = strings.TrimPrefix(r.URL.Path, "/install")
+	if installationRequest.URL.Path == "" {
+		installationRequest.URL.Path = "/"
+	}
+	s.installation.ServeAssets(w, installationRequest)
 }
 
 func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) bool {

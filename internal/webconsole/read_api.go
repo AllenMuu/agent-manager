@@ -38,12 +38,13 @@ type matchDTO struct {
 }
 
 type recommendationDTO struct {
-	Identifier       string     `json:"identifier"`
-	Description      string     `json:"description"`
-	MatchReason      string     `json:"matchReason"`
-	MatchingEvidence []matchDTO `json:"matchingEvidence"`
-	Confidence       string     `json:"confidence"`
-	Score            int        `json:"score"`
+	Identifier       string         `json:"identifier"`
+	Description      string         `json:"description"`
+	MatchReason      string         `json:"matchReason"`
+	MatchReasonRef   *messageRefDTO `json:"matchReasonRef,omitempty"`
+	MatchingEvidence []matchDTO     `json:"matchingEvidence"`
+	Confidence       string         `json:"confidence"`
+	Score            int            `json:"score"`
 }
 
 type scopeDTO struct {
@@ -68,8 +69,9 @@ type evidenceDTO struct {
 }
 
 type findingDTO struct {
-	Path    string `json:"path"`
-	Message string `json:"message"`
+	Path       string         `json:"path"`
+	Message    string         `json:"message"`
+	MessageRef *messageRefDTO `json:"messageRef,omitempty"`
 }
 
 type recommendationsDTO struct {
@@ -80,25 +82,34 @@ type recommendationsDTO struct {
 }
 
 type latestOperationDTO struct {
-	Operation     string   `json:"operation"`
-	ResourceKind  string   `json:"resourceKind"`
-	At            string   `json:"at"`
-	UndoAvailable bool     `json:"undoAvailable"`
-	UndoPreview   *planDTO `json:"undoPreview,omitempty"`
+	Operation     string         `json:"operation"`
+	OperationRef  *messageRefDTO `json:"operationRef,omitempty"`
+	ResourceKind  string         `json:"resourceKind"`
+	At            string         `json:"at"`
+	UndoAvailable bool           `json:"undoAvailable"`
+	UndoPreview   *planDTO       `json:"undoPreview,omitempty"`
 }
 
 type planDTO struct {
-	Version      string      `json:"version"`
-	ResourceKind string      `json:"resourceKind"`
-	Operation    string      `json:"operation"`
-	Changes      []changeDTO `json:"changes"`
-	Warnings     []string    `json:"warnings"`
+	Version      string           `json:"version"`
+	ResourceKind string           `json:"resourceKind"`
+	Operation    string           `json:"operation"`
+	OperationRef *messageRefDTO   `json:"operationRef,omitempty"`
+	Changes      []changeDTO      `json:"changes"`
+	Warnings     []string         `json:"warnings"`
+	WarningRefs  []*messageRefDTO `json:"warningRefs,omitempty"`
 }
 
 type changeDTO struct {
-	Path   string `json:"path"`
-	Action string `json:"action"`
-	Detail string `json:"detail,omitempty"`
+	Path      string         `json:"path"`
+	Action    string         `json:"action"`
+	ActionRef *messageRefDTO `json:"actionRef,omitempty"`
+	Detail    string         `json:"detail,omitempty"`
+}
+
+type messageRefDTO struct {
+	Key  string            `json:"key"`
+	Args map[string]string `json:"args,omitempty"`
 }
 
 type subagentsDTO struct {
@@ -270,7 +281,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, project *registeredPro
 	}
 	result := make([]findingDTO, 0, len(findings))
 	for _, finding := range findings {
-		result = append(result, findingDTO{Path: finding.Path, Message: finding.Message})
+		result = append(result, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Findings []findingDTO `json:"findings"`
@@ -300,7 +311,7 @@ func (s *Server) handleLatestOperation(w http.ResponseWriter, project *registere
 		if undoAllowed {
 			available, availabilityErr = journal.UndoAvailable()
 		}
-		latest = &latestOperationDTO{Operation: entry.Operation, ResourceKind: entry.ResourceKind, At: entry.At.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), UndoAvailable: undoAllowed && availabilityErr == nil && available}
+		latest = &latestOperationDTO{Operation: entry.Operation, OperationRef: operationMessageRef(entry.Operation), ResourceKind: entry.ResourceKind, At: entry.At.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), UndoAvailable: undoAllowed && availabilityErr == nil && available}
 		if latest.UndoAvailable {
 			preview, err := journal.PreviewUndo()
 			if err != nil {
@@ -451,7 +462,7 @@ func toSkillDTO(skill catalog.Skill, includeBody bool) skillDTO {
 func toRecommendationsDTO(result recommend.Result) recommendationsDTO {
 	out := recommendationsDTO{Project: result.Project, ScanComplete: result.ScanComplete, Diagnostics: make([]findingDTO, 0, len(result.Diagnostics)), Scopes: make([]scopeDTO, 0, len(result.Scopes))}
 	for _, finding := range result.Diagnostics {
-		out.Diagnostics = append(out.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message})
+		out.Diagnostics = append(out.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
 	}
 	for _, scope := range result.Scopes {
 		converted := scopeDTO{Path: scope.Path, Status: string(scope.Status), NextAction: string(scope.NextAction), Technologies: make([]technologyDTO, 0, len(scope.Technologies)), Evidence: make([]evidenceDTO, 0, len(scope.Evidence)), Diagnostics: make([]findingDTO, 0, len(scope.Diagnostics)), Recommendations: make([]recommendationDTO, 0, len(scope.Recommendations))}
@@ -462,10 +473,10 @@ func toRecommendationsDTO(result recommend.Result) recommendationsDTO {
 			converted.Evidence = append(converted.Evidence, evidenceDTO{Path: evidence.Path, Technology: evidence.Technology})
 		}
 		for _, finding := range scope.Diagnostics {
-			converted.Diagnostics = append(converted.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message})
+			converted.Diagnostics = append(converted.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
 		}
 		for _, recommendation := range scope.Recommendations {
-			item := recommendationDTO{Identifier: recommendation.Identifier, Description: recommendation.Description, MatchReason: recommendation.MatchReason, Confidence: string(recommendation.Confidence), Score: recommendation.Score, MatchingEvidence: make([]matchDTO, 0, len(recommendation.MatchingEvidence))}
+			item := recommendationDTO{Identifier: recommendation.Identifier, Description: recommendation.Description, MatchReason: recommendation.MatchReason, MatchReasonRef: messageRef("recommendation.matched_evidence", nil), Confidence: string(recommendation.Confidence), Score: recommendation.Score, MatchingEvidence: make([]matchDTO, 0, len(recommendation.MatchingEvidence))}
 			for _, evidence := range recommendation.MatchingEvidence {
 				item.MatchingEvidence = append(item.MatchingEvidence, matchDTO{Technology: evidence.Technology, Field: evidence.Field})
 			}
@@ -477,9 +488,12 @@ func toRecommendationsDTO(result recommend.Result) recommendationsDTO {
 }
 
 func toPlanDTO(plan operation.Plan) planDTO {
-	out := planDTO{Version: plan.Version, ResourceKind: plan.ResourceKind, Operation: plan.Operation, Changes: make([]changeDTO, 0, len(plan.Changes)), Warnings: plan.Warnings}
+	out := planDTO{Version: plan.Version, ResourceKind: plan.ResourceKind, Operation: plan.Operation, OperationRef: operationMessageRef(plan.Operation), Changes: make([]changeDTO, 0, len(plan.Changes)), Warnings: plan.Warnings, WarningRefs: make([]*messageRefDTO, 0, len(plan.Warnings))}
 	for _, change := range plan.Changes {
-		out.Changes = append(out.Changes, changeDTO{Path: change.Path, Action: change.Action, Detail: change.Detail})
+		out.Changes = append(out.Changes, changeDTO{Path: change.Path, Action: change.Action, ActionRef: actionMessageRef(change.Action), Detail: change.Detail})
+	}
+	for _, warning := range plan.Warnings {
+		out.WarningRefs = append(out.WarningRefs, warningMessageRef(warning))
 	}
 	if out.Warnings == nil {
 		out.Warnings = []string{}

@@ -19,12 +19,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/enforcement"
 	"github.com/AllenMuu/skill-manager/internal/identity"
 	"github.com/AllenMuu/skill-manager/internal/policy"
 )
 
 const (
-	storeVersion         = "v2"
+	storeVersion         = "v3"
+	previousStoreVersion = "v2"
 	legacyStoreVersion   = "v1"
 	auditVersion         = "v3"
 	previousAuditVersion = "v2"
@@ -44,6 +46,8 @@ type Status string
 
 const (
 	Active     Status = "active"
+	Pending    Status = "pending"
+	Prepared   Status = "prepared"
 	Paused     Status = "paused"
 	Completed  Status = "completed"
 	Failed     Status = "failed"
@@ -51,16 +55,18 @@ const (
 )
 
 type Record struct {
-	ID                 string             `json:"id"`
-	ProjectRoot        string             `json:"project_root"`
-	Runtime            string             `json:"runtime"`
-	Status             Status             `json:"status"`
-	Policy             policy.Snapshot    `json:"policy"`
-	Identity           identity.Selection `json:"identity"`
-	CapabilityWarnings []policy.Control   `json:"capability_warnings,omitempty"`
-	CreatedAt          time.Time          `json:"created_at"`
-	UpdatedAt          time.Time          `json:"updated_at"`
-	TerminationReason  string             `json:"termination_reason,omitempty"`
+	PolicyRevisions    *PolicyRevisionHistory `json:"policy_revisions,omitempty"`
+	ExternalRuntime    *ExternalRuntime       `json:"external_runtime,omitempty"`
+	ID                 string                 `json:"id"`
+	ProjectRoot        string                 `json:"project_root"`
+	Runtime            string                 `json:"runtime"`
+	Status             Status                 `json:"status"`
+	Policy             policy.Snapshot        `json:"policy"`
+	Identity           identity.Selection     `json:"identity"`
+	CapabilityWarnings []policy.Control       `json:"capability_warnings,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	TerminationReason  string                 `json:"termination_reason,omitempty"`
 }
 
 type ApprovalStatus string
@@ -119,6 +125,7 @@ type AuditRecord struct {
 	Tool              string               `json:"tool,omitempty"`
 	ActionType        string               `json:"action_type,omitempty"`
 	Domain            string               `json:"domain,omitempty"`
+	CredentialScope   string               `json:"credential_scope,omitempty"`
 	PolicyID          string               `json:"policy_id"`
 	PolicyVersion     string               `json:"policy_version"`
 	PolicyHash        string               `json:"policy_hash"`
@@ -130,10 +137,11 @@ type AuditRecord struct {
 }
 
 type database struct {
-	Version   string              `json:"version"`
-	Runs      map[string]Record   `json:"runs"`
-	Approvals map[string]Approval `json:"approvals"`
-	Events    []AuditRecord       `json:"events"`
+	Version   string                        `json:"version"`
+	Runs      map[string]Record             `json:"runs"`
+	Approvals map[string]Approval           `json:"approvals"`
+	Events    []AuditRecord                 `json:"events"`
+	Proposals map[string]PermissionProposal `json:"permission_proposals,omitempty"`
 }
 
 type Store struct {
@@ -172,6 +180,10 @@ func NewStore(root string) (*Store, error) {
 func (s *Store) Root() string { return s.root }
 
 func (s *Store) Start(snapshot policy.Snapshot, runtime, project string, identitySelection identity.Selection, capabilities map[policy.Control]bool, now time.Time) (Record, policy.CapabilityReport, error) {
+	return s.create(snapshot, runtime, project, identitySelection, capabilities, now, nil)
+}
+
+func (s *Store) create(snapshot policy.Snapshot, runtime, project string, identitySelection identity.Selection, capabilities map[policy.Control]bool, now time.Time, external *ExternalRuntime) (Record, policy.CapabilityReport, error) {
 	if err := snapshot.Validate(); err != nil {
 		return Record{}, policy.CapabilityReport{}, err
 	}
@@ -218,11 +230,19 @@ func (s *Store) Start(snapshot policy.Snapshot, runtime, project string, identit
 		identitySnapshot = identity.NamedSelection(actor, delegation)
 	}
 	record := Record{ID: id, ProjectRoot: project, Runtime: runtime, Status: Active, Policy: snapshot, Identity: identitySnapshot, CapabilityWarnings: append([]policy.Control(nil), report.Warnings...), CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	if external != nil {
+		record.Status = Pending
+		record.ExternalRuntime = external
+		external.Operations[0].Request = lifecycleRequest(record, external.Operations[0].ID, "prepare")
+	}
 	err = s.update(func(db *database) error {
 		if _, exists := db.Runs[id]; exists {
 			return fmt.Errorf("run %q already exists", id)
 		}
 		db.Runs[id] = record
+		if external != nil {
+			return nil
+		}
 		event := policy.Event{Category: policy.AgentRunStarted, RunID: id, Timestamp: now.UTC()}
 		audit, err := auditFor(record, event, policy.Decision{Outcome: policy.Allow}, "")
 		if err != nil {
@@ -267,7 +287,7 @@ func (s *Store) List() ([]Record, error) {
 	return result, nil
 }
 
-func (s *Store) appendEvent(runID string, event policy.Event, decision policy.Decision, invocationStatus InvocationStatus, now time.Time) (AuditRecord, error) {
+func (s *Store) appendEvent(runID string, event policy.Event, decision policy.Decision, invocationStatus InvocationStatus, now time.Time, expected policy.Snapshot) (AuditRecord, error) {
 	if err := event.Validate(); err != nil {
 		return AuditRecord{}, err
 	}
@@ -290,6 +310,26 @@ func (s *Store) appendEvent(runID string, event policy.Event, decision policy.De
 			}
 		}
 		var err error
+		snapshot := record.AppliedPolicy()
+		if event.RequestAuditID == "" && !samePolicySnapshot(snapshot, expected) {
+			return ErrProposalStaleBase
+		}
+		if (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested || event.Category == policy.CredentialAccessRequested) && record.policyRevisionBlocked() {
+			return enforcement.ErrUnknown
+		}
+		if event.RequestAuditID != "" {
+			request, found := auditRecordByID(db.Events, event.RequestAuditID)
+			if !found {
+				return errors.New("request audit not found")
+			}
+			var resolved bool
+			snapshot, resolved = record.policySnapshot(request.PolicyHash, request.PolicyResolvedAt)
+			if !resolved {
+				return errors.New("request revision not found")
+			}
+		}
+		record.Policy = snapshot
+		record.PolicyRevisions = nil
 		result, err = auditFor(record, event, decision, "")
 		if err == nil {
 			if invocationStatus != "" {
@@ -428,7 +468,7 @@ func (s *Store) ConsumeApprovalForInvocation(approvalID, runID, requestAuditID s
 			return fmt.Errorf("approval %q has already been consumed", approvalID)
 		}
 		runRecord, ok := db.Runs[runID]
-		if !ok || runRecord.Status != Active {
+		if !ok || !runRecord.ExecutionReady() {
 			return fmt.Errorf("run %q is not active for invocation", runID)
 		}
 		approvedRequest, err := validateApprovalRequestAudit(*db, approval)
@@ -443,7 +483,7 @@ func (s *Store) ConsumeApprovalForInvocation(approvalID, runID, requestAuditID s
 				break
 			}
 		}
-		if !found || invocationRequest.RunID != runID || invocationRequest.Category != policy.ToolCallRequested || invocationRequest.Decision != policy.RequireApproval || invocationRequest.ApprovalID != approvalID || invocationRequest.ActionID != approvedRequest.ActionID || invocationRequest.Tool != approvedRequest.Tool || invocationRequest.ActionType != approvedRequest.ActionType || invocationRequest.TraceID != approvedRequest.TraceID || invocationRequest.PolicyHash != runRecord.Policy.Hash {
+		if !found || invocationRequest.RunID != runID || invocationRequest.Category != policy.ToolCallRequested || invocationRequest.Decision != policy.RequireApproval || invocationRequest.ApprovalID != approvalID || invocationRequest.ActionID != approvedRequest.ActionID || invocationRequest.Tool != approvedRequest.Tool || invocationRequest.ActionType != approvedRequest.ActionType || invocationRequest.TraceID != approvedRequest.TraceID || invocationRequest.PolicyHash != runRecord.AppliedPolicy().Hash || !sameAuditPolicyReference(invocationRequest, approvedRequest) {
 			return errors.New("invocation audit does not match the approved action")
 		}
 		approval.ConsumedAt = now.UTC()
@@ -567,6 +607,8 @@ func (s *Store) DecideApproval(id string, status ApprovalStatus, reason string, 
 			return err
 		}
 		event := policy.Event{Category: category, RunID: run.ID, Tool: request.Tool, Domain: request.Domain, ActionType: request.ActionType, ActionID: requestAudit.ActionID, TraceID: requestAudit.TraceID, ApprovalID: request.ID, ApproverID: decider.ID, Timestamp: now.UTC()}
+		run.Policy = snapshotForAudit(run, requestAudit)
+		run.PolicyRevisions = nil
 		audit, err := auditFor(run, event, policy.Decision{Outcome: outcomeFor(status), ReasonCode: request.ReasonCode}, "approval_"+string(status))
 		if err != nil {
 			return err
@@ -590,6 +632,9 @@ func (s *Store) confirmTermination(id, reason string, now time.Time) (Record, er
 		record, ok := db.Runs[id]
 		if !ok {
 			return fmt.Errorf("run %q not found", id)
+		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external termination requires correlated lifecycle acknowledgement")
 		}
 		if record.Status != Active && record.Status != Paused {
 			return fmt.Errorf("run %q is %s and cannot be terminated", id, record.Status)
@@ -617,6 +662,9 @@ func (s *Store) ConfirmApprovalResolution(runID string, now time.Time) error {
 		if !ok {
 			return fmt.Errorf("run %q not found", runID)
 		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external resume requires correlated lifecycle acknowledgement")
+		}
 		if record.Status != Paused {
 			return fmt.Errorf("run %q is %s, expected paused", runID, record.Status)
 		}
@@ -634,6 +682,9 @@ func (s *Store) confirmPause(runID string, now time.Time) error {
 		record, ok := db.Runs[runID]
 		if !ok {
 			return fmt.Errorf("run %q not found", runID)
+		}
+		if record.ExternalRuntime != nil {
+			return errors.New("external pause requires correlated lifecycle acknowledgement")
 		}
 		if record.Status != Active {
 			return fmt.Errorf("run %q is %s and cannot be paused", runID, record.Status)
@@ -661,6 +712,7 @@ type RuntimeController interface {
 
 type Manager struct {
 	Store       *Store
+	coordinator *Coordinator
 	controllers map[string]RuntimeController
 	mu          sync.Mutex
 }
@@ -729,6 +781,9 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 	if err != nil {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 	}
+	if (event.Category == policy.ToolCallRequested || event.Category == policy.NetworkAccessRequested || event.Category == policy.CredentialAccessRequested) && ((runRecord.ExternalRuntime != nil && !runRecord.ExecutionReady()) || runRecord.policyRevisionBlocked()) {
+		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, enforcement.ErrUnknown
+	}
 	event.RunID = runID
 	engine := policy.Engine{}
 	decisionEvent := event
@@ -790,13 +845,13 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 			}
 		}
 	}
-	evaluation := engine.EvaluateAfter(runRecord.Policy, event, state)
-	decision := engine.EvaluateBefore(runRecord.Policy, decisionEvent, state)
+	evaluation := engine.EvaluateAfter(runRecord.AppliedPolicy(), event, state)
+	decision := engine.EvaluateBefore(runRecord.AppliedPolicy(), decisionEvent, state)
 	if requirement.Required {
 		if event.ActionID != requirement.ActionID {
 			decision = policy.Decision{Outcome: policy.Deny, ReasonCode: policy.ReasonIdentityPolicyDenied}
 		} else {
-			decision = engine.EvaluateBeforeWithIdentity(runRecord.Policy, decisionEvent, state, requirement, runID, selection, now)
+			decision = engine.EvaluateBeforeWithIdentity(runRecord.AppliedPolicy(), decisionEvent, state, requirement, runID, selection, now)
 		}
 	}
 	if event.Category == policy.ToolCallCompleted || event.Category == policy.NetworkAccessCompleted {
@@ -811,7 +866,7 @@ func (m *Manager) evaluateAndRecord(runID string, event policy.Event, state poli
 	}
 	event.ObservedDecision = decision.Outcome
 	event.ReasonCode = decision.ReasonCode
-	audit, err := m.Store.appendEvent(runID, event, decision, invocationStatus, now)
+	audit, err := m.Store.appendEvent(runID, event, decision, invocationStatus, now, runRecord.AppliedPolicy())
 	if err != nil {
 		return policy.Decision{}, policy.Evaluation{}, AuditRecord{}, err
 	}
@@ -862,7 +917,7 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 	if err != nil {
 		return Approval{}, err
 	}
-	if requestAudit.PolicyHash != run.Policy.Hash || requestAudit.PolicyID != run.Policy.PolicyID {
+	if requestAudit.PolicyHash != run.AppliedPolicy().Hash || requestAudit.PolicyID != run.AppliedPolicy().PolicyID {
 		return Approval{}, errors.New("approval request references an audit from a different policy snapshot")
 	}
 	if _, found, err := m.Store.approvalForRequest(run.ID, request.RequestAuditID); err != nil {
@@ -877,6 +932,9 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 		}
 		request.ID = generated
 	}
+	if run.policyRevisionBlocked() {
+		return Approval{}, enforcement.ErrUnknown
+	}
 	controller := m.controller(run.ID)
 	if controller == nil || !controller.Capabilities()[policy.ControlApprovalPauseResume] {
 		return Approval{}, errors.New("runtime does not support safe approval pause/resume; action was not approved")
@@ -888,8 +946,10 @@ func (m *Manager) RequestApproval(ctx context.Context, request Approval, now tim
 	if !confirmed {
 		return Approval{}, errors.New("runtime did not confirm pause; action remains unapproved")
 	}
-	if err := m.Store.confirmPause(run.ID, now); err != nil {
-		return Approval{}, fmt.Errorf("runtime paused but run state could not be updated: %w", err)
+	if run.ExternalRuntime == nil {
+		if err := m.Store.confirmPause(run.ID, now); err != nil {
+			return Approval{}, fmt.Errorf("runtime paused but run state could not be updated: %w", err)
+		}
 	}
 	request, err = m.Store.CreateApproval(request, now)
 	if err != nil {
@@ -916,6 +976,9 @@ func (m *Manager) DecideApproval(ctx context.Context, id string, status Approval
 	if request.Status == status && run.Status == Active {
 		return request, nil
 	}
+	if run.policyRevisionBlocked() {
+		return Approval{}, enforcement.ErrUnknown
+	}
 	controller := m.controller(run.ID)
 	if controller == nil || !controller.Capabilities()[policy.ControlApprovalPauseResume] {
 		return Approval{}, errors.New("runtime cannot resolve approval; request remains pending")
@@ -934,8 +997,10 @@ func (m *Manager) DecideApproval(ctx context.Context, id string, status Approval
 	if !confirmed {
 		return updated, fmt.Errorf("approval recorded as %s but runtime did not confirm resolution", status)
 	}
-	if err := m.Store.ConfirmApprovalResolution(run.ID, now); err != nil {
-		return updated, fmt.Errorf("approval recorded as %s and runtime confirmed, but run state update failed: %w", status, err)
+	if run.ExternalRuntime == nil {
+		if err := m.Store.ConfirmApprovalResolution(run.ID, now); err != nil {
+			return updated, fmt.Errorf("approval recorded as %s and runtime confirmed, but run state update failed: %w", status, err)
+		}
 	}
 	return updated, nil
 }
@@ -962,12 +1027,22 @@ func (m *Manager) Kill(ctx context.Context, id, reason string, now time.Time) (R
 	if !confirmed {
 		return Record{}, errors.New("runtime did not confirm termination; run remains active")
 	}
+	if run.ExternalRuntime != nil {
+		return m.Store.Get(id)
+	}
 	return m.Store.confirmTermination(id, reason, now)
 }
 
 func (m *Manager) controller(id string) RuntimeController {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	record, err := m.Store.Get(id)
+	if err == nil && record.ExternalRuntime != nil {
+		if m.coordinator == nil {
+			return nil
+		}
+		return lifecycleController{coordinator: m.coordinator}
+	}
 	return m.controllers[id]
 }
 
@@ -1093,8 +1168,13 @@ func decodeDatabase(input io.Reader) (database, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return database{}, errors.New("run state must contain exactly one JSON document")
 	}
-	if (db.Version != legacyStoreVersion && db.Version != storeVersion) || db.Runs == nil || db.Approvals == nil || db.Events == nil {
+	if (db.Version != legacyStoreVersion && db.Version != previousStoreVersion && db.Version != storeVersion) || db.Runs == nil || db.Approvals == nil || db.Events == nil {
 		return database{}, errors.New("run state has an unsupported or incomplete version")
+	}
+	for _, record := range db.Runs {
+		if db.Version != storeVersion && record.PolicyRevisions != nil {
+			return database{}, errors.New("revision mutations require version-aware state")
+		}
 	}
 	if db.Version == legacyStoreVersion {
 		for id, record := range db.Runs {
@@ -1146,7 +1226,10 @@ func emptyDatabase() database {
 }
 
 func validateDatabase(db database) error {
-	if db.Version != legacyStoreVersion && db.Version != storeVersion {
+	if err := validateRevisionLineage(db); err != nil {
+		return err
+	}
+	if db.Version != legacyStoreVersion && db.Version != previousStoreVersion && db.Version != storeVersion {
 		return errors.New("run state has an unsupported version")
 	}
 	for id, run := range db.Runs {
@@ -1183,6 +1266,14 @@ func validateDatabase(db database) error {
 			}
 		}
 	}
+	for id, proposal := range db.Proposals {
+		if id != proposal.ID {
+			return errors.New("proposal key does not match id")
+		}
+		if err := validatePermissionProposal(db, proposal); err != nil {
+			return err
+		}
+	}
 	for _, approval := range db.Approvals {
 		if err := validateApprovalConsumption(db, approval); err != nil {
 			return fmt.Errorf("approval %q has invalid consumption: %w", approval.ID, err)
@@ -1192,13 +1283,19 @@ func validateDatabase(db database) error {
 }
 
 func validateRecord(record Record) error {
+	if err := validatePolicyRevisions(record); err != nil {
+		return err
+	}
+	if err := validateExternal(record); err != nil {
+		return err
+	}
 	if err := validateID("run", record.ID); err != nil {
 		return err
 	}
 	if record.Runtime == "" || !safeLabel.MatchString(record.Runtime) {
 		return fmt.Errorf("run %q has invalid runtime label", record.ID)
 	}
-	if record.Status != Active && record.Status != Paused && record.Status != Completed && record.Status != Failed && record.Status != Terminated {
+	if record.Status != Pending && record.Status != Prepared && record.Status != Active && record.Status != Paused && record.Status != Completed && record.Status != Failed && record.Status != Terminated {
 		return fmt.Errorf("run %q has invalid status %q", record.ID, record.Status)
 	}
 	if err := record.Policy.Validate(); err != nil {
@@ -1326,7 +1423,7 @@ func validateApprovalRequestAudit(db database, request Approval) (AuditRecord, e
 	if audit.RunID != request.RunID || audit.Category != request.Category || audit.Tool != request.Tool || !sameAuditDomain(audit.Domain, request.Domain) || audit.ActionType != request.ActionType {
 		return AuditRecord{}, errors.New("approval request audit does not match its action")
 	}
-	if audit.PolicyID != runRecord.Policy.PolicyID || audit.PolicyHash != runRecord.Policy.Hash {
+	if !auditResolvesPolicy(runRecord, audit) {
 		return AuditRecord{}, errors.New("approval request audit does not match the run policy snapshot")
 	}
 	if audit.Decision != policy.RequireApproval {
@@ -1391,6 +1488,9 @@ func validateAudit(event AuditRecord, db database) error {
 			if err != nil {
 				return fmt.Errorf("audit event %q references an invalid approval: %w", event.ID, err)
 			}
+			if !sameAuditPolicyReference(event, request) {
+				return errors.New("approval audit policy reference differs from its original request")
+			}
 			if (request.ActionID != "" && event.ActionID != request.ActionID) || (request.TraceID != "" && event.TraceID != request.TraceID) || event.Tool != request.Tool || event.ActionType != request.ActionType {
 				return fmt.Errorf("audit event %q approval lineage does not match its request", event.ID)
 			}
@@ -1428,7 +1528,8 @@ func validateAudit(event AuditRecord, db database) error {
 			return fmt.Errorf("audit event %q has an approver without an approval", event.ID)
 		}
 	}
-	if event.PolicyID != run.Policy.PolicyID || event.PolicyVersion != run.Policy.Version || event.PolicyHash != run.Policy.Hash || !event.PolicyResolvedAt.Equal(run.Policy.ResolvedAt) {
+	snapshot, found := run.policySnapshot(event.PolicyHash, event.PolicyResolvedAt)
+	if !found || event.PolicyID != snapshot.PolicyID || event.PolicyVersion != snapshot.Version {
 		return fmt.Errorf("audit event %q policy reference does not match run snapshot", event.ID)
 	}
 	return nil
@@ -1497,8 +1598,13 @@ func (event AuditRecord) Validate() error {
 	if event.ReasonCode != "" && !policy.IsKnownReasonCode(event.ReasonCode) {
 		return fmt.Errorf("audit event has invalid reason code %q", event.ReasonCode)
 	}
-	credentialScope := ""
-	if event.Category == policy.CredentialAccessRequested || event.Category == policy.EventCredentialAccess {
+	credentialScope := event.CredentialScope
+	if credentialScope != "" {
+		if err := identity.ValidateScopes("audit credential scope", []string{credentialScope}); err != nil {
+			return err
+		}
+	}
+	if (event.Category == policy.CredentialAccessRequested || event.Category == policy.EventCredentialAccess) && credentialScope == "" {
 		credentialScope = "redacted"
 	}
 	if event.ActorID != "" && !identity.IsSafeReference(event.ActorID) || event.DelegationID != "" && !identity.IsSafeReference(event.DelegationID) {
@@ -1508,11 +1614,17 @@ func (event AuditRecord) Validate() error {
 }
 
 func auditFor(run Record, event policy.Event, decision policy.Decision, terminationReason string) (AuditRecord, error) {
+	run.Policy = run.AppliedPolicy()
 	if err := event.Validate(); err != nil {
 		return AuditRecord{}, err
 	}
 	if err := decision.Validate(); err != nil {
 		return AuditRecord{}, fmt.Errorf("invalid policy decision: %w", err)
+	}
+	if event.CredentialScope != "" {
+		if err := identity.ValidateScopes("audit credential scope", []string{event.CredentialScope}); err != nil {
+			return AuditRecord{}, err
+		}
 	}
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
@@ -1545,7 +1657,13 @@ func auditFor(run Record, event policy.Event, decision policy.Decision, terminat
 		}
 	}
 	reason := sanitizeReason(terminationReason)
-	return AuditRecord{Version: auditVersion, ID: id, RunID: run.ID, RequestAuditID: event.RequestAuditID, Timestamp: event.Timestamp.UTC(), Category: event.Category, Actor: actor, ActorID: actorID, DelegationID: delegationID, ActionID: event.ActionID, ApprovalID: event.ApprovalID, ApproverID: event.ApproverID, TraceID: traceID, Runtime: run.Runtime, Tool: event.Tool, ActionType: event.ActionType, Domain: domain, PolicyID: run.Policy.PolicyID, PolicyVersion: run.Policy.Version, PolicyHash: run.Policy.Hash, PolicyResolvedAt: run.Policy.ResolvedAt, Decision: decision.Outcome, Result: decision.Outcome, ReasonCode: decision.ReasonCode, TerminationReason: reason}, nil
+	// Retain safe scope identifiers only for attributable permission denials.
+	// Ordinary/anonymous credential events keep the historical omission contract.
+	credentialScope := ""
+	if run.Identity.Mode == identity.ModeNamed && event.Category == policy.CredentialAccessRequested && decision.Outcome == policy.Deny && event.ActionID != "" {
+		credentialScope = event.CredentialScope
+	}
+	return AuditRecord{Version: auditVersion, ID: id, RunID: run.ID, RequestAuditID: event.RequestAuditID, Timestamp: event.Timestamp.UTC(), Category: event.Category, Actor: actor, ActorID: actorID, DelegationID: delegationID, ActionID: event.ActionID, ApprovalID: event.ApprovalID, ApproverID: event.ApproverID, TraceID: traceID, Runtime: run.Runtime, Tool: event.Tool, ActionType: event.ActionType, Domain: domain, CredentialScope: credentialScope, PolicyID: run.Policy.PolicyID, PolicyVersion: run.Policy.Version, PolicyHash: run.Policy.Hash, PolicyResolvedAt: run.Policy.ResolvedAt, Decision: decision.Outcome, Result: decision.Outcome, ReasonCode: decision.ReasonCode, TerminationReason: reason}, nil
 }
 
 func validateRequestAuditLink(events []AuditRecord, runID string, event policy.Event, strict bool) error {
