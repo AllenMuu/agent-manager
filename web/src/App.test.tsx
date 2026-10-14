@@ -238,6 +238,67 @@ describe('console entry and guarded activation', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('已完成 撤销启用，并写入操作日志。')
   })
+
+  it('separates Doctor findings from project scan notes and reviews a selected repair before applying it', async () => {
+    const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
+    const plan: OperationPlan = {
+      id: 'doctor-repair-plan', projectId: project.id, operation: 'reconcile', operationRef: { key: 'plan.operation.reconcile' },
+      version: 'v1', resourceKind: 'skill',
+      changes: [{ path: '/workspace/sample/.codex/skills/stale', action: 'repoint orphaned managed link', actionRef: { key: 'plan.action.repoint_orphaned_link' }, detail: '/library/stale' }],
+      warnings: [], createdAt: '2026-10-14T00:00:00Z', expiresAt: '2026-10-14T00:10:00Z', forceReplacementConfirmed: false,
+    }
+    const calls: { route: string; init: RequestInit }[] = []
+    let diagnosticReads = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const route = String(input)
+      calls.push({ route, init })
+      if (route === '/api/v1/system') return jsonResponse({ project })
+      if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
+      if (route.endsWith('/recommendations')) return jsonResponse({
+        project: project.path, scanComplete: false,
+        diagnostics: [{ path: '.', message: 'Traversal stopped after inspecting 10000 directory entries.', code: 'scan.traversal_limit', messageRef: { key: 'scan.traversal_limit', args: { limit: '10000' } } }],
+        scopes: [],
+      })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
+      if (route.endsWith('/diagnostics')) {
+        diagnosticReads++
+        return jsonResponse({ findings: [
+          { path: '/workspace/sample/.codex/skills/stale', code: 'doctor.orphaned_managed_link', message: 'orphaned link', repairAction: 'reconcile', messageRef: { key: 'doctor.orphaned_managed_link', args: { target: '/old-library/stale' } } },
+          { path: '/workspace/sample/.codex/skills/web-helper', code: 'doctor.git_managed_link_status', message: 'would be tracked', repairAction: 'add_gitignore', messageRef: { key: 'doctor.git_managed_link_status', args: { status: 'would be tracked' } } },
+          { path: '/library/invalid-entry', code: 'doctor.invalid_catalog_entry', message: 'invalid catalog entry', messageRef: { key: 'doctor.invalid_catalog_entry', args: { detail: 'missing SKILL.md' } }, guidance: 'Repair the invalid Skill entry in the configured library, then run the scan again.', guidanceRef: { key: 'doctor.guidance.invalid_catalog_entry' } },
+        ] })
+      }
+      if (route.endsWith('/plans/doctor-reconcile')) return jsonResponse({ plan })
+      if (route.endsWith('/execute')) return jsonResponse({ operation: 'reconcile', status: 'completed' })
+      if (route.endsWith('/operations/latest')) return jsonResponse({ latest: null })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+
+    renderApp()
+    expect(await screen.findByText('sample')).toBeInTheDocument()
+    expect(await screen.findByText('1 project scan note')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Diagnostics/ }))
+    expect(await screen.findByRole('heading', { name: 'Doctor findings', level: 2 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Project scan notes', level: 2 })).toBeInTheDocument()
+    expect(screen.getByText(/Traversal stopped after inspecting 10000/)).toBeInTheDocument()
+    expect(screen.getByText('Repair the invalid Skill entry in the configured library, then run the scan again.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    expect(await screen.findByText('修复已配置库中的无效 Skill 条目，然后重新扫描。')).toBeInTheDocument()
+    expect(screen.getByText('扫描在检查 10000 个目录条目后停止')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '预览重新关联' }))
+    expect(await screen.findByRole('heading', { name: '重新关联', level: 2 })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '确认并应用' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('已完成 重新关联，并写入操作日志。')
+
+    const repairCall = calls.find((call) => call.route.endsWith('/plans/doctor-reconcile'))
+    expect(repairCall?.init.body).toBe(JSON.stringify({ path: '/workspace/sample/.codex/skills/stale' }))
+    await waitFor(() => expect(diagnosticReads).toBeGreaterThan(1))
+    expect(calls.some((call) => call.route.endsWith('/resources'))).toBe(true)
+    expect(calls.some((call) => call.route.endsWith('/operations/latest'))).toBe(true)
+  })
 })
 
 function renderApp() {

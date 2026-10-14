@@ -69,9 +69,13 @@ type evidenceDTO struct {
 }
 
 type findingDTO struct {
-	Path       string         `json:"path"`
-	Message    string         `json:"message"`
-	MessageRef *messageRefDTO `json:"messageRef,omitempty"`
+	Path         string         `json:"path"`
+	Message      string         `json:"message"`
+	Code         string         `json:"code,omitempty"`
+	MessageRef   *messageRefDTO `json:"messageRef,omitempty"`
+	RepairAction string         `json:"repairAction,omitempty"`
+	Guidance     string         `json:"guidance,omitempty"`
+	GuidanceRef  *messageRefDTO `json:"guidanceRef,omitempty"`
 }
 
 type recommendationsDTO struct {
@@ -276,12 +280,21 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, project *registeredPro
 			writeAPIError(w, http.StatusConflict, "unsafe_journal_entry", "The project operation journal contains paths outside its registered safety boundary.")
 			return
 		}
-		writeAPIError(w, http.StatusInternalServerError, "diagnostics_failed", "Read-only diagnostics could not be completed.")
+		writeAPIError(w, http.StatusInternalServerError, "diagnostics_failed", "Doctor diagnostics could not be completed.")
 		return
 	}
 	result := make([]findingDTO, 0, len(findings))
 	for _, finding := range findings {
-		result = append(result, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
+		advice := s.doctorFindingPresentation(project, journal, finding)
+		result = append(result, findingDTO{
+			Path:         finding.Path,
+			Message:      finding.Message,
+			Code:         finding.Code,
+			MessageRef:   messageRef(finding.Code, finding.Args),
+			RepairAction: advice.RepairAction,
+			Guidance:     advice.Guidance,
+			GuidanceRef:  advice.GuidanceRef,
+		})
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Findings []findingDTO `json:"findings"`
@@ -462,7 +475,7 @@ func toSkillDTO(skill catalog.Skill, includeBody bool) skillDTO {
 func toRecommendationsDTO(result recommend.Result) recommendationsDTO {
 	out := recommendationsDTO{Project: result.Project, ScanComplete: result.ScanComplete, Diagnostics: make([]findingDTO, 0, len(result.Diagnostics)), Scopes: make([]scopeDTO, 0, len(result.Scopes))}
 	for _, finding := range result.Diagnostics {
-		out.Diagnostics = append(out.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
+		out.Diagnostics = append(out.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, Code: finding.Code, MessageRef: messageRef(finding.Code, finding.Args)})
 	}
 	for _, scope := range result.Scopes {
 		converted := scopeDTO{Path: scope.Path, Status: string(scope.Status), NextAction: string(scope.NextAction), Technologies: make([]technologyDTO, 0, len(scope.Technologies)), Evidence: make([]evidenceDTO, 0, len(scope.Evidence)), Diagnostics: make([]findingDTO, 0, len(scope.Diagnostics)), Recommendations: make([]recommendationDTO, 0, len(scope.Recommendations))}
@@ -473,7 +486,7 @@ func toRecommendationsDTO(result recommend.Result) recommendationsDTO {
 			converted.Evidence = append(converted.Evidence, evidenceDTO{Path: evidence.Path, Technology: evidence.Technology})
 		}
 		for _, finding := range scope.Diagnostics {
-			converted.Diagnostics = append(converted.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, MessageRef: messageRef(finding.Code, finding.Args)})
+			converted.Diagnostics = append(converted.Diagnostics, findingDTO{Path: finding.Path, Message: finding.Message, Code: finding.Code, MessageRef: messageRef(finding.Code, finding.Args)})
 		}
 		for _, recommendation := range scope.Recommendations {
 			item := recommendationDTO{Identifier: recommendation.Identifier, Description: recommendation.Description, MatchReason: recommendation.MatchReason, MatchReasonRef: messageRef("recommendation.matched_evidence", nil), Confidence: string(recommendation.Confidence), Score: recommendation.Score, MatchingEvidence: make([]matchDTO, 0, len(recommendation.MatchingEvidence))}

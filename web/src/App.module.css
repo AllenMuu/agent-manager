@@ -159,8 +159,11 @@
 .definitionCard h2 { margin: 0; font-size: 17px; }
 .roleLine { margin: 4px 0 10px; color: #a7472d !important; font-size: 11px; font-weight: 650; }
 .instructions { margin: 0 0 11px; white-space: pre-wrap; }
+.panelTopActions { display: flex; align-items: center; gap: 10px; }
+.panel .panelTitle { margin: 0; color: #74776c; font-size: 10px; font-weight: 750; letter-spacing: .13em; line-height: 1.4; text-transform: uppercase; }
 .findingRow { display: flex; gap: 12px; padding: 13px 0; border-top: 1px solid #eeebe3; }
 .findingRow > div { display: grid; gap: 4px; }
+.findingHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .findingRow strong { font-size: 12px; }
 .findingRow p { margin: 0; font-size: 11px; }
 .findingRow code { overflow-wrap: anywhere; color: #898a80; font-size: 10px; }
