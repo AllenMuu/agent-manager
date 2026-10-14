@@ -10,6 +10,7 @@ import (
 
 	"github.com/AllenMuu/skill-manager/internal/diagnostic"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 func TestScanReportsCatalogOrphanUnsupportedAndGitGuidance(t *testing.T) {
@@ -239,14 +240,15 @@ func TestDeleteRevalidatesConcurrentReplacementAndCatalogIO(t *testing.T) {
 		if err := os.RemoveAll(path); err != nil {
 			t.Fatal(err)
 		}
-		mustMkdir(t, path)
+		mustWrite(t, filepath.Join(path, "SKILL.md"), "---\nname: replacement\ndescription: replacement\n---\n")
+		mustWrite(t, filepath.Join(path, "new-owner.txt"), "preserve")
 		return true
 	})
 	if err == nil {
 		t.Fatal("concurrent replacement accepted")
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
+	if contents, err := os.ReadFile(filepath.Join(path, "new-owner.txt")); err != nil || string(contents) != "preserve" {
+		t.Fatalf("concurrent replacement was changed: contents=%q err=%v", contents, err)
 	}
 	if _, err := diagnostic.DeleteLibrarySkill(filepath.Join(root, "missing", "library"), "demo", true, func(operation.Plan) bool { return true }); err == nil {
 		t.Fatal("catalog I/O accepted")
@@ -528,6 +530,48 @@ func TestDeleteLibrarySkillRequiresForceConfirmation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(library, "demo")); !os.IsNotExist(err) {
 		t.Fatalf("library skill remains: %v", err)
+	}
+}
+
+func TestDeleteLibrarySkillRemovesAndRestoresWholeVersionedIdentity(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"1.0.0", "2.0.0"} {
+		source := filepath.Join(t.TempDir(), "demo")
+		mustWrite(t, filepath.Join(source, "SKILL.md"), "---\nname: demo\ndescription: "+version+"\n---\n")
+		if _, err := repository.AddVersion("demo", source, skillrepo.VersionMetadata{Version: version}, version == "2.0.0"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := filepath.Join(library, "demo")
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	var preview operation.Plan
+	if _, err := diagnostic.DeleteLibrarySkill(library, "demo", true, func(plan operation.Plan) bool {
+		preview = plan
+		return true
+	}, journal); err != nil {
+		t.Fatalf("DeleteLibrarySkill() error = %v", err)
+	}
+	if len(preview.Changes) != 1 || preview.Changes[0].Path != identity {
+		t.Fatalf("delete preview = %#v, want complete identity path %q", preview.Changes, identity)
+	}
+	if _, err := os.Lstat(identity); !os.IsNotExist(err) {
+		t.Fatalf("versioned identity remains after deletion: %v", err)
+	}
+	if err := journal.UndoLatest(func(operation.Plan) bool { return true }); err != nil {
+		t.Fatalf("UndoLatest() = %v", err)
+	}
+	for _, version := range []string{"1.0.0", "2.0.0"} {
+		if _, err := repository.Resolve("demo", version); err != nil {
+			t.Errorf("restored version %s: %v", version, err)
+		}
+	}
+	if current, err := repository.Resolve("demo", ""); err != nil || current.Version != "2.0.0" {
+		t.Errorf("restored current version = %#v, %v; want 2.0.0", current, err)
 	}
 }
 

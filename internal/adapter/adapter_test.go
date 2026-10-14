@@ -872,6 +872,24 @@ func TestSupportedProjectAndGlobalLocations(t *testing.T) {
 	}
 }
 
+func TestValidateGlobalResourcePlacementRejectsEscapesAndSymlinkParents(t *testing.T) {
+	home := t.TempDir()
+	global := filepath.Join(home, ".codex", "skills", "demo")
+	if err := adapter.ValidateGlobalResourcePlacement(adapter.Codex, home, global, resource.Skill, "demo"); err != nil {
+		t.Fatalf("valid global placement rejected: %v", err)
+	}
+	if err := adapter.ValidateGlobalResourcePlacement(adapter.Codex, home, filepath.Join(t.TempDir(), "demo"), resource.Skill, "demo"); !errors.Is(err, adapter.ErrUnsafePath) {
+		t.Fatalf("outside global placement error = %v, want unsafe path", err)
+	}
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(home, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.ValidateGlobalResourcePlacement(adapter.Codex, home, global, resource.Skill, "demo"); !errors.Is(err, adapter.ErrUnsafePath) {
+		t.Fatalf("symlinked global parent error = %v, want unsafe path", err)
+	}
+}
+
 func TestValidateIdentifierRejectsTraversalAndPathForms(t *testing.T) {
 	for _, identifier := range []string{"", ".", "..", "a/b", "a\\b", "../demo", "demo/.."} {
 		if err := adapter.ValidateIdentifier(identifier); err == nil {

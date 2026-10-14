@@ -1,11 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Configured directory-skill library
-The system SHALL preserve `~/.agents/skills` as its default configurable skill-library path and SHALL treat it as the authoritative library for the Skill resource kind under Agent Manager. A catalog entry SHALL be eligible for management only when it is a directory containing `SKILL.md`.
+The system SHALL use `~/.agent-manager/skills` as its default configurable Skill-repository path and SHALL treat only the configured repository as authoritative. A catalog entry SHALL be eligible for management only when its resolved version directory contains `SKILL.md`.
 
-#### Scenario: Existing default library is searched after migration
+#### Scenario: Agent Manager repository is searched
 - **WHEN** no alternate library path has been configured after upgrading to Agent Manager
-- **THEN** catalog commands discover eligible Skill resources below `~/.agents/skills`
+- **THEN** catalog commands discover eligible Skill resources below `~/.agent-manager/skills` without merging `~/.agents/skills`
 
 #### Scenario: Invalid library entry is encountered
 - **WHEN** a library child does not contain `SKILL.md`

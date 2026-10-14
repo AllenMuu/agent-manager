@@ -54,6 +54,8 @@ type recommendJSONMatch struct {
 type recommendJSONRecommendation struct {
 	Identifier       string                `json:"identifier"`
 	Description      string                `json:"description"`
+	Version          string                `json:"version"`
+	VersionKey       string                `json:"versionKey"`
 	MatchReason      string                `json:"matchReason"`
 	MatchingEvidence []recommendJSONMatch  `json:"matchingEvidence"`
 	Confidence       *recommend.Confidence `json:"confidence"`
@@ -115,6 +117,8 @@ func writeRecommendJSON(cmd *cobra.Command, result recommend.Result) error {
 			jsonRec := recommendJSONRecommendation{
 				Identifier:       rec.Identifier,
 				Description:      rec.Description,
+				Version:          rec.Version,
+				VersionKey:       rec.VersionKey,
 				MatchReason:      rec.MatchReason,
 				MatchingEvidence: []recommendJSONMatch{},
 				Confidence:       &confidence,
@@ -187,7 +191,7 @@ func writeRecommendText(cmd *cobra.Command, result recommend.Result) error {
 			if rec.Confidence != "" {
 				confidence = string(rec.Confidence)
 			}
-			if _, err := fmt.Fprintf(w, "  recommend: %s (%s) — %s\n    reason: %s\n", rec.Identifier, confidence, rec.Description, rec.MatchReason); err != nil {
+			if _, err := fmt.Fprintf(w, "  recommend: %s (%s, version: %s, key: %s) — %s\n    reason: %s\n", rec.Identifier, confidence, printable(rec.Version), printable(rec.VersionKey), rec.Description, rec.MatchReason); err != nil {
 				return err
 			}
 			for _, m := range rec.MatchingEvidence {

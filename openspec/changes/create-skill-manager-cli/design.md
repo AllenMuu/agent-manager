@@ -1,6 +1,6 @@
 ## Context
 
-The repository is currently documentation-only. See [proposal.md](./proposal.md) for motivation and the project ADRs for the established source-of-truth, adapter, and machine-local activation decisions. The local environment already contains a directory-skill collection at `~/.agents/skills`; Claude Code and Codex accept the same `<project>/.{agent}/skills/<id>/SKILL.md` shape.
+The repository was specification-first when this change was proposed. See [proposal.md](./proposal.md) for its original motivation and the project ADRs for the source-of-truth, adapter, and machine-local activation decisions. The original local collection at `~/.agents/skills` is now the legacy import source; Claude Code, Codex, and Pi accept materialized project Skills in their respective agent-owned directories.
 
 ## Goals / Non-Goals
 

@@ -5,11 +5,11 @@ Provide a single, inspectable local catalog of reusable directory skills so peop
 ## ADDED Requirements
 
 ### Requirement: Configured directory-skill library
-The system SHALL use `~/.agents/skills` as its default skill-library path and SHALL allow the user to configure a different local path. A catalog entry SHALL be eligible for management only when it is a directory containing `SKILL.md`.
+The system SHALL use `~/.agent-manager/skills` as its default Skill-repository path and SHALL allow the user to configure a different local path. Catalog commands SHALL read only the configured repository. A catalog entry SHALL be eligible for management only when its resolved version directory contains `SKILL.md`.
 
-#### Scenario: Default library is searched
+#### Scenario: Default repository is searched
 - **WHEN** no alternate library path has been configured
-- **THEN** catalog commands discover eligible skill directories below `~/.agents/skills`
+- **THEN** catalog commands discover eligible Skill versions below `~/.agent-manager/skills` and do not merge `~/.agents/skills`
 
 #### Scenario: Invalid library entry is encountered
 - **WHEN** a library child does not contain `SKILL.md`

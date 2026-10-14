@@ -27,7 +27,7 @@ func newInitCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		journal := filepath.Join(home, ".skill-manager", "journal.json")
+		journal := operation.GlobalJournal(home).Path
 		exe, err := os.Executable()
 		if err != nil {
 			return err
@@ -153,7 +153,7 @@ func library(options *rootOptions) (string, error) {
 	return c.LibraryPath, nil
 }
 func journal(project string) *operation.Journal {
-	return operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+	return operation.ProjectJournal(project)
 }
 func confirmer(cmd *cobra.Command, yes *bool, outputErr *error) func(operation.Plan) bool {
 	return func(p operation.Plan) bool {
@@ -179,6 +179,7 @@ func parseTargets(values []string) ([]adapter.Target, error) {
 func newAddCommand(options *rootOptions) *cobra.Command {
 	var project string
 	var targets []string
+	var versions []string
 	var allDetected bool
 	var yes bool
 	var conflict string
@@ -199,6 +200,10 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 		if conflict != "" && !force {
 			return fmt.Errorf("conflict strategy %q requires --force confirmation", conflict)
 		}
+		selectedVersions, err := parseSkillVersionOverrides(versions)
+		if err != nil {
+			return err
+		}
 		opts := lifecycle.Options{Conflict: lifecycle.ConflictStrategy(conflict), Force: force}
 		lib, err := library(options)
 		if err != nil {
@@ -209,7 +214,7 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 			return err
 		}
 		service := installation.New(lib)
-		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: args, Targets: ts, Options: opts})
+		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: args, Versions: selectedVersions, Targets: ts, Options: opts})
 		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
 			return writeErr
 		}
@@ -230,6 +235,7 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 	}}
 	projectFlag(cmd, &project)
 	cmd.Flags().StringSliceVar(&targets, "target", nil, "target agent (claude-code, codex, or pi)")
+	cmd.Flags().StringArrayVar(&versions, "version", nil, "select a Skill version as <skill-id>=<version-or-key>; repeat as needed")
 	cmd.Flags().BoolVar(&allDetected, "all-detected", false, "activate for every detected supported target agent")
 	cmd.Flags().StringVar(&conflict, "conflict", "", "conflict strategy for existing destination paths (replace)")
 	cmd.Flags().BoolVar(&force, "force", false, "supply force confirmation for the selected conflict strategy")
@@ -246,15 +252,50 @@ func detectedTargets(project string) []string {
 	}
 	return targets
 }
+
+func detectedGlobalTargets(home string) []string {
+	var targets []string
+	for _, a := range adapter.Supported() {
+		agent, ok := adapter.ForAgent(a.Target())
+		if !ok {
+			continue
+		}
+		root := filepath.Dir(agent.GlobalSkillPath(home, "placeholder"))
+		if _, err := os.Stat(root); err == nil {
+			targets = append(targets, string(a.Target()))
+		}
+	}
+	return targets
+}
 func newListCommand(options *rootOptions) *cobra.Command {
 	var project string
-	var asJSON bool
+	var asJSON, global bool
 	cmd := &cobra.Command{Use: "list", Short: "List project skills", RunE: func(cmd *cobra.Command, _ []string) error {
+		if global && cmd.Flags().Changed("project") {
+			return fmt.Errorf("--global cannot be combined with --project")
+		}
+		if global {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			project = home
+		}
 		lib, err := library(options)
 		if err != nil {
 			return err
 		}
-		items, err := lifecycle.New(lib, journal(project), nil).List(project)
+		opJournal := journal(project)
+		if global {
+			opJournal = operation.GlobalJournal(project)
+		}
+		service := lifecycle.New(lib, opJournal, nil)
+		var items []lifecycle.Item
+		if global {
+			items, err = service.ListGlobal(project)
+		} else {
+			items, err = service.List(project)
+		}
 		if err != nil {
 			return err
 		}
@@ -269,25 +310,46 @@ func newListCommand(options *rootOptions) *cobra.Command {
 		return nil
 	}}
 	projectFlag(cmd, &project)
+	cmd.Flags().BoolVar(&global, "global", false, "list global agent Skill directories")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "write machine-readable JSON")
 	return cmd
 }
 func newRemoveCommand(options *rootOptions) *cobra.Command {
 	var project, target string
-	var yes bool
-	cmd := &cobra.Command{Use: "remove <skill>", Short: "Remove a managed project link", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var yes, global bool
+	cmd := &cobra.Command{Use: "remove <skill>", Short: "Remove a managed Skill link", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if global && cmd.Flags().Changed("project") {
+			return fmt.Errorf("--global cannot be combined with --project")
+		}
+		if global {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			project = home
+		}
 		lib, err := library(options)
 		if err != nil {
 			return err
 		}
 		var previewErr error
-		_, err = lifecycle.New(lib, journal(project), confirmer(cmd, &yes, &previewErr)).Remove(project, adapter.Target(target), args[0])
+		opJournal := journal(project)
+		if global {
+			opJournal = operation.GlobalJournal(project)
+		}
+		service := lifecycle.New(lib, opJournal, confirmer(cmd, &yes, &previewErr))
+		if global {
+			_, err = service.RemoveGlobal(project, adapter.Target(target), args[0])
+		} else {
+			_, err = service.Remove(project, adapter.Target(target), args[0])
+		}
 		if previewErr != nil {
 			return previewErr
 		}
 		return err
 	}}
 	projectFlag(cmd, &project)
+	cmd.Flags().BoolVar(&global, "global", false, "remove a global agent Skill link")
 	cmd.Flags().StringVar(&target, "target", "", "target agent")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the displayed plan")
 	_ = cmd.MarkFlagRequired("target")
@@ -398,16 +460,32 @@ func newReconcileCommand(options *rootOptions) *cobra.Command {
 }
 func newUndoCommand(options *rootOptions) *cobra.Command {
 	var project string
+	var global bool
 	var yes bool
-	cmd := &cobra.Command{Use: "undo", Short: "Undo the latest project operation", RunE: func(cmd *cobra.Command, _ []string) error {
+	cmd := &cobra.Command{Use: "undo", Short: "Undo the latest operation", RunE: func(cmd *cobra.Command, _ []string) error {
+		if global && cmd.Flags().Changed("project") {
+			return fmt.Errorf("--global cannot be combined with --project")
+		}
+		if global {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			project = home
+		}
 		var previewErr error
-		err := lifecycle.New("", journal(project), confirmer(cmd, &yes, &previewErr)).Undo()
+		opJournal := journal(project)
+		if global {
+			opJournal = operation.GlobalJournal(project)
+		}
+		err := lifecycle.New("", opJournal, confirmer(cmd, &yes, &previewErr)).Undo()
 		if previewErr != nil {
 			return previewErr
 		}
 		return err
 	}}
 	projectFlag(cmd, &project)
+	cmd.Flags().BoolVar(&global, "global", false, "undo the latest global Skill operation")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the displayed plan")
 	return cmd
 }

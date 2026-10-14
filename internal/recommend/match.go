@@ -30,6 +30,8 @@ const (
 type Recommendation struct {
 	Identifier       string
 	Description      string
+	Version          string
+	VersionKey       string
 	MatchReason      string
 	MatchingEvidence []Match
 	Confidence       Confidence
@@ -73,7 +75,7 @@ func MatchScope(skills []catalog.Skill, technologies []string) []Recommendation 
 }
 
 func matchSkill(skill catalog.Skill, technologies []string) Recommendation {
-	rec := Recommendation{Identifier: skill.Identifier, Description: skill.Description}
+	rec := Recommendation{Identifier: skill.Identifier, Description: skill.Description, Version: skill.Version, VersionKey: skill.VersionKey}
 	tagSet := tagSet(skill.Tags)
 	for _, tech := range technologies {
 		if tagSet[tech] {

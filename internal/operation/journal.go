@@ -66,6 +66,18 @@ type Journal struct {
 // New creates a journal that persists entries at path.
 func New(path string) *Journal { return &Journal{Path: path} }
 
+// ProjectJournal returns the reversible-operation journal for one project.
+func ProjectJournal(project string) *Journal {
+	return New(filepath.Join(project, ".skill-manager", "journal.json"))
+}
+
+// GlobalJournal returns the journal dedicated to home-level Skill links. It
+// lives outside the project journal path so undo --global cannot restore a
+// project operation whose root happens to be the user's home directory.
+func GlobalJournal(home string) *Journal {
+	return New(filepath.Join(home, ".agent-manager", "journal", "global.json"))
+}
+
 // LockOperation serializes a project operation across CLI and WebUI processes.
 // Callers should hold it for the full operation, including its journal commit.
 func (j *Journal) LockOperation() (func() error, error) {

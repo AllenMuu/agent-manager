@@ -440,6 +440,37 @@ func ValidateProjectResourcePlacement(target Target, project, destination string
 	return directory.validateResourcePlacement(project, destination, kind, identifier)
 }
 
+// ValidateGlobalResourcePlacement verifies that destination is exactly the
+// agent-owned global Skill location beneath home. Global placement currently
+// supports Skills; it uses the same directory and symlink-parent checks as a
+// project placement, anchored at the user's home directory.
+func ValidateGlobalResourcePlacement(target Target, home, destination string, kind resource.Kind, identifier string) error {
+	a, ok := supported[target]
+	if !ok {
+		return fmt.Errorf("unsupported target %q", target)
+	}
+	directory, ok := a.(directoryAdapter)
+	if !ok {
+		return fmt.Errorf("unsupported placement adapter %q", target)
+	}
+	if kind != resource.Skill {
+		return &UnsupportedResourceKindError{Target: target, Kind: kind}
+	}
+	if identifier == "" || ValidateIdentifier(identifier) != nil {
+		return fmt.Errorf("%w: unsafe resource identifier %q", ErrUnsafePath, identifier)
+	}
+	expected := directory.GlobalSkillPath(home, identifier)
+	actual, err := filepath.Abs(destination)
+	if err != nil {
+		return fmt.Errorf("%w: resolve global placement destination", ErrUnsafePath)
+	}
+	expected, err = filepath.Abs(expected)
+	if err != nil || filepath.Clean(actual) != filepath.Clean(expected) {
+		return fmt.Errorf("%w: destination is not the adapter-owned global placement", ErrUnsafePath)
+	}
+	return directory.validateProjectParents(home, filepath.Dir(expected))
+}
+
 func (a directoryAdapter) Supports(kind resource.Kind) bool {
 	if kind == resource.Skill {
 		return true

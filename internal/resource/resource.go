@@ -142,6 +142,7 @@ type SkillLifecycleRequest struct {
 	// It is kept at the lifecycle boundary so mutation cannot trust an
 	// arbitrary PlacementPath supplied by a downstream plan.
 	ProjectPath   string
+	GlobalScope   bool
 	Resource      ManagedResource
 	CatalogEntry  *SkillCatalogEntry
 	Identifier    string
@@ -161,6 +162,7 @@ type SkillLifecyclePlan struct {
 	Action          LifecycleAction
 	Resource        ManagedResource
 	SourcePath      string
+	SourceChecksum  string
 	CurrentSource   string
 	ReplaceExisting bool
 	Applicable      bool

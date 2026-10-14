@@ -26,8 +26,8 @@ Git guidance SHALL ignore only each selected managed-link path. It SHALL escape 
 Configuration SHALL resolve a library beginning with ~/ against the current user's home. Ordinary relative libraries SHALL remain relative to the configuration file directory.
 
 #### Scenario: README configuration is loaded
-- **WHEN** the library is ~/.agents/skills
-- **THEN** the configured library resolves to the current user's .agents/skills directory
+- **WHEN** the library is ~/.agent-manager/skills
+- **THEN** the configured library resolves to the current user's .agent-manager/skills directory
 
 ### Requirement: Non-boundary evidence belongs to its enclosing scope
 Technology evidence from Docker, Compose and agent markers in non-scope directories SHALL be attributed to the nearest containing project scope with scope-relative marker paths. Evidence SHALL NOT cross an independently marked scope boundary.

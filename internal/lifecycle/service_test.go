@@ -13,6 +13,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/resource"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 type recordingSkillHandler struct {
@@ -598,8 +599,19 @@ func TestAdoptRefusesConflictThenReplacesProjectDirectoryWithManagedLink(t *test
 	if _, err := svc.Adopt(project, adapter.Codex, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.Readlink(local.SourcePath); err != nil || got != filepath.Join(library, "demo") {
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatalf("Open(adopted repository) error = %v", err)
+	}
+	entry, err := repository.Resolve("demo", "")
+	if err != nil {
+		t.Fatalf("Resolve(adopted Skill) error = %v", err)
+	}
+	if got, err := os.Readlink(local.SourcePath); err != nil || got != entry.Path {
 		t.Fatalf("adopted link = %q, %v", got, err)
+	}
+	if entry.Version != "unknown" || entry.Metadata.SourceType != "local-adoption" {
+		t.Fatalf("adopted version metadata = %#v", entry.Metadata)
 	}
 	assertNoAdoptionStages(t, filepath.Dir(local.SourcePath))
 }

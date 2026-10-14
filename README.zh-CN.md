@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文**
 
-> Agent Manager 是本地优先的代理资源管理工具：管理 Skills、规范化 SubAgent、跨代理任务工件、共享 Memory 配置和运行时治理记录。
+> Agent Manager 聚焦于跨编码代理的项目感知 Skills 和共享 Project Memory。它管理可复用知识和受保护的本地链接，不会启动代理或接管其运行时、模型、提供器或沙箱。
 >
 > 它提供 CLI 和本地 Web 控制台，但**不会启动 AI 代理**。Claude Code、Codex 和 Pi 当前也没有接入运行时策略执行或共享 Memory 的原生适配器。
 
@@ -22,6 +22,9 @@ export PATH="$HOME/.local/bin:$PATH"
 ```sh
 # CLI：一次安装多个明确选择的 Skill
 agent-manager install go-helper review --project . --target codex --yes
+
+# 或将 Skill 显式激活到代理的全局目录
+agent-manager install go-helper --global --target codex --yes
 
 # Web：打开本地管理后台，再进入“技能安装”页签选择 Skill
 agent-manager web --project .
@@ -62,11 +65,27 @@ agent-manager recommend --project .
 agent-manager select --project .
 agent-manager add <skill> --project . --target codex --yes
 
-# 一次安装多个明确选择的 Skill，或打开包含技能安装页签的 Web 应用
+# 一次安装多个明确选择的项目 Skill，或打开包含技能安装页签的 Web 应用
 agent-manager install go-helper review --project . --target codex --yes
+
+# 全局安装只作用于当前用户的代理 Skill 目录
+agent-manager install go-helper --global --target codex --yes
+agent-manager list --global
+agent-manager remove go-helper --global --target codex --yes
+agent-manager undo --global --yes
 
 # 启动管理后台和技能安装页签（共用一个本机地址）
 agent-manager web --project . --port 0
+```
+
+默认 Skill 仓库为 `~/.agent-manager/skills`。旧库 `~/.agents/skills` 只作为显式复制导入源：先预览候选或指定 Skill，再把预览显示的确认令牌复制到执行命令中。
+
+```sh
+agent-manager skill import
+agent-manager skill import go-helper
+agent-manager skill import go-helper --confirm-token TOKEN_FROM_PREVIEW --yes
+agent-manager skill versions go-helper
+agent-manager install go-helper --version go-helper=1.2.0 --project . --target codex --yes
 ```
 
 `skill-manager` 仍是兼容命令，会提示迁移到 `agent-manager`。新脚本和自动化任务请使用 `agent-manager`。
@@ -100,7 +119,7 @@ npm run build
 
 | 领域 | 能力 |
 |---|---|
-| **Skills** | 从本地 Skill 库搜索和推荐 Skills；在 Claude Code、Codex、Pi 项目目录建立机器本地符号链接；支持添加、移除、收编、分叉、诊断、修复和撤销。 |
+| **Skills** | 在 `~/.agent-manager/skills` 维护带版本和来源信息的本地 Skill 仓库；显式预览并确认复制旧库；只向 Claude Code、Codex、Pi 的项目或全局目标目录物化选中的版本；激活是机器本地符号链接。 |
 | **SubAgent** | 以 Agent Manager 下的版本化 YAML 作为规范来源；支持检查和验证，通过适配器安装到受支持的代理。Pi 当前没有已验证的原生 SubAgent 格式。 |
 | **跨代理工作流** | 用版本化任务工件组织 intent、spec、plan、implementation、verification 和 lessons；提供角色契约和上下文打包。由外部代理或人工完成任务，Agent Manager 不会启动代理。 |
 | **共享 Memory** | 可配置现有的本地文件型提供器；状态检查只读，写入必须显式调用 `memory promote` 并确认。当前没有代理原生 Memory 集成。 |
@@ -108,17 +127,19 @@ npm run build
 | **评估** | 使用确定性本地规则评估外部代理生成的响应文件或治理事件，不启动代理，也不依赖 LLM 裁判。 |
 | **Web 控制台** | 通过带会话令牌的本地网页界面查看目录、诊断和操作计划；写操作仍需单独确认。 |
 
-Skill 激活是机器本地状态，不会生成可提交的项目清单，也不会自动同步到其他机器。`init` 是唯一会修改代理全局 Skill 目录的命令；项目命令只处理项目范围。
+Skill 激活是机器本地状态，不会生成可提交的项目清单，也不会自动同步到其他机器。`install --global`、`list --global`、`remove --global` 和 `undo --global` 显式管理当前用户的全局链接；`init` 管理全局 Operator Skill。项目激活仍只影响选定项目。
 
 ## 配置
 
 ### Skill 库
 
-默认 Skill 库为 `~/.agents/skills`，可通过 `--config <path>` 指定 YAML 配置文件：
+默认 Skill 仓库为 `~/.agent-manager/skills`，可通过 `--config <path>` 指定 YAML 配置文件：
 
 ```yaml
-library: ~/.agents/skills
+library: ~/.agent-manager/skills
 ```
+
+显式配置的路径会完全替代默认路径，不会与其他 Skill 目录合并。需要迁移旧库时，使用 `agent-manager skill import`；它不会自动搜索、删除旧文件或改写已有项目链接。
 
 ### 共享 Memory 提供器
 
@@ -147,17 +168,20 @@ memory:
 | `agents` | 查看注册的代理适配器及本机发现结果。 |
 | `init` | 验证 CLI，并安装或更新全局 Operator Skill。 |
 | `search <query>` | 搜索 Skill 标识符、描述、正文和标签。 |
+| `skill import [skill-id...]` | 只读预览旧 `.agents/skills`；指定 ID 后须同时提供预览令牌和 `--yes` 才会复制所选批次。 |
+| `skill versions <id>` | 查看一个 Skill 身份下的版本键和来源信息。 |
 | `recommend` | 静态分析项目技术栈并推荐匹配的 Skills。 |
 | `select` | 交互式搜索、选择 Skills 和目标代理，并确认计划。 |
 | `add <skill>` | 激活 Skill 到指定目标代理。 |
 | `install <skill-id>...` | 预览并一次安装明确选择的多个 Skills。 |
-| `list` | 查看项目 Skills 的受管理状态。 |
-| `remove <skill>` | 移除一个受管理的项目链接。 |
+| `install <skill-id>... --global` | 预览并确认安装到选定代理的全局 Skill 目录。 |
+| `list` | 查看项目 Skills 的受管理状态；`list --global` 查看全局链接。 |
+| `remove <skill>` | 移除一个受管理的项目链接；使用 `remove <skill> --global` 移除全局链接。 |
 | `adopt <skill>` | 将合适的项目 Skill 收入 Skill 库并建立链接。 |
 | `fork <skill>` | 将受管理链接转换成独立的项目副本。 |
 | `doctor` | 检查 Skill 库、项目链接和 Git 跟踪状态。 |
 | `reconcile` | 修复因 Skill 库移动而失效的受管理链接。 |
-| `undo` | 撤销最近一次受日志管理的项目操作。 |
+| `undo` | 撤销最近一次受日志管理的项目操作；`undo --global` 撤销全局操作。 |
 | `delete <skill>` | 删除 Skill 库中的 Skill；需要 `--force` 和确认。 |
 
 ### SubAgent 与 Memory
@@ -299,10 +323,7 @@ agent-manager recommend --project . --json
 
 `skill-manager` 是现有 Skill 工作流的兼容别名，与 `agent-manager` 共用实现并显示迁移提示。版本化配置、伴随元数据、项目链接和旧版操作日志会被读取并在内存中规范化，不会自动重写。新的 SubAgent 和 Memory 工作流不保证与旧脚本参数兼容。
 
-Agent Manager 的本地任务工件和评估能力不会生成自主代理、同步完整对话、获取远程数据或成为分布式工作流引擎。
-
-- **自主委派**：后续可使用版本化任务工件和角色契约，而无需绑定特定代理的任务状态格式。
-- **Wails**：后续为本地 Web 应用提供桌面封装。
+当前优先完善 Skill 仓库、显式导入、版本选择和受保护的 Global/Project 物化；共享 Project Memory 是后续阶段，现有 Codex/Pi 共享 Memory 能力继续保留。详见[产品路线图](docs/product-roadmap.md)，了解阶段顺序以及 Agent Manager 与代理运行时/控制面的边界。
 
 
 ## 结构化 Memory

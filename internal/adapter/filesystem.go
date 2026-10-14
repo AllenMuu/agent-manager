@@ -120,11 +120,13 @@ const ConflictReplace ConflictStrategy = "replace"
 // Resource content is treated as opaque bytes and is never interpreted.
 type FilesystemPlacementOptions struct {
 	// Project and Target bind this generic filesystem seam to one adapter-owned
-	// project placement. They are required; Destination is checked against the
-	// derived location rather than trusted as an arbitrary filesystem path.
+	// placement. Project is the selected project root unless GlobalScope is set,
+	// in which case it is the user's home directory. Destination is checked
+	// against the adapter-derived location rather than trusted as arbitrary.
 	Project     string
 	Target      Target
 	Destination string
+	GlobalScope bool
 	// SourceRoot anchors rendered SubAgent source materialization. It is
 	// required whenever SourceContent is non-nil.
 	SourceRoot string
@@ -154,6 +156,13 @@ type FilesystemPlacementOptions struct {
 	BeforeDiscard func() error
 }
 
+func validateScopedResourcePlacement(target Target, root, destination string, kind resource.Kind, identifier string, global bool) error {
+	if global {
+		return ValidateGlobalResourcePlacement(target, root, destination, kind, identifier)
+	}
+	return ValidateProjectResourcePlacement(target, root, destination, kind, identifier)
+}
+
 // PlaceFilesystem publishes a resource directory as an absolute symlink at
 // the requested destination. It previews and confirms before changing
 // anything, journals the old state for undo, and never interprets resource
@@ -178,7 +187,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 			return operation.Plan{}, fmt.Errorf("%w: placement project does not match selected project", ErrUnsafePath)
 		}
 	}
-	if err := ValidateProjectResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID); err != nil {
+	if err := validateScopedResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID, options.GlobalScope); err != nil {
 		return operation.Plan{}, err
 	}
 	source, destination, err := safePlacementPaths(plan.Resource, options.Destination)
@@ -249,7 +258,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	// Re-check after confirmation to close the concurrent-edit window. An
 	// existing destination is compared with the pre-confirmation snapshot
 	// before it can be staged, so a new owner is never replaced.
-	if err := ValidateProjectResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID); err != nil {
+	if err := validateScopedResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID, options.GlobalScope); err != nil {
 		return preview, err
 	}
 	if err := verifyPlacementSource(source, plan.Resource.Kind, options.SourceContent); err != nil {
@@ -315,7 +324,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 		}
 		return preview, errors.Join(ErrUnsafePath, errLateConflict)
 	}
-	if err := ValidateProjectResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID); err != nil {
+	if err := validateScopedResourcePlacement(options.Target, options.Project, options.Destination, plan.Resource.Kind, plan.Resource.ID, options.GlobalScope); err != nil {
 		if sourceState != nil && sourceState.Created {
 			return preview, errors.Join(err, sourceState.Cleanup())
 		}
