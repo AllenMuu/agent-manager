@@ -37,6 +37,36 @@ const navItems: { id: View; label: string; eyebrow: string }[] = [
 
 const initialPage = <T,>(): PageState<T> => ({ data: null, loading: false, error: null })
 
+function blockedInstallationPreview(error: unknown): InstallationPreview | null {
+  if (!(error instanceof APIError) || !isRecord(error.responseBody)) return null
+  const raw = error.responseBody.preview
+  if (!isRecord(raw) || !isRecord(raw.plan) || !Array.isArray(raw.skillIds) || !Array.isArray(raw.targets)) return null
+
+  const changes = Array.isArray(raw.plan.changes)
+    ? raw.plan.changes.flatMap((change) => isRecord(change) && typeof change.path === 'string' && typeof change.action === 'string'
+      ? [{ path: change.path, action: change.action, ...(typeof change.detail === 'string' ? { detail: change.detail } : {}) }]
+      : [])
+    : null
+  const warnings = Array.isArray(raw.plan.warnings)
+    ? raw.plan.warnings.filter((warning): warning is string => typeof warning === 'string')
+    : null
+
+  return {
+    id: typeof raw.id === 'string' ? raw.id : '',
+    skillIds: raw.skillIds.filter((identifier): identifier is string => typeof identifier === 'string'),
+    targets: raw.targets.filter((target): target is string => typeof target === 'string'),
+    plan: {
+      operation: typeof raw.plan.operation === 'string' ? raw.plan.operation : 'activate',
+      changes,
+      warnings,
+    },
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export function App() {
   const { t, message: translateMessage, error: formatError } = useLanguage()
   const [token] = useState(() => bootstrapSession())
@@ -249,15 +279,26 @@ export function App() {
     invalidateBatchPreview()
     const inputGeneration = batchInputGeneration.current
     await runRequest(
-      () => post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload()),
+      async () => {
+        try {
+          const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload())
+          return { preview: result.preview, error: null as unknown | null }
+        } catch (error) {
+          const preview = blockedInstallationPreview(error)
+          if (!preview) throw error
+          return { preview, error }
+        }
+      },
       (result) => {
-        if (inputGeneration === batchInputGeneration.current) setBatchPreview({ ...result.preview, inputGeneration })
+        if (inputGeneration !== batchInputGeneration.current) return
+        setBatchPreview({ ...result.preview, inputGeneration })
+        if (result.error) setToast({ kind: 'error', error: result.error })
       },
     )
   }
 
   const applyBatchPreview = async () => {
-    if (!token || !batchPreview || mutationRequestInFlight.current || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid || batchPreview.inputGeneration !== batchInputGeneration.current) return
+    if (!token || !batchPreview || !batchPreview.id.trim() || mutationRequestInFlight.current || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid || batchPreview.inputGeneration !== batchInputGeneration.current) return
     const inputGeneration = batchPreview.inputGeneration
     await runRequest(
       async () => {
@@ -565,7 +606,7 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   onActivate: () => void
   busy: boolean
 }) {
-  const { t, message } = useLanguage()
+  const { t, message, installationMessage } = useLanguage()
   return <div className={styles.skillsWorkspace} data-selection-action={selectionAction}>
     <section className={styles.panel} aria-label={t('Recommended Skills')}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOMMENDED SKILLS')}</span></div>
@@ -623,9 +664,9 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
     {batchPreview && <section className={styles.reviewPanel} aria-labelledby="installation-review-title">
       <h2 id="installation-review-title">{t('Review installation')}</h2>
       <p>{batchPreview.skillIds.join(', ')} → {batchPreview.targets.join(', ')}</p>
-      <ol className={styles.changeList}>{(batchPreview.plan.changes ?? []).map((change, index) => <li key={`${change.path}-${index}`}><div><strong>{change.action}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
-      {(batchPreview.plan.warnings ?? []).map((warning, index) => <p className={styles.inlineWarning} key={index}>{warning}</p>)}
-      <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onApplyInstallation}>{t('Confirm installation')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancelInstallation}>{t('Cancel installation')}</button></div>
+      <ol className={styles.changeList}>{(batchPreview.plan.changes ?? []).map((change, index) => <li key={`${change.path}-${index}`}><div><strong>{installationMessage(change.action)}</strong>{change.detail && <span>{change.detail}</span>}<code>{change.path}</code></div></li>)}</ol>
+      {(batchPreview.plan.warnings ?? []).map((warning, index) => <p className={styles.inlineWarning} key={index}>{installationMessage(warning)}</p>)}
+      <div className={styles.reviewActions}><button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid || !batchPreview.id.trim()} onClick={onApplyInstallation}>{t('Confirm installation')}</button><button className={styles.secondaryButton} type="button" disabled={busy} onClick={onCancelInstallation}>{t('Cancel installation')}</button></div>
     </section>}
   </div>
 }

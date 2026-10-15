@@ -1,5 +1,5 @@
 export type Project = { id: string; name: string; path: string }
-export type ErrorEnvelope = { error: { code: string; message: string } }
+export type ErrorEnvelope = { error: { code: string; message: string } } | { error: string; preview?: InstallationPreview }
 export type MessageRef = { key: string; args?: Record<string, string> }
 export type Agent = {
   id: string

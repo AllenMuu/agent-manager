@@ -212,6 +212,80 @@ describe('console entry and guarded activation', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Unknown local error: /workspace/sample/go-helper')
   })
 
+  it('shows a blocked installation preview from a string error without allowing apply', async () => {
+    const { calls } = installFixture((route) => route === '/api/install/preview' ? jsonResponse({
+      error: 'destination is not a managed Skill link: /workspace/sample/.pi/skills/go-helper',
+      preview: {
+        skillIds: ['go-helper', 'go-test'],
+        targets: ['pi'],
+        plan: {
+          operation: 'activate',
+          changes: [{ path: '/workspace/sample/.pi/skills/go-helper', action: 'refuse conflicting destination' }],
+          warnings: [],
+        },
+      },
+    }, 409) : undefined)
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('destination is not a managed Skill link: /workspace/sample/.pi/skills/go-helper')
+    expect(await screen.findByRole('heading', { name: 'Review installation' })).toBeInTheDocument()
+    expect(screen.getByText('/workspace/sample/.pi/skills/go-helper')).toBeInTheDocument()
+    const confirm = screen.getByRole('button', { name: 'Confirm installation' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(confirm)
+    expect(calls.filter((call) => call.route === '/api/install/apply')).toHaveLength(0)
+  })
+
+  it('translates known legacy installation API error strings in Chinese', async () => {
+    installFixture((route) => route === '/api/install/preview' ? jsonResponse({ error: 'invalid installation request' }, 422) : undefined)
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    fireEvent.click(screen.getByRole('button', { name: '预览安装' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('安装请求无效')
+  })
+
+  it('translates legacy batch plan actions and warnings while preserving unknown text and paths', async () => {
+    installFixture((route) => route === '/api/install/preview' ? jsonResponse({ preview: {
+      id: 'localized-preview',
+      skillIds: ['go-helper', 'go-test'],
+      targets: ['pi'],
+      plan: {
+        operation: 'activate',
+        changes: [
+          { path: '/workspace/sample/.pi/skills/go-helper', action: 'create absolute link' },
+          { path: '/workspace/sample/.pi/skills/go-test', action: 'replace conflicting path with absolute link' },
+          { path: '/workspace/sample/.pi/skills/go-review', action: 'refuse conflicting destination' },
+          { path: '/workspace/sample/.pi/skills/go-check', action: 'replace conflict (force required)' },
+          { path: '/workspace/sample/.pi/skills/custom', action: 'future action: preserve /workspace/sample/custom' },
+        ],
+        warnings: [
+          'resource is already installed; no changes made',
+          'go-helper is not declared compatible with pi',
+          'future warning: inspect /workspace/sample/.pi/skills/custom',
+        ],
+      },
+    } }) : undefined)
+    renderApp()
+    await selectBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Simplified Chinese' }))
+    fireEvent.click(screen.getByRole('button', { name: '预览安装' }))
+
+    await screen.findByRole('heading', { name: '审查安装' })
+    expect(screen.getByText('创建绝对路径链接')).toBeInTheDocument()
+    expect(screen.getByText('用绝对路径链接替换冲突路径')).toBeInTheDocument()
+    expect(screen.getByText('拒绝替换冲突目标')).toBeInTheDocument()
+    expect(screen.getByText('替换冲突项（需要强制确认）')).toBeInTheDocument()
+    expect(screen.getByText('future action: preserve /workspace/sample/custom')).toBeInTheDocument()
+    expect(screen.getByText('资源已安装；未进行更改')).toBeInTheDocument()
+    expect(screen.getByText('技能“go-helper”未声明与 Pi 兼容')).toBeInTheDocument()
+    expect(screen.getByText('future warning: inspect /workspace/sample/.pi/skills/custom')).toBeInTheDocument()
+    expect(screen.getByText('/workspace/sample/.pi/skills/go-helper')).toBeInTheDocument()
+  })
+
   it('uses selected count for guarded actions and explicit batch targets', async () => {
     const { calls } = installFixture()
     renderApp()
