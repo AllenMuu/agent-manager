@@ -55,7 +55,7 @@ func Inventory(home, project string) ([]AgentInventory, error) {
 // registered adapters, plus manager metadata roots. It is the shared policy
 // for deciding whether a dot-directory is a known agent location.
 func SupportedProjectRoots(project string) map[string]bool {
-	known := map[string]bool{".agents": true, ".git": true, ".skill-manager": true}
+	known := map[string]bool{".agents": true, ".git": true, ".skill-manager": true, ".agent-manager": true}
 	for _, a := range Supported() {
 		root := filepath.Dir(a.ProjectSkillPath(project, "placeholder"))
 		rel, err := filepath.Rel(project, root)
