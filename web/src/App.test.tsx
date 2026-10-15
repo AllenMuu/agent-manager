@@ -1057,7 +1057,7 @@ function installFixture(override?: (route: string, init: RequestInit) => Respons
       const payload = JSON.parse(String(init.body ?? '{}')) as { skillIds?: string[]; targets?: string[] }
       return jsonResponse({ preview: {
         id: `preview-${++previews}`, skillIds: payload.skillIds ?? [], targets: payload.targets ?? [],
-        plan: { operation: 'activate', changes: [{ path: `/workspace/sample/.${payload.targets?.[0] ?? 'codex'}/skills/${payload.skillIds?.[0] ?? 'go-helper'}`, action: 'create link' }], warnings: [],
+        plan: { operation: 'activate', changes: [{ path: `/workspace/sample/.${payload.targets?.[0] ?? 'codex'}/skills/${payload.skillIds?.[0] ?? 'go-helper'}`, action: 'create link' }], warnings: [] },
       } })
     }
     if (route === '/api/install/apply') return jsonResponse({ result: { applied: true, stale: false } })
@@ -1083,4 +1083,3 @@ function deferred<T>() {
   const promise = new Promise<T>((fulfill) => { resolve = fulfill })
   return { promise, resolve }
 }
-

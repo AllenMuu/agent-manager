@@ -1199,4 +1199,3 @@ function recommendationReason(
   }
   return translateMessage(ref, fallback)
 }
-
