@@ -13,7 +13,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('console entry and guarded activation', () => {
+describe('console entry and guarded installation', () => {
   it('shows the entry guidance when no tab token is available', () => {
     renderApp()
     expect(screen.getByRole('heading', { name: 'Open the console entry link' })).toBeInTheDocument()
@@ -402,9 +402,12 @@ describe('console entry and guarded activation', () => {
     for (const [before, after] of [[recommendations, catalog], [catalog, details], [details, actions]]) {
       expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
-    const review = within(actions).getByRole('button', { name: 'Review activation plan' })
-    review.focus()
-    expect(review).toHaveFocus()
+    const targets = within(actions).getByRole('group', { name: 'Installation targets' })
+    fireEvent.click(within(targets).getByRole('checkbox', { name: 'codex' }))
+    const preview = within(actions).getByRole('button', { name: 'Preview installation' })
+    expect(preview).toBeEnabled()
+    preview.focus()
+    expect(preview).toHaveFocus()
     expect(within(actions).getByRole('button', { name: 'Deselect go-helper' })).not.toHaveAttribute('tabindex', '-1')
   })
 
@@ -418,7 +421,7 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByRole('region', { name: '推荐 Skill' })).toBeInTheDocument()
     expect(screen.getByText('已选择 1 项')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '取消选择 go-helper' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '审查启用方案' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '预览安装' })).toBeDisabled()
     expect(screen.getByText('Untranslated SKILL.md content.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: '选择 go-test' }))
     expect(screen.getByRole('group', { name: '安装目标' })).toBeInTheDocument()
@@ -514,26 +517,22 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByText('/workspace/sample/.pi/skills/go-helper')).toBeInTheDocument()
   })
 
-  it('uses selected count for guarded actions and explicit batch targets', async () => {
+  it('previews installation for one or more selected Skills with explicit targets', async () => {
     const { calls } = installFixture()
     renderApp()
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
-    expect(screen.queryByRole('button', { name: 'Review activation plan' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Preview installation' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
-    fireEvent.click(screen.getByRole('button', { name: /Go Test/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
-    await screen.findByRole('heading', { name: 'activate selected skills' })
-    expect(JSON.parse(calls.find((call) => call.route.endsWith('/plans/activate'))!.init.body as string)).toEqual({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'] })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel plan' }))
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'activate selected skills' })).not.toBeInTheDocument())
-    expect(screen.getByText('1 selected')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
-    expect(screen.queryByRole('button', { name: 'Review activation plan' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
     const targets = screen.getByRole('group', { name: 'Installation targets' })
     expect(within(targets).getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
     fireEvent.click(within(targets).getByRole('checkbox', { name: 'pi' }))
+    await previewBatch()
+    expect(JSON.parse(calls.find((call) => call.route === '/api/install/preview')!.init.body as string)).toEqual({ skillIds: ['go-helper'], targets: ['pi'], replaceConflicts: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel installation' }))
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Go Test/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
     await previewBatch()
     expect(JSON.parse(calls.find((call) => call.route === '/api/install/preview')!.init.body as string)).toEqual({ skillIds: ['go-helper', 'go-test'], targets: ['pi'], replaceConflicts: false })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
@@ -647,7 +646,7 @@ describe('console entry and guarded activation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Catalog failed.')
     expect(screen.getByText('1 selected')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Review activation plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
   })
 
   it('checks availability independently of search and keeps missing selections visible until deselected', async () => {
@@ -669,7 +668,7 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByText('2 selected')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Deselect go-helper' }))
-    expect(screen.getByRole('button', { name: 'Review activation plan' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Preview installation' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Deselect go-test' }))
     expect(screen.getByText('0 selected')).toBeInTheDocument()
     expect(calls.filter((call) => call.route === '/api/catalog?q=')).toHaveLength(3)
@@ -714,29 +713,24 @@ describe('console entry and guarded activation', () => {
     expect(screen.queryByRole('button', { name: 'Confirm installation' })).not.toBeInTheDocument()
   })
 
-  it('preserves single activation conflict confirmation and independent target choices', async () => {
+  it('preserves conflict confirmation and explicit targets for a single-Skill installation', async () => {
     const { calls } = installFixture()
     renderApp()
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
+    const targets = screen.getByRole('group', { name: 'Installation targets' })
+    expect(within(targets).getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
+    fireEvent.click(within(targets).getByRole('checkbox', { name: 'pi' }))
     fireEvent.click(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
-    await screen.findByRole('heading', { name: 'activate selected skills' })
-    expect(JSON.parse(calls.find((call) => call.route.endsWith('/plans/activate'))!.init.body as string)).toEqual({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'], conflictStrategy: 'replace', forceConfirmed: true })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel plan' }))
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'activate selected skills' })).not.toBeInTheDocument())
+    await previewBatch()
+    expect(JSON.parse(calls.find((call) => call.route === '/api/install/preview')!.init.body as string)).toEqual({ skillIds: ['go-helper'], targets: ['pi'], replaceConflicts: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel installation' }))
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
-    const batchTargets = screen.getByRole('group', { name: 'Installation targets' })
-    expect(within(batchTargets).getByRole('checkbox', { name: 'codex' })).not.toBeChecked()
-    expect(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ })).not.toBeChecked()
-    fireEvent.click(within(batchTargets).getByRole('checkbox', { name: 'pi' }))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-test' }))
-    const singleTargets = screen.getByRole('group', { name: 'Activation targets' })
-    expect(within(singleTargets).getByRole('checkbox', { name: 'codex' })).toBeChecked()
-    expect(within(singleTargets).getByRole('checkbox', { name: 'pi' })).not.toBeChecked()
+    expect(within(screen.getByRole('group', { name: 'Installation targets' })).getByRole('checkbox', { name: 'pi' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: /Allow replacement of existing conflicts/ })).toBeChecked()
   })
 
-  it('preserves Skill selection when an Undo review replaces an activation review', async () => {
+  it('preserves Skill selection while reviewing and applying Undo', async () => {
     installFixture((route) => {
       if (route.endsWith('/operations/latest')) return jsonResponse({ latest: { operation: 'activate', resourceKind: 'skill', at: '2026-10-15T00:00:00Z', undoAvailable: true } })
       if (route.endsWith('/plans/undo')) return jsonResponse({ plan: { id: 'undo-plan', operation: 'undo activate', resourceKind: 'skill', changes: [], warnings: [], expiresAt: '2026-10-15T00:10:00Z' } })
@@ -744,8 +738,6 @@ describe('console entry and guarded activation', () => {
     })
     renderApp()
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Select go-helper' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
-    await screen.findByRole('heading', { name: 'activate selected skills' })
     fireEvent.click(screen.getByRole('button', { name: /Operations/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Review Undo' }))
     await screen.findByRole('heading', { name: 'undo activate' })
@@ -806,14 +798,9 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByText('2 selected')).toBeInTheDocument()
   })
 
-  it('bootstraps the token, reads a Skill, reviews its plan, and confirms through the local API', async () => {
+  it('bootstraps the token, reads a Skill, previews its installation, and confirms through the local API', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
     const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: ['go'], compatibility: ['codex'], body: 'Use Go tooling.' }
-    const plan: OperationPlan = {
-      id: 'opaque-plan-id', projectId: project.id, operation: 'activate selected skills', version: 'v1', resourceKind: 'skill',
-      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'create absolute link', detail: '/library/go-helper' }],
-      warnings: [], createdAt: '2026-09-27T00:00:00Z', expiresAt: '2026-09-27T00:10:00Z', forceReplacementConfirmed: false,
-    }
     const calls: { route: string; init: RequestInit }[] = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
       const route = String(input)
@@ -825,8 +812,8 @@ describe('console entry and guarded activation', () => {
       else if (route.endsWith('/resources')) payload = { resources: [] }
       else if (route === '/api/catalog?q=') payload = { skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] }
       else if (route === '/api/v1/skills/go-helper') payload = { skill }
-      else if (route.endsWith('/plans/activate')) payload = { plan }
-      else if (route.endsWith('/execute')) payload = { operation: plan.operation, status: 'completed' }
+      else if (route === '/api/install/preview') payload = { preview: { id: 'opaque-preview-id', skillIds: ['go-helper'], targets: ['codex'], plan: { operation: 'activate', changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'create absolute link', detail: '/library/go-helper' }], warnings: [] } } }
+      else if (route === '/api/install/apply') payload = { result: { applied: true, stale: false } }
       return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -841,27 +828,27 @@ describe('console entry and guarded activation', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
     expect(await screen.findByText('Use Go tooling.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Review activation plan' }))
-    expect(await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })).toBeInTheDocument()
+    fireEvent.click(within(screen.getByRole('group', { name: 'Installation targets' })).getByRole('checkbox', { name: 'codex' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview installation' }))
+    expect(await screen.findByRole('heading', { name: 'Review installation', level: 2 })).toBeInTheDocument()
     expect(screen.getByText('/workspace/sample/.codex/skills/go-helper')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
-    await waitFor(() => expect(screen.queryByRole('heading', { name: 'activate selected skills', level: 2 })).not.toBeInTheDocument())
-    const planCall = calls.find((call) => call.route.endsWith('/plans/activate'))
-    expect(planCall).toBeDefined()
-    expect(new Headers(planCall?.init.headers).get('Authorization')).toBe('Bearer tab-secret')
-    expect(planCall?.init.body).toBe(JSON.stringify({ skillIdentifiers: ['go-helper'], targetAgents: ['codex'] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Review installation', level: 2 })).not.toBeInTheDocument())
+    const previewCall = calls.find((call) => call.route === '/api/install/preview')
+    expect(previewCall).toBeDefined()
+    expect(new Headers(previewCall?.init.headers).get('Authorization')).toBe('Bearer tab-secret')
+    expect(previewCall?.init.body).toBe(JSON.stringify({ skillIds: ['go-helper'], targets: ['codex'], replaceConflicts: false }))
     expect(calls.some((call) => call.route.includes('tab-secret'))).toBe(false)
-    expect(calls.some((call) => call.route.endsWith('/opaque-plan-id/execute'))).toBe(true)
+    expect(JSON.parse(calls.find((call) => call.route === '/api/install/apply')!.init.body as string)).toEqual({ previewId: 'opaque-preview-id' })
     expect(screen.getByText('0 selected')).toBeInTheDocument()
   })
 
-  it('drops a stale review and asks for a fresh preview after the API rejects execution', async () => {
+  it('drops a stale removal review after the API rejects execution', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
-    const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: [], compatibility: [], body: 'Use Go tooling.' }
     const plan: OperationPlan = {
-      id: 'stale-plan-id', projectId: project.id, operation: 'activate selected skills', version: 'v1', resourceKind: 'skill',
-      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'create absolute link' }],
+      id: 'stale-plan-id', projectId: project.id, operation: 'remove selected skill', version: 'v1', resourceKind: 'skill',
+      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'remove managed link' }],
       warnings: [], createdAt: '2026-09-27T00:00:00Z', expiresAt: '2026-09-27T00:10:00Z', forceReplacementConfirmed: false,
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -869,10 +856,8 @@ describe('console entry and guarded activation', () => {
       if (route === '/api/v1/system') return jsonResponse({ project })
       if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
       if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
-      if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
-      if (route === '/api/catalog?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] })
-      if (route === '/api/v1/skills/go-helper') return jsonResponse({ skill })
-      if (route.endsWith('/plans/activate')) return jsonResponse({ plan })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [{ target: 'codex', identifier: 'go-helper', path: '/workspace/sample/.codex/skills/go-helper', status: 'managed' }] })
+      if (route.endsWith('/plans/remove')) return jsonResponse({ plan })
       if (route.endsWith('/execute')) return jsonResponse({ error: { code: 'stale_plan', message: 'Project state changed. Create a fresh preview.' } }, 409)
       return jsonResponse({})
     })
@@ -881,24 +866,19 @@ describe('console entry and guarded activation', () => {
 
     renderApp()
     await screen.findByText('sample')
-    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
-    fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Review activation plan' }))
-    await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })
+    fireEvent.click(await screen.findByRole('button', { name: 'Plan removal' }))
+    await screen.findByRole('heading', { name: 'remove selected skill' })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Project state changed. Create a fresh preview.')
-    expect(screen.getByText('1 selected')).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'activate selected skills', level: 2 })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'remove selected skill' })).not.toBeInTheDocument()
   })
 
-  it('closes a terminal execution error and refreshes project state after the journal was committed', async () => {
+  it('closes a terminal removal error and refreshes project state after the journal was committed', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
-    const skill: Skill = { identifier: 'go-helper', name: 'Go Helper', description: 'Helps with Go projects', tags: [], compatibility: [], body: 'Use Go tooling.' }
     const plan: OperationPlan = {
-      id: 'committed-plan-id', projectId: project.id, operation: 'activate selected skills', version: 'v1', resourceKind: 'skill',
-      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'create absolute link' }],
+      id: 'committed-plan-id', projectId: project.id, operation: 'remove selected skill', version: 'v1', resourceKind: 'skill',
+      changes: [{ path: '/workspace/sample/.codex/skills/go-helper', action: 'remove managed link' }],
       warnings: [], createdAt: '2026-09-27T00:00:00Z', expiresAt: '2026-09-27T00:10:00Z', forceReplacementConfirmed: false,
     }
     const calls: string[] = []
@@ -908,10 +888,8 @@ describe('console entry and guarded activation', () => {
       if (route === '/api/v1/system') return jsonResponse({ project })
       if (route.endsWith('/agents')) return jsonResponse({ agents: [] })
       if (route.endsWith('/recommendations')) return jsonResponse({ project: project.path, scanComplete: true, diagnostics: [], scopes: [] })
-      if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
-      if (route === '/api/catalog?q=') return jsonResponse({ skills: [{ ...skill, body: undefined }], targets: [{ id: 'codex', label: 'Codex' }] })
-      if (route === '/api/v1/skills/go-helper') return jsonResponse({ skill })
-      if (route.endsWith('/plans/activate')) return jsonResponse({ plan })
+      if (route.endsWith('/resources')) return jsonResponse({ resources: [{ target: 'codex', identifier: 'go-helper', path: '/workspace/sample/.codex/skills/go-helper', status: 'managed' }] })
+      if (route.endsWith('/plans/remove')) return jsonResponse({ plan })
       if (route.endsWith('/execute')) return jsonResponse({ error: { code: 'journal_committed', message: 'The operation was applied and its journal record was published.' } }, 500)
       return jsonResponse({})
     })
@@ -920,15 +898,12 @@ describe('console entry and guarded activation', () => {
 
     renderApp()
     await screen.findByText('sample')
-    fireEvent.click(screen.getByRole('button', { name: /Skills/ }))
-    fireEvent.click(await screen.findByRole('button', { name: /Go Helper/ }))
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Select go-helper' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Review activation plan' }))
-    await screen.findByRole('heading', { name: 'activate selected skills', level: 2 })
+    fireEvent.click(await screen.findByRole('button', { name: 'Plan removal' }))
+    await screen.findByRole('heading', { name: 'remove selected skill' })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and apply' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('The operation was applied and its journal record was published.')
-    expect(screen.queryByRole('heading', { name: 'activate selected skills', level: 2 })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'remove selected skill' })).not.toBeInTheDocument()
     await waitFor(() => expect(calls.filter((route) => route.endsWith('/resources')).length).toBeGreaterThan(1))
   })
   it('localizes detected adapters and orphaned resources in Chinese', async () => {
@@ -1078,8 +1053,13 @@ function installFixture(override?: (route: string, init: RequestInit) => Respons
     if (route.endsWith('/resources')) return jsonResponse({ resources: [] })
     if (route.endsWith('/operations/latest')) return jsonResponse({ latest: null })
     if (route.startsWith('/api/v1/skills/')) return jsonResponse({ skill: operationSkills.find((skill) => route.endsWith(skill.identifier)) })
-    if (route.endsWith('/plans/activate')) return jsonResponse({ plan: { id: 'single-plan', operation: 'activate selected skills', resourceKind: 'skill', changes: [], warnings: [], expiresAt: '2026-10-15T00:10:00Z' } })
-    if (route === '/api/install/preview') return jsonResponse({ preview: { id: `preview-${++previews}`, skillIds: ['go-helper', 'go-test'], targets: ['pi'], plan: { operation: 'activate', changes: [{ path: '/workspace/sample/.pi/skills/go-helper', action: 'create link' }], warnings: [] } } })
+    if (route === '/api/install/preview') {
+      const payload = JSON.parse(String(init.body ?? '{}')) as { skillIds?: string[]; targets?: string[] }
+      return jsonResponse({ preview: {
+        id: `preview-${++previews}`, skillIds: payload.skillIds ?? [], targets: payload.targets ?? [],
+        plan: { operation: 'activate', changes: [{ path: `/workspace/sample/.${payload.targets?.[0] ?? 'codex'}/skills/${payload.skillIds?.[0] ?? 'go-helper'}`, action: 'create link' }], warnings: [],
+      } })
+    }
     if (route === '/api/install/apply') return jsonResponse({ result: { applied: true, stale: false } })
     return jsonResponse({})
   }))
@@ -1103,3 +1083,4 @@ function deferred<T>() {
   const promise = new Promise<T>((fulfill) => { resolve = fulfill })
   return { promise, resolve }
 }
+

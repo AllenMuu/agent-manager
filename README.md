@@ -307,9 +307,8 @@ for project recommendations, the searchable eligible local catalog, and one
 Skill detail panel. A Skill selected in recommendations or the catalog shares
 the same selection. Opening details does not select a Skill or change files.
 
-Select one Skill to review its activation plan; Codex remains the default target.
-Select two or more Skills for batch installation, choose target agents explicitly,
-and preview the plan before confirming installation. Conflict replacement needs
+Select one or more Skills for installation, choose target agents explicitly, and
+preview the plan before confirming installation. Conflict replacement needs
 separate confirmation. On mobile, recommendations, catalog, and inline details
 appear in that order, with selection actions pinned to the bottom. Built-in labels
 support English and Simplified Chinese; Skill identifiers, paths, content, and

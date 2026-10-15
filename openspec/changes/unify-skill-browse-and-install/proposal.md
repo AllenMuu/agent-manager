@@ -6,7 +6,7 @@ The Web console currently separates Skill browsing and project recommendations f
 
 - Consolidate the console's Skills and Skill installation navigation entries into one Skills workspace hosted by the main console React application.
 - Show project recommendations before the searchable eligible catalog on desktop, with one Skill detail panel and shared selection by Skill identifier.
-- Use the existing single-Skill activation plan flow for exactly one selected Skill and show the existing batch installation flow only when two or more Skills are selected.
+- Use the installation preview and confirmation flow for any non-empty selection, including one selected Skill.
 - Keep `/install/` as a compatibility route that opens the unified console with Skills selected.
 - Define a continuous mobile layout with recommendations, catalog, and inline details, plus a selection action bar pinned to the bottom.
 - Preserve the current local-only session protections, recommendation behavior, installation APIs, and guarded lifecycle operations.
@@ -16,7 +16,7 @@ The Web console currently separates Skill browsing and project recommendations f
 ### Modified Capabilities
 
 - `local-web-console`: Provide one Skills navigation entry and a unified responsive workspace for recommendations, catalog browsing, details, and shared selection.
-- `project-skill-installation`: Define how the unified workspace dispatches one selected Skill to the existing activation plan and multiple selected Skills to the existing batch preview/apply flow.
+- `project-skill-installation`: Define how the unified workspace sends one or more selected Skills through the existing installation preview/apply flow.
 
 ## Impact
 
