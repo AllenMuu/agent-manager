@@ -22,3 +22,4 @@
 - [x] 4.2 Add the Storage & Sync console view with configured repository path, three mode choices, distinct Global/Project source lists, select-all, review/confirm, scoped resync, and Undo; verify keyboard and narrow-screen behavior with frontend tests.
 - [x] 4.3 Add Simplified Chinese and English labels, diagnostics, warnings, and completion states; verify each visible new string has both translations.
 - [x] 4.4 Rebuild embedded console assets and run the focused Go, frontend, and repository-wide verification commands; record exact results in the change delivery notes.
+- [x] 4.5 Show source modification times for divergent current-version choices; explain pending choices, conflicts, and no-op imports; show preview-update progress and errors in the review area.

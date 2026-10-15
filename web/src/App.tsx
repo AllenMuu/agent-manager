@@ -551,6 +551,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const [upstreamReview, setUpstreamReview] = useState<UpstreamUpdateReview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [previewingImport, setPreviewingImport] = useState(false)
   const [error, setError] = useState<unknown | null>(null)
   const [notice, setNotice] = useState('')
 
@@ -590,10 +591,15 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   }
 
   const createImportPreview = async () => {
-    await perform(
-      () => post<{ planId: string; preview: SyncImportPreview }>(token, '/api/v1/sync/import/preview', { selectedGroupIds: selected, currentChoices }),
-      (result) => setImportReview(result),
-    )
+    setPreviewingImport(true)
+    try {
+      await perform(
+        () => post<{ planId: string; preview: SyncImportPreview }>(token, '/api/v1/sync/import/preview', { selectedGroupIds: selected, currentChoices }),
+        (result) => setImportReview(result),
+      )
+    } finally {
+      setPreviewingImport(false)
+    }
   }
 
   const applyImport = async () => {
@@ -680,6 +686,12 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const currentPreviewNeedsChoice = importReview?.preview.currentChoiceRequired ?? []
   const currentPreviewChoices = Array.from(new Set(importReview?.preview.groups.filter((group) => group.requiresCurrentChoice).map((group) => group.identifier) ?? []))
   const hasUnappliedCurrentChoice = Boolean(importReview && currentPreviewChoices.some((identifier) => currentChoices[identifier] !== importReview.preview.currentChoices?.[identifier]))
+  const pendingCurrentChoices = Array.from(new Set([
+    ...currentPreviewNeedsChoice,
+    ...currentPreviewChoices.filter((identifier) => currentChoices[identifier] && currentChoices[identifier] !== importReview?.preview.currentChoices?.[identifier]),
+  ]))
+  const conflictingIdentifiers = Array.from(new Set(importReview?.preview.groups.filter((group) => group.conflict).map((group) => group.identifier) ?? []))
+  const hasImportableVersion = Boolean(importReview?.preview.groups.some((group) => !group.alreadyPresent))
   const canApplyImport = Boolean(importReview && currentPreviewNeedsChoice.length === 0 && !hasUnappliedCurrentChoice && importReview.preview.groups.some((group) => !group.alreadyPresent) && importReview.preview.groups.every((group) => !group.conflict))
   const availableUpdates = updateCheck?.items.filter((item) => item.canUpdate) ?? []
   const reviewActive = Boolean(importReview || operationReview || upstreamReview)
@@ -690,7 +702,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
 
   return <div className={styles.syncPage}>
     {notice && <div className={styles.syncNotice} role="status">{notice}<button type="button" onClick={() => setNotice('')} aria-label={t('Dismiss message')}>×</button></div>}
-    {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+    {error !== null && !importReview && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
 
     <section className={styles.panel} aria-labelledby="sync-library-heading">
       <div className={styles.panelTop}><span className={styles.kicker}>{t('CENTRAL SKILL LIBRARY')}</span><span className={styles.statusDot}><i /> {t('Local only')}</span></div>
@@ -720,7 +732,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
         {inventory.diagnostics.map((item, index) => <div key={`${item.path}-${index}`}><code>{item.scope === 'global' ? t('Global') : t('Project')} · {item.path}</code><span>{item.message}</span></div>)}
       </div>}
       <div className={styles.syncActions}>
-        <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selected.length === 0} onClick={() => void createImportPreview()}>{t('Review selected import')}</button>
+        <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selected.length === 0} onClick={() => void createImportPreview()}>{previewingImport ? t('Creating import preview…') : t('Review selected import')}</button>
       </div>
     </section>
 
@@ -760,18 +772,33 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     {importReview && <section className={styles.syncReview} aria-labelledby="import-review-heading">
       <div className={styles.panelTop}><span className={styles.kicker}>{t('IMPORT PREVIEW')}</span><span className={styles.pill}>{t('{count} selected versions', { count: importReview.preview.groups.length })}</span></div>
       <h2 id="import-review-heading">{t('Review before importing')}</h2>
+      {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+      {previewingImport && <p className={styles.syncReviewStatus} role="status">{t('Updating import preview…')}</p>}
+      <p className={styles.syncMuted}>{t('Local timestamps are comparison hints only; choose the version you want to keep.')}</p>
       {importReview.preview.groups.map((group) => <SyncGroupReview key={group.id} group={group} t={t} />)}
       {currentPreviewChoices.map((identifier) => <fieldset className={styles.currentChoice} key={identifier}>
         <legend>{t('Choose the current version for {identifier}', { identifier })}</legend>
         {importReview.preview.groups.filter((group) => group.identifier === identifier).map((group) => <label key={group.id}>
-          <input type="radio" name={`current-${identifier}`} checked={currentChoices[identifier] === group.id} onChange={() => setCurrentChoices((current) => ({ ...current, [identifier]: group.id }))} />
-          <span>{group.sources.map((source) => `${source.location} · ${source.scope === 'global' ? t('Global') : t('Project')}`).join(', ')} <code>{group.checksum.slice(0, 12)}</code>{currentChoices[identifier] === group.id && <> <strong className={`${styles.pill} ${styles.pillReady}`}>{t('Selected as current version')}</strong></>}</span>
+          <input type="radio" name={`current-${identifier}`} checked={currentChoices[identifier] === group.id} disabled={busy} onChange={() => setCurrentChoices((current) => ({ ...current, [identifier]: group.id }))} />
+          <span>
+            {group.sources.map((source) => <small key={source.id}>{source.location} · {source.scope === 'global' ? t('Global') : t('Project')} · {source.modifiedAt ? t('Local modified: {time}', { time: new Date(source.modifiedAt).toLocaleString() }) : t('Local modification time unavailable')}</small>)}
+            {group.newerLocalModification && <small><strong className={`${styles.pill} ${styles.pillReady}`}>{t('Local modification time is newer')}</strong></small>}
+            {group.sources.length > 1 && group.modifiedAt && <small>{t('Newest local modification: {time}', { time: new Date(group.modifiedAt).toLocaleString() })}</small>}
+            <code>{t('Content checksum: {checksum}', { checksum: group.checksum.slice(0, 12) })}</code>
+            {currentChoices[identifier] === group.id && <strong className={`${styles.pill} ${styles.pillReady}`}>{currentChoices[identifier] === importReview.preview.currentChoices?.[identifier] ? t('Current-version choice is included in preview') : t('Selected for current version; preview not updated')}</strong>}
+          </span>
         </label>)}
-        <button className={styles.secondaryButton} type="button" disabled={busy || !currentChoices[identifier] || currentChoices[identifier] === importReview.preview.currentChoices?.[identifier]} onClick={() => void createImportPreview()}>{t('Update preview with this choice')}</button>
+        {!currentChoices[identifier] && <small>{t('Choose a candidate, then update the preview before importing.')}</small>}
+        {currentChoices[identifier] && currentChoices[identifier] === importReview.preview.currentChoices?.[identifier] && <small>{t('This choice is already included in the preview.')}</small>}
+        <button className={styles.secondaryButton} type="button" disabled={busy || !currentChoices[identifier] || currentChoices[identifier] === importReview.preview.currentChoices?.[identifier]} onClick={() => void createImportPreview()}>{previewingImport ? t('Updating preview…') : t('Update preview with this choice')}</button>
       </fieldset>)}
       {importReview.preview.groups.some((group) => group.alreadyPresent) && <p className={styles.syncMuted}>{t('Versions already in the repository will be skipped.')}</p>}
+      {pendingCurrentChoices.length > 0 && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('Complete the current-version choices for {skills}: select each candidate and update the preview before confirming.', { skills: pendingCurrentChoices.join(', ') })}</p>}
+      {pendingCurrentChoices.length === 0 && conflictingIdentifiers.length > 0 && <p className={styles.syncReviewStatus} data-state="blocked" role="alert">{t('Resolve the repository conflicts for {skills} before importing.', { skills: conflictingIdentifiers.join(', ') })}</p>}
+      {pendingCurrentChoices.length === 0 && conflictingIdentifiers.length === 0 && !hasImportableVersion && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('All selected versions are already in the repository; there is nothing to import.')}</p>}
+      {canApplyImport && <p className={styles.syncReviewStatus} data-state="ready" role="status">{t('The preview is current and ready for confirmation.')}</p>}
       <div className={styles.syncActions}>
-        <button className={styles.primaryButton} type="button" disabled={busy || !canApplyImport} onClick={() => void applyImport()}>{t('Confirm import')}</button>
+        <button className={styles.primaryButton} type="button" disabled={busy || !canApplyImport} onClick={() => void applyImport()}>{busy && !previewingImport ? t('Importing…') : t('Confirm import')}</button>
         <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setImportReview(null)}>{t('Cancel')}</button>
       </div>
     </section>}
