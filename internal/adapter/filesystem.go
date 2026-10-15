@@ -178,6 +178,9 @@ type FilesystemPlacementOptions struct {
 	// its staged copy is discarded. It exists to exercise concurrent-edit
 	// handling without granting a hook access to resource contents.
 	BeforeRemove func() error
+	// BeforeStageMove persists the private staging path and expected owner
+	// before a conflicting destination is moved out of its adapter location.
+	BeforeStageMove func(stagedPath string) error
 	// BeforeFinalPublish runs after the destination absence check.
 	BeforeFinalPublish func() error
 	// BeforeLink injects a classified link-publication failure for lifecycle
@@ -429,9 +432,9 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	}
 	var publishErr error
 	if mode == MaterializeCopyOnly {
-		publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], beforeFinalPublish)
+		publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], options.BeforeStageMove, beforeFinalPublish)
 	} else {
-		publishErr = publishLink(options.Project, destination, source, conflict, before[0], options.BeforeRemove, beforeLink, options.BeforeDiscard)
+		publishErr = publishLink(options.Project, destination, source, conflict, before[0], options.BeforeStageMove, options.BeforeRemove, beforeLink, options.BeforeDiscard)
 		if mode == MaterializeAuto && errors.Is(publishErr, ErrLinkUnavailable) {
 			// The link publisher restores a reviewed conflict before returning a
 			// classified link-capability failure. Recheck the exact reviewed owner
@@ -439,7 +442,7 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 			if conflict && !matchesSnapshot(before[0]) {
 				publishErr = errors.Join(ErrUnsafePath, errLateConflict)
 			} else {
-				publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], beforeFinalPublish)
+				publishErr = publishSkillCopy(options.Project, destination, source, conflict, before[0], options.BeforeStageMove, beforeFinalPublish)
 			}
 		}
 	}

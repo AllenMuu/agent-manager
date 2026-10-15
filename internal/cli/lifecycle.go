@@ -111,7 +111,7 @@ func newSelectCommand(options *rootOptions) *cobra.Command {
 			}
 			selectedIDs = append(selectedIDs, strings.TrimSpace(id))
 		}
-		service := installation.NewWithMaterialization(lib, adapter.MaterializationMode(settings.SyncMode))
+		service := newInstallationService(lib, adapter.MaterializationMode(settings.SyncMode))
 		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: selectedIDs, Targets: targets})
 		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
 			return writeErr
@@ -215,7 +215,7 @@ func newAddCommand(options *rootOptions) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		service := installation.NewWithMaterialization(lib, adapter.MaterializationMode(settings.SyncMode))
+		service := newInstallationService(lib, adapter.MaterializationMode(settings.SyncMode))
 		preview, err := service.Preview("cli", installation.Request{Project: project, SkillIDs: args, Versions: selectedVersions, Targets: ts, Options: opts})
 		if _, writeErr := fmt.Fprint(cmd.OutOrStdout(), preview.Plan.String()); writeErr != nil {
 			return writeErr
@@ -291,7 +291,7 @@ func newListCommand(options *rootOptions) *cobra.Command {
 		if global {
 			opJournal = operation.GlobalJournal(project)
 		}
-		service := lifecycle.New(lib, opJournal, nil)
+		service := newLifecycleService(lib, opJournal, nil)
 		var items []lifecycle.Item
 		if global {
 			items, err = service.ListGlobal(project)
@@ -339,7 +339,7 @@ func newRemoveCommand(options *rootOptions) *cobra.Command {
 		if global {
 			opJournal = operation.GlobalJournal(project)
 		}
-		service := lifecycle.New(lib, opJournal, confirmer(cmd, &yes, &previewErr))
+		service := newLifecycleService(lib, opJournal, confirmer(cmd, &yes, &previewErr))
 		if global {
 			_, err = service.RemoveGlobal(project, adapter.Target(target), args[0])
 		} else {
@@ -366,7 +366,7 @@ func newAdoptCommand(options *rootOptions) *cobra.Command {
 			return err
 		}
 		var previewErr error
-		_, err = lifecycle.New(lib, journal(project), confirmer(cmd, &yes, &previewErr)).Adopt(project, adapter.Target(target), args[0])
+		_, err = newLifecycleService(lib, journal(project), confirmer(cmd, &yes, &previewErr)).Adopt(project, adapter.Target(target), args[0])
 		if previewErr != nil {
 			return previewErr
 		}
@@ -387,7 +387,7 @@ func newForkCommand(options *rootOptions) *cobra.Command {
 			return err
 		}
 		var previewErr error
-		_, err = lifecycle.New(lib, journal(project), confirmer(cmd, &yes, &previewErr)).Fork(project, adapter.Target(target), args[0])
+		_, err = newLifecycleService(lib, journal(project), confirmer(cmd, &yes, &previewErr)).Fork(project, adapter.Target(target), args[0])
 		if previewErr != nil {
 			return previewErr
 		}
@@ -480,7 +480,7 @@ func newUndoCommand(options *rootOptions) *cobra.Command {
 		if global {
 			opJournal = operation.GlobalJournal(project)
 		}
-		err := lifecycle.New("", opJournal, confirmer(cmd, &yes, &previewErr)).Undo()
+		err := newLifecycleService("", opJournal, confirmer(cmd, &yes, &previewErr)).Undo()
 		if previewErr != nil {
 			return previewErr
 		}
@@ -490,6 +490,14 @@ func newUndoCommand(options *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&global, "global", false, "undo the latest global Skill operation")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the displayed plan")
 	return cmd
+}
+
+func newLifecycleService(libraryPath string, journal *operation.Journal, confirm lifecycle.ConfirmFunc) *lifecycle.Service {
+	service := lifecycle.New(libraryPath, journal, confirm)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		service.BatchStore = operation.NewBatchStore(filepath.Join(home, ".agent-manager", "skill-sync", "batches"))
+	}
+	return service
 }
 func newDeleteCommand(options *rootOptions) *cobra.Command {
 	var force, yes bool

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"time"
 
@@ -34,10 +35,26 @@ type Entry struct {
 	Version          string            `json:"version,omitempty"`
 	ResourceKind     string            `json:"resourceKind,omitempty"`
 	Operation        string            `json:"operation"`
+	BatchID          string            `json:"batchId,omitempty"`
 	At               time.Time         `json:"at"`
 	Before           []Snapshot        `json:"before"`
 	After            []Snapshot        `json:"after"`
 	Materializations []Materialization `json:"materializations,omitempty"`
+	LinkDependencies []LinkDependency  `json:"linkDependencies,omitempty"`
+}
+
+// LinkDependency stores the exact pre-operation reference chain used by a
+// migration. Undo evaluates it against the proposed before-state overlay.
+type LinkDependency struct {
+	EntryPath      string              `json:"entryPath"`
+	LinkChain      []LinkDependencyHop `json:"linkChain,omitempty"`
+	RealPath       string              `json:"realPath"`
+	SourceChecksum string              `json:"sourceChecksum"`
+}
+
+type LinkDependencyHop struct {
+	Path   string `json:"path"`
+	Target string `json:"target"`
 }
 
 // Materialization records the Skill version and publication method for one
@@ -71,6 +88,12 @@ type Journal struct {
 	ValidateUndoEntry func(Entry) error
 	// BeforeRestorePublish is an optional fault-injection seam for restore tests.
 	BeforeRestorePublish func(path string) error
+	// BeforeRestoreStage persists recovery ownership before Restore moves the
+	// current path into its private staging directory.
+	BeforeRestoreStage func(path, stagedPath string) error
+	// BeforeRestoreMove is a fault-injection seam immediately before moving the
+	// current destination into private restore staging.
+	BeforeRestoreMove func(path, stagedPath string) error
 	// BeforeJournalDirectorySync is an optional fault-injection seam that runs
 	// after the journal file is published, modeling a post-commit sync error.
 	BeforeJournalDirectorySync func() error
@@ -128,6 +151,58 @@ func (j *Journal) Capture(paths []string) ([]Snapshot, error) {
 	return result, nil
 }
 
+// SyncSnapshots forces captured before-state backups and their directories to
+// stable storage before a caller publishes a write-ahead batch marker.
+func SyncSnapshots(snapshots []Snapshot) error {
+	for _, snapshot := range snapshots {
+		if !snapshot.Exists || snapshot.Backup == "" {
+			continue
+		}
+		if err := syncSnapshotPath(snapshot.Backup); err != nil {
+			return fmt.Errorf("sync snapshot for %s: %w", snapshot.Path, err)
+		}
+		if err := syncDirectoryChain(filepath.Dir(snapshot.Backup)); err != nil {
+			return fmt.Errorf("sync snapshot parent chain for %s: %w", snapshot.Path, err)
+		}
+	}
+	return nil
+}
+
+func syncSnapshotPath(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return syncDirectory(filepath.Dir(path))
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := syncSnapshotPath(filepath.Join(path, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return syncDirectory(path)
+	}
+	if !info.Mode().IsRegular() {
+		return ErrUnsafePath
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = file.Sync()
+	_ = file.Close()
+	if err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
 // Record appends a confirmed operation with both pre- and post-operation state.
 func (j *Journal) Record(operation string, before, after []Snapshot, metadata ...RecordMetadata) error {
 	plan := Plan{Operation: operation}
@@ -147,6 +222,12 @@ func (j *Journal) RecordPlan(plan Plan, before, after []Snapshot) error {
 // RecordPlanWithMaterializations records activation ownership evidence with
 // the operation and its exact before/after snapshots.
 func (j *Journal) RecordPlanWithMaterializations(plan Plan, before, after []Snapshot, materializations []Materialization) error {
+	return j.RecordPlanWithEvidence(plan, before, after, materializations, "", nil)
+}
+
+// RecordPlanWithEvidence records journal state, materialization ownership,
+// write-ahead batch identity, and optional source-link dependencies.
+func (j *Journal) RecordPlanWithEvidence(plan Plan, before, after []Snapshot, materializations []Materialization, batchID string, dependencies []LinkDependency) error {
 	unlock, err := acquireFileLock(j.recordLockPath())
 	if err != nil {
 		return err
@@ -159,6 +240,16 @@ func (j *Journal) RecordPlanWithMaterializations(plan Plan, before, after []Snap
 	entries, err := j.entries()
 	if err != nil {
 		return err
+	}
+	if batchID != "" {
+		for _, existing := range entries {
+			if existing.BatchID == batchID {
+				if existing.Operation == plan.Operation && reflectSnapshotsEqual(existing.Before, before) && reflectSnapshotsEqual(existing.After, after) {
+					return nil
+				}
+				return fmt.Errorf("batch %s already has different journal evidence", batchID)
+			}
+		}
 	}
 	owned := make([]Materialization, len(materializations))
 	for i, item := range materializations {
@@ -190,18 +281,79 @@ func (j *Journal) RecordPlanWithMaterializations(plan Plan, before, after []Snap
 		if !found {
 			return fmt.Errorf("materialization destination is not present in the recorded after-state")
 		}
-		item.SourceFingerprint, err = FingerprintPath(item.Source)
-		if err != nil {
-			return fmt.Errorf("fingerprint materialization source: %w", err)
+		sourceFingerprint, fingerprintErr := FingerprintPath(item.Source)
+		if fingerprintErr != nil {
+			return fmt.Errorf("fingerprint materialization source: %w", fingerprintErr)
 		}
+		if item.SourceFingerprint != "" && item.SourceFingerprint != sourceFingerprint {
+			return ErrUnexpectedState
+		}
+		item.SourceFingerprint = sourceFingerprint
 		item.DestinationFingerprint, err = FingerprintPath(item.Destination)
 		if err != nil {
 			return fmt.Errorf("fingerprint materialization destination: %w", err)
 		}
 		owned[i] = item
 	}
-	entries = append(entries, Entry{Version: version, ResourceKind: kind, Operation: plan.Operation, At: time.Now().UTC(), Before: before, After: after, Materializations: owned})
+	ownedDependencies, err := normalizeLinkDependencies(dependencies)
+	if err != nil {
+		return err
+	}
+	if err := SyncSnapshots(before); err != nil {
+		return err
+	}
+	if err := SyncSnapshots(after); err != nil {
+		return err
+	}
+	afterPaths := make([]string, 0, len(after))
+	for _, snapshot := range after {
+		afterPaths = append(afterPaths, snapshot.Path)
+	}
+	if err := SyncPaths(afterPaths); err != nil {
+		return err
+	}
+	entries = append(entries, Entry{Version: version, ResourceKind: kind, Operation: plan.Operation, BatchID: batchID, At: time.Now().UTC(), Before: before, After: after, Materializations: owned, LinkDependencies: ownedDependencies})
 	return j.write(entries)
+}
+
+func reflectSnapshotsEqual(left, right []Snapshot) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeLinkDependencies(dependencies []LinkDependency) ([]LinkDependency, error) {
+	result := make([]LinkDependency, len(dependencies))
+	for i, dependency := range dependencies {
+		if dependency.EntryPath == "" || dependency.RealPath == "" || dependency.SourceChecksum == "" {
+			return nil, fmt.Errorf("link dependency evidence is incomplete")
+		}
+		entryPath, err := filepath.Abs(dependency.EntryPath)
+		if err != nil {
+			return nil, err
+		}
+		realPath, err := filepath.Abs(dependency.RealPath)
+		if err != nil {
+			return nil, err
+		}
+		dependency.EntryPath, dependency.RealPath = filepath.Clean(entryPath), filepath.Clean(realPath)
+		dependency.LinkChain = append([]LinkDependencyHop(nil), dependency.LinkChain...)
+		for j := range dependency.LinkChain {
+			path, err := filepath.Abs(dependency.LinkChain[j].Path)
+			if err != nil {
+				return nil, err
+			}
+			dependency.LinkChain[j].Path = filepath.Clean(path)
+		}
+		result[i] = dependency
+	}
+	return result, nil
 }
 
 // RecordedMaterialization returns the latest journal evidence for path only
@@ -255,6 +407,68 @@ func (j *Journal) Latest() (Entry, bool, error) {
 		return Entry{}, false, nil
 	}
 	return entries[len(entries)-1], true, nil
+}
+
+// HasBatch reports whether a journal already contains the write-ahead batch's
+// committed operation record.
+func (j *Journal) HasBatch(batchID string) (bool, error) {
+	if batchID == "" {
+		return false, nil
+	}
+	entries, err := j.entries()
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.BatchID == batchID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ContainsEntry reports whether the exact journal entry remains present.
+func (j *Journal) ContainsEntry(wanted Entry) (bool, error) {
+	entries, err := j.entries()
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if reflect.DeepEqual(entry, wanted) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// RemoveLatestEntry completes a previously prepared Undo after filesystem
+// recovery proved its before-state. It is idempotent if the exact entry was
+// already removed, and refuses to remove a different or non-latest entry.
+func (j *Journal) RemoveLatestEntry(wanted Entry) (bool, error) {
+	unlock, err := acquireFileLock(j.recordLockPath())
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	entries, err := j.entries()
+	if err != nil {
+		return false, err
+	}
+	if len(entries) == 0 {
+		return false, nil
+	}
+	if reflect.DeepEqual(entries[len(entries)-1], wanted) {
+		if err := j.write(entries[:len(entries)-1]); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	for _, entry := range entries {
+		if reflect.DeepEqual(entry, wanted) {
+			return false, ErrUnexpectedState
+		}
+	}
+	return false, nil
 }
 
 // RecordedLinkTarget reports whether a confirmed operation recorded path as a
@@ -352,11 +566,31 @@ func (j *Journal) UndoLatest(confirm func(Plan) bool) error {
 
 // UndoLatestWithFingerprints also verifies reviewed pre-operation backups before restore.
 func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected map[string]string) error {
-	unlockOperation, err := j.LockOperation()
-	if err != nil {
-		return err
+	return j.UndoLatestWithHooks(confirm, expected, nil, nil)
+}
+
+// UndoLatestWithHooks exposes the locked write-ahead boundary around Undo.
+// beforeRestore runs after the latest entry and all post-state checks are
+// confirmed but before any filesystem mutation. afterCommit receives the
+// actual Undo outcome after journal publication or rollback.
+func (j *Journal) UndoLatestWithHooks(confirm func(Plan) bool, expected map[string]string, beforeRestore func(Entry) error, afterCommit func(Entry, error) error) error {
+	return j.undoLatestWithHooks(confirm, expected, beforeRestore, afterCommit, false)
+}
+
+// UndoLatestWithHooksLocked runs the same guarded Undo flow when the caller
+// already holds LockOperation for a wider plan/apply transaction.
+func (j *Journal) UndoLatestWithHooksLocked(confirm func(Plan) bool, expected map[string]string, beforeRestore func(Entry) error, afterCommit func(Entry, error) error) error {
+	return j.undoLatestWithHooks(confirm, expected, beforeRestore, afterCommit, true)
+}
+
+func (j *Journal) undoLatestWithHooks(confirm func(Plan) bool, expected map[string]string, beforeRestore func(Entry) error, afterCommit func(Entry, error) error, operationLockHeld bool) error {
+	if !operationLockHeld {
+		unlockOperation, err := j.LockOperation()
+		if err != nil {
+			return err
+		}
+		defer unlockOperation()
 	}
-	defer unlockOperation()
 	unlockJournal, err := acquireFileLock(j.recordLockPath())
 	if err != nil {
 		return err
@@ -375,6 +609,7 @@ func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected m
 			return err
 		}
 	}
+	expectedCurrent := make(map[string]string, len(entry.After))
 	for _, snapshot := range entry.After {
 		matches, err := matchesSnapshot(snapshot)
 		if err != nil {
@@ -383,6 +618,11 @@ func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected m
 		if !matches {
 			return ErrUnexpectedState
 		}
+		state, err := fingerprintOrAbsent(snapshot.Path)
+		if err != nil {
+			return err
+		}
+		expectedCurrent[snapshot.Path] = state
 	}
 	for _, snapshot := range entry.Before {
 		if !snapshot.Exists || expected == nil {
@@ -397,14 +637,47 @@ func (j *Journal) UndoLatestWithFingerprints(confirm func(Plan) bool, expected m
 			return errors.Join(ErrUnexpectedState, err)
 		}
 	}
-	if err := j.Restore(entry.Before); err != nil {
+	if beforeRestore != nil {
+		if err := beforeRestore(entry); err != nil {
+			return err
+		}
+	}
+	if err := j.RestoreExpected(entry.Before, expectedCurrent); err != nil {
+		if afterCommit != nil {
+			return errors.Join(err, afterCommit(entry, err))
+		}
 		return err
 	}
 	if err := j.write(entries[:len(entries)-1]); err != nil {
 		if errors.Is(err, ErrJournalCommitted) {
+			if afterCommit != nil {
+				return errors.Join(err, afterCommit(entry, err))
+			}
 			return err
 		}
-		return errors.Join(err, j.Restore(entry.After))
+		rollbackExpected := make(map[string]string, len(entry.Before))
+		var rollbackErr error
+		for _, snapshot := range entry.Before {
+			state := "absent"
+			if snapshot.Exists {
+				state, err = FingerprintPath(snapshot.Backup)
+				if err != nil {
+					rollbackErr = err
+					break
+				}
+			}
+			rollbackExpected[snapshot.Path] = state
+		}
+		if rollbackErr == nil {
+			rollbackErr = j.RestoreExpected(entry.After, rollbackExpected)
+		}
+		if afterCommit != nil {
+			return errors.Join(err, rollbackErr, afterCommit(entry, errors.Join(err, rollbackErr)))
+		}
+		return errors.Join(err, rollbackErr)
+	}
+	if afterCommit != nil {
+		return afterCommit(entry, nil)
 	}
 	return nil
 }
@@ -442,6 +715,14 @@ func validateMetadata(version, kind string) error {
 // Restore replaces the supplied explicit paths with their captured state.
 // It is used to roll back an incomplete staged operation.
 func (j *Journal) Restore(snapshots []Snapshot) error {
+	return j.RestoreExpected(snapshots, nil)
+}
+
+// RestoreExpected restores snapshots only while each current path still has
+// the exact state observed during the caller's ownership check. Publication
+// uses an atomic no-replace rename so a path that appears after that check is
+// retained for recovery.
+func (j *Journal) RestoreExpected(snapshots []Snapshot, expectedCurrent map[string]string) error {
 	// Validate each snapshot independently before touching any current path. An
 	// unsafe parent must remain fail-closed, but must not prevent unrelated
 	// snapshots from being restored (for example, a transaction whose second
@@ -457,6 +738,18 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 		}
 		parentIdentities[i] = identities
 		eligible[i] = true
+	}
+	for i, snapshot := range snapshots {
+		if !eligible[i] {
+			continue
+		}
+		if expected, ok := expectedCurrent[snapshot.Path]; ok {
+			current, err := fingerprintOrAbsent(snapshot.Path)
+			if err != nil || current != expected {
+				eligible[i] = false
+				preflightErrs = append(preflightErrs, errors.Join(ErrUnexpectedState, fmt.Errorf("restore target changed after classification: %s", snapshot.Path), err))
+			}
+		}
 	}
 	for i, snapshot := range snapshots {
 		if !eligible[i] {
@@ -491,12 +784,29 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 		if err := copyPath(snapshot.Backup, staged[i].candidate); err != nil {
 			return fmt.Errorf("stage restore %s: %w", snapshot.Path, err)
 		}
+		if err := syncPublishedPath(staged[i].candidate); err != nil {
+			return fmt.Errorf("sync restore candidate %s: %w", snapshot.Path, err)
+		}
 	}
 	moved := make([]bool, len(snapshots))
 	published := make([]bool, len(snapshots))
 	removed := make([]bool, len(snapshots))
 	retained := make([]bool, len(snapshots))
 	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			for i := range moved {
+				if moved[i] {
+					retained[i] = true
+				}
+			}
+			for i := range staged {
+				if staged[i].root == "" || retained[i] {
+					continue
+				}
+				_ = os.RemoveAll(staged[i].root)
+			}
+			panic(panicValue)
+		}
 		for i := range staged {
 			if staged[i].root == "" || retained[i] {
 				continue
@@ -542,7 +852,8 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 			} else if !os.IsNotExist(err) {
 				errs = append(errs, err)
 			} else if _, err := os.Lstat(staged[i].previous); err == nil {
-				if err := os.Rename(staged[i].previous, snapshots[i].Path); err != nil {
+				if err := renameNoReplace(staged[i].previous, snapshots[i].Path); err != nil {
+					retained[i] = true
 					errs = append(errs, err)
 				}
 			}
@@ -558,10 +869,33 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 			return errors.Join(err, rollback())
 		}
 		if _, err := os.Lstat(snapshot.Path); err == nil {
-			if err := os.Rename(snapshot.Path, staged[i].previous); err != nil {
+			if j.BeforeRestoreStage != nil {
+				if err := j.BeforeRestoreStage(snapshot.Path, staged[i].previous); err != nil {
+					return errors.Join(fmt.Errorf("record restore staging for %s: %w", snapshot.Path, err), rollback())
+				}
+			}
+			currentBeforeMove, fingerprintErr := fingerprintOrAbsent(snapshot.Path)
+			if fingerprintErr != nil {
+				return errors.Join(fingerprintErr, rollback())
+			}
+			if expected, ok := expectedCurrent[snapshot.Path]; ok {
+				if currentBeforeMove != expected {
+					return errors.Join(ErrUnexpectedState, fingerprintErr, rollback())
+				}
+			}
+			if j.BeforeRestoreMove != nil {
+				if err := j.BeforeRestoreMove(snapshot.Path, staged[i].previous); err != nil {
+					return errors.Join(err, rollback())
+				}
+			}
+			if err := renameNoReplace(snapshot.Path, staged[i].previous); err != nil {
 				return errors.Join(fmt.Errorf("stage current %s: %w", snapshot.Path, err), rollback())
 			}
 			moved[i] = true
+			movedState, err := fingerprintOrAbsent(staged[i].previous)
+			if err != nil || movedState != currentBeforeMove {
+				return errors.Join(ErrUnexpectedState, err, rollback())
+			}
 		} else if !os.IsNotExist(err) {
 			return errors.Join(err, rollback())
 		}
@@ -575,13 +909,22 @@ func (j *Journal) Restore(snapshots []Snapshot) error {
 			return errors.Join(err, rollback())
 		}
 		if snapshot.Exists {
-			if err := os.Rename(staged[i].candidate, snapshot.Path); err != nil {
+			if err := renameNoReplace(staged[i].candidate, snapshot.Path); err != nil {
 				return errors.Join(fmt.Errorf("publish restore %s: %w", snapshot.Path, err), rollback())
 			}
 			published[i] = true
 		} else {
 			removed[i] = true
 		}
+	}
+	durablePaths := make([]string, 0, len(snapshots))
+	for i, snapshot := range snapshots {
+		if eligible[i] {
+			durablePaths = append(durablePaths, snapshot.Path)
+		}
+	}
+	if err := SyncPaths(durablePaths); err != nil {
+		return errors.Join(errors.Join(preflightErrs...), err, rollback())
 	}
 	return errors.Join(preflightErrs...)
 }

@@ -29,6 +29,7 @@ var (
 	ErrConflict           = errors.New("skill repository version already exists")
 	ErrUnsafe             = errors.New("unsafe skill repository path or content")
 	ErrRollbackIncomplete = errors.New("Skill repository transaction rollback was incomplete")
+	errMetadataPublished  = errors.New("Skill repository metadata was published but its directory sync failed")
 )
 
 // Metadata is the repository index for one stable Skill identity.
@@ -371,6 +372,14 @@ func (r *Repository) OwnsPath(identifier, path string) (bool, error) {
 // content is never overwritten. makeCurrent selects the added version for
 // subsequent default resolutions.
 func (r *Repository) AddVersion(identifier, sourcePath string, version VersionMetadata, makeCurrent bool) (Entry, error) {
+	return r.AddVersionWithPostPublish(identifier, sourcePath, version, makeCurrent, nil)
+}
+
+// AddVersionWithPostPublish runs afterPublish after the new version and its
+// metadata have been published, while the repository's in-process and file
+// locks are still held. The callback may capture transaction ownership
+// evidence; it must not perform a reentrant repository mutation.
+func (r *Repository) AddVersionWithPostPublish(identifier, sourcePath string, version VersionMetadata, makeCurrent bool, afterPublish func(Entry, Metadata) error) (Entry, error) {
 	if !validComponent(identifier) {
 		return Entry{}, fmt.Errorf("%w: invalid Skill identifier %q", ErrUnsafe, identifier)
 	}
@@ -389,7 +398,89 @@ func (r *Repository) AddVersion(identifier, sourcePath string, version VersionMe
 		return Entry{}, err
 	}
 	defer unlock()
-	return r.addVersion(identifier, sourcePath, version, makeCurrent)
+	return r.addVersionWithPostPublish(identifier, sourcePath, version, makeCurrent, afterPublish)
+}
+
+// RecoverPublishedVersion reconciles repository metadata after a crash that
+// published an immutable version directory but did not publish its metadata.
+// It only registers the exact version when the durable recovery intent and
+// directory checksum agree; it never replaces a conflicting version record.
+func (r *Repository) RecoverPublishedVersion(identifier string, version VersionMetadata, makeCurrent bool) (Entry, error) {
+	if !validComponent(identifier) || !validComponent(version.Key) || version.Checksum == "" {
+		return Entry{}, fmt.Errorf("%w: incomplete recovered Skill version intent", ErrUnsafe)
+	}
+	lock := repositoryLock(r.root)
+	lock.Lock()
+	defer lock.Unlock()
+	unlock, err := lockRepositoryFile(r.root)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
+	if err := requireRealDirectory(filepath.Dir(r.root), r.root, true); err != nil {
+		return Entry{}, err
+	}
+	skillRoot := filepath.Join(r.root, identifier)
+	versionsRoot := filepath.Join(skillRoot, "versions")
+	versionRoot := filepath.Join(versionsRoot, version.Key)
+	if err := requireRealDirectory(r.root, skillRoot, false); err != nil {
+		return Entry{}, err
+	}
+	if err := requireRealDirectory(skillRoot, versionsRoot, false); err != nil {
+		return Entry{}, err
+	}
+	if err := requireRealDirectory(versionsRoot, versionRoot, false); err != nil {
+		return Entry{}, err
+	}
+	if err := requireRegularFile(versionRoot, filepath.Join(versionRoot, "SKILL.md")); err != nil {
+		return Entry{}, err
+	}
+	checksum, err := treeChecksum(versionRoot)
+	if err != nil {
+		return Entry{}, err
+	}
+	if checksum != version.Checksum {
+		return Entry{}, fmt.Errorf("%w: recovered Skill version checksum differs from import intent", ErrConflict)
+	}
+	if err := syncTree(versionRoot); err != nil {
+		return Entry{}, fmt.Errorf("sync recovered Skill version: %w", err)
+	}
+	if err := syncDirectory(versionsRoot); err != nil {
+		return Entry{}, fmt.Errorf("sync recovered Skill versions directory: %w", err)
+	}
+
+	metadata, err := readMetadata(skillRoot, identifier)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return Entry{}, err
+		}
+		metadata = Metadata{SchemaVersion: MetadataSchemaVersion, Identifier: identifier, Versions: []VersionMetadata{}}
+	}
+	for _, existing := range metadata.Versions {
+		if existing.Key != version.Key {
+			continue
+		}
+		if existing.Checksum != version.Checksum || existing.Version != version.Version {
+			return Entry{}, fmt.Errorf("%w: recovered Skill version metadata conflicts with existing version %s/%s", ErrConflict, identifier, version.Key)
+		}
+		if err := syncDirectory(skillRoot); err != nil {
+			return Entry{}, fmt.Errorf("sync recovered Skill repository metadata directory: %w", err)
+		}
+		return entryForVersion(r.root, identifier, existing)
+	}
+	for _, existing := range metadata.Versions {
+		if version.Version != "unknown" && existing.Version == version.Version {
+			return Entry{}, fmt.Errorf("%w: recovered Skill version string already belongs to %s/%s", ErrConflict, identifier, existing.Key)
+		}
+	}
+	metadata.Versions = append(metadata.Versions, version)
+	if metadata.CurrentVersion == "" || makeCurrent {
+		metadata.CurrentVersion = version.Key
+	}
+	if err := writeMetadata(skillRoot, metadata); err != nil {
+		return Entry{}, err
+	}
+	return entryForVersion(r.root, identifier, version)
 }
 
 // AddVersionsBatch atomically applies a batch of new Skill identities. The
@@ -410,6 +501,9 @@ func (r *Repository) AddVersionsBatch(sources []VersionSource) ([]Entry, error) 
 func lockRepositoryFile(root string) (func() error, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("create Skill repository for its operation lock: %w", err)
+	}
+	if err := syncDirectoryChain(filepath.Dir(root)); err != nil {
+		return nil, fmt.Errorf("sync Skill repository parent: %w", err)
 	}
 	info, err := os.Lstat(root)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -553,6 +647,10 @@ func repositoryLock(root string) *sync.Mutex {
 }
 
 func (r *Repository) addVersion(identifier, sourcePath string, version VersionMetadata, makeCurrent bool) (result Entry, resultErr error) {
+	return r.addVersionWithPostPublish(identifier, sourcePath, version, makeCurrent, nil)
+}
+
+func (r *Repository) addVersionWithPostPublish(identifier, sourcePath string, version VersionMetadata, makeCurrent bool, afterPublish func(Entry, Metadata) error) (result Entry, resultErr error) {
 	if !validComponent(identifier) {
 		return Entry{}, fmt.Errorf("%w: invalid Skill identifier %q", ErrUnsafe, identifier)
 	}
@@ -661,7 +759,6 @@ func (r *Repository) addVersion(identifier, sourcePath string, version VersionMe
 	} else if !os.IsNotExist(err) {
 		return Entry{}, fmt.Errorf("inspect version destination: %w", err)
 	}
-	createdSkill := false
 	committed := false
 	if newSkill {
 		if err := os.Mkdir(skillRoot, 0o755); err != nil {
@@ -670,24 +767,34 @@ func (r *Repository) addVersion(identifier, sourcePath string, version VersionMe
 			}
 			return Entry{}, fmt.Errorf("create Skill identity directory: %w", err)
 		}
-		createdSkill = true
+		defer func() {
+			if committed {
+				return
+			}
+			if err := removeTreeWritable(skillRoot); err != nil {
+				resultErr = errors.Join(resultErr, ErrRollbackIncomplete, fmt.Errorf("rollback Skill identity %s: %w", identifier, err))
+				return
+			}
+			if err := syncDirectory(r.root); err != nil {
+				resultErr = errors.Join(resultErr, ErrRollbackIncomplete, fmt.Errorf("sync rollback of Skill identity %s: %w", identifier, err))
+			}
+		}()
 		if err := os.Mkdir(versionsRoot, 0o755); err != nil {
-			cleanupErr := removeTreeWritable(skillRoot)
-			return Entry{}, errors.Join(fmt.Errorf("create version directory: %w", err), cleanupErr)
+			return Entry{}, fmt.Errorf("create version directory: %w", err)
+		}
+		if err := syncDirectory(r.root); err != nil {
+			return Entry{}, fmt.Errorf("sync new Skill identity directory: %w", err)
+		}
+		if err := syncDirectory(skillRoot); err != nil {
+			return Entry{}, fmt.Errorf("sync new Skill versions directory: %w", err)
 		}
 	} else {
 		if err := os.Mkdir(versionsRoot, 0o755); err != nil && !os.IsExist(err) {
 			return Entry{}, fmt.Errorf("create version directory: %w", err)
 		}
-	}
-	if createdSkill {
-		defer func() {
-			if !committed {
-				if err := removeTreeWritable(skillRoot); err != nil {
-					resultErr = errors.Join(resultErr, fmt.Errorf("rollback Skill identity %s: %w", identifier, err))
-				}
-			}
-		}()
+		if err := syncDirectory(skillRoot); err != nil {
+			return Entry{}, fmt.Errorf("sync Skill versions directory: %w", err)
+		}
 	}
 	if err := requireRealDirectory(r.root, skillRoot, true); err != nil {
 		return Entry{}, err
@@ -707,6 +814,9 @@ func (r *Repository) addVersion(identifier, sourcePath string, version VersionMe
 	if err := copyTree(sourcePath, stage); err != nil {
 		return Entry{}, fmt.Errorf("copy Skill version: %w", err)
 	}
+	if err := syncTree(stage); err != nil {
+		return Entry{}, fmt.Errorf("sync staged Skill version: %w", err)
+	}
 	stagedChecksum, err := treeChecksum(stage)
 	if err != nil {
 		return Entry{}, fmt.Errorf("verify staged Skill version: %w", err)
@@ -717,16 +827,32 @@ func (r *Repository) addVersion(identifier, sourcePath string, version VersionMe
 	if err := os.Rename(stage, versionRoot); err != nil {
 		return Entry{}, fmt.Errorf("publish Skill version: %w", err)
 	}
+	if err := syncDirectory(versionsRoot); err != nil {
+		return Entry{}, errors.Join(fmt.Errorf("sync published Skill version directory: %w", err), removeUncommittedVersion(versionRoot, versionsRoot))
+	}
 
 	metadata.Versions = append(metadata.Versions, version)
 	if metadata.CurrentVersion == "" || makeCurrent {
 		metadata.CurrentVersion = version.Key
 	}
 	if err := writeMetadata(skillRoot, metadata); err != nil {
-		return Entry{}, errors.Join(err, removeTreeWritable(versionRoot))
+		if errors.Is(err, errMetadataPublished) {
+			committed = true
+			return Entry{}, errors.Join(ErrRollbackIncomplete, err)
+		}
+		return Entry{}, errors.Join(err, removeUncommittedVersion(versionRoot, versionsRoot))
 	}
 	committed = true
-	return entryForVersion(r.root, identifier, version)
+	entry, err := entryForVersion(r.root, identifier, version)
+	if err != nil {
+		return Entry{}, err
+	}
+	if afterPublish != nil {
+		if err := afterPublish(entry, metadata); err != nil {
+			return entry, err
+		}
+	}
+	return entry, nil
 }
 
 func (r *Repository) resolve(identifier, version string) (Entry, error) {
@@ -894,6 +1020,19 @@ func writeMetadata(skillRoot string, metadata Metadata) error {
 	if err := os.Rename(stage, filepath.Join(skillRoot, MetadataFilename)); err != nil {
 		return fmt.Errorf("publish Skill repository metadata: %w", err)
 	}
+	if err := syncDirectory(skillRoot); err != nil {
+		return errors.Join(errMetadataPublished, fmt.Errorf("sync Skill repository metadata directory: %w", err))
+	}
+	return nil
+}
+
+func removeUncommittedVersion(versionRoot, versionsRoot string) error {
+	if err := removeTreeWritable(versionRoot); err != nil {
+		return errors.Join(ErrRollbackIncomplete, fmt.Errorf("remove uncommitted Skill version: %w", err))
+	}
+	if err := syncDirectory(versionsRoot); err != nil {
+		return errors.Join(ErrRollbackIncomplete, fmt.Errorf("sync removal of uncommitted Skill version: %w", err))
+	}
 	return nil
 }
 
@@ -1051,6 +1190,10 @@ func requireSkillMarkdown(parent, path string) error {
 }
 
 func treeChecksum(root string) (string, error) {
+	return treeChecksumWithLimits(root, 0, 0)
+}
+
+func treeChecksumWithLimits(root string, maxFiles int, maxBytes int64) (string, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
@@ -1059,6 +1202,8 @@ func treeChecksum(root string) (string, error) {
 		return "", err
 	}
 	hash := sha256.New()
+	fileCount := 0
+	var totalBytes int64
 	err = filepath.WalkDir(absRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1081,13 +1226,36 @@ func treeChecksum(root string) (string, error) {
 			return nil
 		}
 		_, _ = hash.Write([]byte{'f'})
+		fileCount++
+		if maxFiles > 0 && fileCount > maxFiles {
+			return fmt.Errorf("%w: Skill tree exceeds %d-file limit", ErrUnsafe, maxFiles)
+		}
+		if maxBytes > 0 && info.Size() > maxBytes-totalBytes {
+			return fmt.Errorf("%w: Skill tree exceeds %d MiB content limit", ErrUnsafe, maxBytes>>20)
+		}
 		file, err := os.Open(path)
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(hash, file)
+		var reader io.Reader = file
+		if maxBytes > 0 {
+			reader = io.LimitReader(file, maxBytes-totalBytes+1)
+		}
+		copied, copyErr := io.Copy(hash, reader)
 		closeErr := file.Close()
-		return errors.Join(copyErr, closeErr)
+		if err := errors.Join(copyErr, closeErr); err != nil {
+			return err
+		}
+		if maxBytes > 0 {
+			if copied > maxBytes-totalBytes {
+				return fmt.Errorf("%w: Skill tree exceeds %d MiB content limit", ErrUnsafe, maxBytes>>20)
+			}
+			if copied != info.Size() {
+				return fmt.Errorf("Skill file changed while it was being hashed: %s", path)
+			}
+			totalBytes += copied
+		}
+		return nil
 	})
 	if err != nil {
 		return "", err
@@ -1098,6 +1266,15 @@ func treeChecksum(root string) (string, error) {
 // ChecksumTree returns the deterministic SHA-256 checksum for a safe regular
 // file/directory tree. Symlinks and special files are rejected.
 func ChecksumTree(root string) (string, error) { return treeChecksum(root) }
+
+// ChecksumTreeWithLimits returns a deterministic checksum while bounding the
+// number of regular files and bytes read from one Skill tree.
+func ChecksumTreeWithLimits(root string, maxFiles int, maxBytes int64) (string, error) {
+	if maxFiles <= 0 || maxBytes <= 0 {
+		return "", fmt.Errorf("Skill tree limits must be positive")
+	}
+	return treeChecksumWithLimits(root, maxFiles, maxBytes)
+}
 
 func copyTree(source, destination string) error {
 	if _, err := treeChecksum(source); err != nil {

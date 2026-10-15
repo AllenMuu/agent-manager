@@ -23,10 +23,31 @@ type ImportResult struct {
 	Entries []Entry
 }
 
+// ImportSnapshot is durable before-state evidence for one repository identity.
+type ImportSnapshot struct {
+	Identifier string
+	Exists     bool
+	Checksum   string
+	Backup     string
+}
+
+// ImportHooks expose the write-ahead boundaries around an atomic import.
+type ImportHooks struct {
+	BeforePublish func([]ImportSnapshot) error
+	AfterPublish  func(int, Entry) error
+}
+
 // AddVersionsAtomic adds selected immutable versions as one repository
 // transaction. It permits multiple versions for an identity, and rolls back
 // only identities whose exact post-state is still owned by this batch.
 func (r *Repository) AddVersionsAtomic(sources []VersionSource, backupRoot string, expectedBefore map[string]string, afterPublish func(int, Entry) error) (ImportResult, error) {
+	return r.AddVersionsAtomicWithHooks(sources, backupRoot, expectedBefore, ImportHooks{AfterPublish: afterPublish})
+}
+
+// AddVersionsAtomicWithHooks publishes selected immutable versions as one
+// repository transaction and exposes the durable backup boundary before the
+// first version is published.
+func (r *Repository) AddVersionsAtomicWithHooks(sources []VersionSource, backupRoot string, expectedBefore map[string]string, hooks ImportHooks) (ImportResult, error) {
 	lock := repositoryLock(r.root)
 	lock.Lock()
 	defer lock.Unlock()
@@ -82,6 +103,9 @@ func (r *Repository) AddVersionsAtomic(sources []VersionSource, backupRoot strin
 	if err != nil {
 		return ImportResult{}, err
 	}
+	if err := syncSnapshotBackups(before); err != nil {
+		return ImportResult{}, err
+	}
 	if expectedBefore != nil {
 		if len(expectedBefore) != len(ids) {
 			return ImportResult{}, fmt.Errorf("%w: repository preview is incomplete", ErrConflict)
@@ -103,6 +127,15 @@ func (r *Repository) AddVersionsAtomic(sources []VersionSource, backupRoot strin
 			return ImportResult{}, err
 		}
 	}
+	if hooks.BeforePublish != nil {
+		evidence := make([]ImportSnapshot, len(before))
+		for i, snapshot := range before {
+			evidence[i] = ImportSnapshot{Identifier: snapshot.Identifier, Exists: snapshot.Exists, Checksum: snapshot.Checksum, Backup: snapshot.Backup}
+		}
+		if err := hooks.BeforePublish(evidence); err != nil {
+			return ImportResult{}, err
+		}
+	}
 	entries := make([]Entry, 0, len(sources))
 	for _, source := range sources {
 		entry, err := r.addVersion(source.Identifier, source.SourcePath, source.Metadata, source.MakeCurrent)
@@ -118,8 +151,8 @@ func (r *Repository) AddVersionsAtomic(sources []VersionSource, backupRoot strin
 			return ImportResult{}, errors.Join(err, rollbackErr)
 		}
 		entries = append(entries, entry)
-		if afterPublish != nil {
-			if err := afterPublish(len(entries)-1, entry); err != nil {
+		if hooks.AfterPublish != nil {
+			if err := hooks.AfterPublish(len(entries)-1, entry); err != nil {
 				after := identityChecksums(r.root, ids)
 				rollbackErr := restoreIdentitySnapshots(r.root, before, after)
 				if rollbackErr != nil {
@@ -136,6 +169,50 @@ func (r *Repository) AddVersionsAtomic(sources []VersionSource, backupRoot strin
 		}
 	}
 	return ImportResult{Entries: entries}, nil
+}
+
+func syncSnapshotBackups(snapshots []identitySnapshot) error {
+	for _, snapshot := range snapshots {
+		if !snapshot.Exists {
+			continue
+		}
+		if err := syncTree(snapshot.Backup); err != nil {
+			return fmt.Errorf("sync import backup for %s: %w", snapshot.Identifier, err)
+		}
+	}
+	return nil
+}
+
+func syncTree(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: Skill version contains a symbolic link", ErrUnsafe)
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := syncTree(filepath.Join(root, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return syncDirectory(root)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: Skill version contains a special file", ErrUnsafe)
+	}
+	file, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	return errors.Join(syncErr, closeErr)
 }
 
 func captureIdentitySnapshots(repositoryRoot string, identifiers []string, backupRoot string) ([]identitySnapshot, error) {

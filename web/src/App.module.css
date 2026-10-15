@@ -72,6 +72,11 @@
 .syncReviewStatus { margin: 10px 0; padding: 10px 12px; border: 1px solid #d8c49d; border-radius: 8px; background: #fff8e9; color: #66532e; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .syncReviewStatus[data-state="ready"] { border-color: #b6cbb9; background: #edf3eb; color: #315d42; }
 .updateList { display: grid; margin-top: 10px; border-top: 1px solid #ece8e0; }
+.recoveryList { display: grid; margin-top: 12px; border-top: 1px solid #ece8e0; }
+.recoveryRow { display: grid; min-width: 0; gap: 6px; padding: 13px 0; border-bottom: 1px solid #efede7; }
+.recoveryRow > code { overflow-wrap: anywhere; color: #666a60; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.recoveryRow > small { overflow-wrap: anywhere; color: #77796f; font-size: 10px; line-height: 1.45; }
+.recoveryRow > strong { font-size: 11px; }
 .updateRow { display: grid; grid-template-columns: 17px minmax(0, 1fr); align-items: start; gap: 9px; padding: 12px 0; border-bottom: 1px solid #efede7; }
 .updateRow > input { width: 16px; height: 16px; margin-top: 2px; accent-color: #b84f31; }
 .updateRowMain { display: grid; min-width: 0; gap: 4px; }

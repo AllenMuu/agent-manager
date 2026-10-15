@@ -114,7 +114,15 @@ export type SyncSource = {
   identifier: string
   scope: 'global' | 'project'
   location: string
+  target?: 'claude' | 'codex' | 'pi' | string
   path: string
+  entryType?: string
+  realPath?: string
+  originalLink?: string
+  linkChain?: { path: string; target: string }[]
+  migrationEligible?: boolean
+  identityConflict?: boolean
+  resolvedIdentifier?: string
   checksum?: string
   modifiedAt?: string
   origin?: string
@@ -147,12 +155,15 @@ export type SyncLocation = { scope: 'global' | 'project'; label: string; path: s
 export type SyncDiagnostic = { scope: 'global' | 'project'; path: string; message: string }
 export type SyncInventory = {
   repositoryPath: string
+  complete?: boolean
   locations: SyncLocation[]
   sources: SyncSource[]
   groups: SyncSourceGroup[]
   diagnostics: SyncDiagnostic[]
   globalResyncUndoAvailable: boolean
   projectResyncUndoAvailable: boolean
+  globalMigrationUndoAvailable?: boolean
+  projectMigrationUndoAvailable?: boolean
   updateUndoAvailable: boolean
 }
 export type SyncImportPreview = {
@@ -161,10 +172,58 @@ export type SyncImportPreview = {
   selectedGroupIds: string[]
   currentChoices?: Record<string, string>
   currentChoiceRequired?: string[]
+  identityChoices?: Record<string, 'entry' | 'resolved'>
+  identityChoiceRequired?: string[]
   repositoryStates: Record<string, string>
   confirmationToken: string
 }
 export type SyncPlan = { id: string; scope?: string; plan: { operation: string; changes: PlanChange[]; warnings: string[] } }
+export type SyncMigrationEntry = {
+  sourceId: string
+  scope: 'global' | 'project'
+  location: string
+  target: string
+  entryPath: string
+  originalLink: string
+  linkChain: { path: string; target: string }[]
+  realPath: string
+  checksum: string
+  identifier: string
+  versionKey: string
+  versionPath: string
+  method: SyncMode
+  impactWarning?: string
+}
+export type SyncMigrationPreview = {
+  scope: 'global' | 'project'
+  syncMode: SyncMode
+  selectedSourceIds: string[]
+  entries: SyncMigrationEntry[]
+  plan: SyncPlan['plan']
+  warnings: string[]
+  confirmationToken: string
+}
+export type SyncRecoveryAction = 'complete' | 'rollback' | 'resolve-import'
+export type SyncRecoveryStep = {
+  id: string
+  resource: string
+  action: string
+  beforeState?: string
+  currentState?: string
+  expectedAfter?: string
+  classification: 'before' | 'after' | 'unchanged' | 'conflict' | string
+  diagnostic?: string
+}
+export type SyncRecoveryCandidate = {
+  batchId: string
+  kind: string
+  scope: string
+  status: string
+  actions: SyncRecoveryAction[]
+  steps: SyncRecoveryStep[]
+  diagnostic?: string
+}
+export type SyncRecoveryPreview = { batches: SyncRecoveryCandidate[] }
 export type SkillUpdateItem = {
   id: string
   identifier: string

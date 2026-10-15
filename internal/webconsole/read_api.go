@@ -254,7 +254,7 @@ func (s *Server) handleResources(w http.ResponseWriter, project *registeredProje
 		writeAPIError(w, http.StatusConflict, "unsafe_journal_path", "The project operation journal path is not a safe local directory.")
 		return
 	}
-	items, err := lifecycle.New(s.libraryPath, journal, nil).List(project.Path)
+	items, err := s.lifecycleService(journal, nil).List(project.Path)
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrUnsafePath) {
 			writeAPIError(w, http.StatusConflict, "unsafe_journal_entry", "The project operation journal contains paths outside its registered safety boundary.")

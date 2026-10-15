@@ -6,7 +6,7 @@ The canonical local Skill repository is `~/.agent-manager/skills`. Agent-recogni
 
 The repository remains local and configurable. Each stable Skill identity stores immutable versions beneath `versions/<version-key>/` and a schema-versioned `metadata.json` record. Catalog and installation workflows resolve only the configured repository and materialize only the selected version into a target agent's Global or Project location.
 
-The former `~/.agents/skills` library is a legacy import source. Agent Manager may inspect it in a read-only preview, then copy an explicitly selected batch after confirmation. Import preserves legacy source files and existing activation links; it does not silently search the old path, rewrite links, or delete sources.
+The former `~/.agents/skills` library is a legacy import source. Agent Manager may inspect it in a read-only preview, then copy an explicitly selected batch after confirmation. Import preserves source files and every existing activation link. A separate migration action may replace only an explicitly selected existing Claude, Codex, or Pi adapter link after revalidating its source chain and matching its content to an exact immutable repository version. Neutral `.agent` and `.agents` entries and standalone directories remain import-only. Migration never deletes the old source or implicitly updates unrelated links.
 
 ## Considered Options
 

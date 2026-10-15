@@ -72,6 +72,7 @@ type pendingPreview struct {
 // Service owns short-lived installation previews shared by interface adapters.
 type Service struct {
 	LibraryPath     string
+	BatchStore      *operation.BatchStore
 	Materialization adapter.MaterializationMode
 	materialization func() adapter.MaterializationMode
 
@@ -124,7 +125,7 @@ func (s *Service) Preview(session string, request Request) (Preview, error) {
 	if err != nil {
 		return Preview{}, err
 	}
-	life := lifecycle.New(s.LibraryPath, journal(normalized.Project, normalized.Global), nil)
+	life := s.lifecycleService(journal(normalized.Project, normalized.Global))
 	mode := s.currentMaterialization()
 	life.Materialization = mode
 	plan, err := previewLifecycle(life, normalized, skills)
@@ -182,7 +183,8 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 	if err != nil {
 		return ApplyResult{}, err
 	}
-	life := lifecycle.New(s.LibraryPath, operationJournal, nil)
+	life := s.lifecycleService(operationJournal)
+	life.OperationLockHeld = true
 	mode := s.currentMaterialization()
 	life.Materialization = mode
 	if mode != pending.mode {
@@ -205,6 +207,12 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 		return ApplyResult{Plan: plan}, err
 	}
 	return ApplyResult{Applied: true, Plan: plan}, nil
+}
+
+func (s *Service) lifecycleService(operationJournal *operation.Journal) *lifecycle.Service {
+	life := lifecycle.New(s.LibraryPath, operationJournal, nil)
+	life.BatchStore = s.BatchStore
+	return life
 }
 
 func filesystemState(request Request, skills []catalog.Skill) ([32]byte, error) {

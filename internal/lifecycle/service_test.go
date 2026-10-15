@@ -300,6 +300,119 @@ func TestResyncAppliesOnlyJournalOwnedPlacementsAsOneUndoableScopeOperation(t *t
 	}
 }
 
+func TestResyncPreservesDifferentVersionsPerEntryAndUndoRestoresEachBinding(t *testing.T) {
+	root, project, firstSkill := fixture(t)
+	firstSource := filepath.Join(root, "demo-v1")
+	if err := os.Rename(firstSkill.SourcePath, firstSource); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := skillrepo.Open(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntry, err := repository.AddVersion("demo", firstSource, skillrepo.VersionMetadata{Key: "v1", Version: "1"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSkill, err = resource.NewSkillHandler().Resolve(filepath.Join(root, "library"), "demo", firstEntry.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSource := filepath.Join(root, "demo-v2")
+	if err := os.MkdirAll(secondSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondSource, "SKILL.md"), []byte("---\nname: demo\ndescription: second version\n---\n\nsecond\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := repository.AddVersion("demo", secondSource, skillrepo.VersionMetadata{Key: "v2", Version: "2"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSkill, err := resource.NewSkillHandler().Resolve(filepath.Join(root, "library"), "demo", second.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+	service := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	if _, err := service.AddMany(project, []catalog.Skill{firstSkill}, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AddMany(project, []catalog.Skill{secondSkill}, []adapter.Target{adapter.ClaudeCode}); err != nil {
+		t.Fatal(err)
+	}
+	batchStore := operation.NewBatchStore(filepath.Join(root, "batches"))
+	service.BatchStore = batchStore
+	service.Materialization = adapter.MaterializeCopyOnly
+	preview, err := service.PreviewResync(lifecycle.ResyncProject, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Plan.Changes) != 2 || len(preview.Options.TargetBindings) != 2 {
+		t.Fatalf("per-entry resync plan = %#v bindings=%#v", preview.Plan.Changes, preview.Options.TargetBindings)
+	}
+	if _, err := service.ApplyResync(preview, true); err != nil {
+		t.Fatal(err)
+	}
+	batches, err := batchStore.List()
+	if err != nil || len(batches) != 1 || batches[0].Status != operation.BatchCommitted || len(batches[0].Steps) != 2 {
+		t.Fatalf("durable resync batches = %#v, err %v", batches, err)
+	}
+	codex, _ := adapter.For(adapter.Codex)
+	claude, _ := adapter.For(adapter.ClaudeCode)
+	for path, expected := range map[string]string{
+		codex.ProjectSkillPath(project, "demo"):  firstSkill.SourcePath,
+		claude.ProjectSkillPath(project, "demo"): secondSkill.SourcePath,
+	} {
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("resync destination %s = %v %v, want copy", path, info, err)
+		}
+		content, err := os.ReadFile(filepath.Join(path, "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile(filepath.Join(expected, "SKILL.md"))
+		if err != nil || string(content) != string(want) {
+			t.Fatalf("entry %s has wrong version content", path)
+		}
+	}
+	if err := service.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	batches, err = batchStore.List()
+	if err != nil || len(batches) != 2 || batches[1].Kind != "undo" || batches[1].Status != operation.BatchCommitted {
+		t.Fatalf("durable Undo batches = %#v, err %v", batches, err)
+	}
+	for path, expected := range map[string]string{
+		codex.ProjectSkillPath(project, "demo"):  firstSkill.SourcePath,
+		claude.ProjectSkillPath(project, "demo"): secondSkill.SourcePath,
+	} {
+		got, err := os.Readlink(path)
+		if err != nil || got != expected {
+			t.Fatalf("Undo binding for %s = %q, %v; want %q", path, got, err, expected)
+		}
+	}
+}
+
+func TestLifecycleWriteIsBlockedByOverlappingPendingBatch(t *testing.T) {
+	root, project, skill := fixture(t)
+	store := operation.NewBatchStore(filepath.Join(root, "batches"))
+	codex, _ := adapter.For(adapter.Codex)
+	destination := codex.ProjectSkillPath(project, skill.Identifier)
+	if _, err := store.Prepare(operation.Batch{ID: "pending", Kind: "interrupted", Scope: "project", Resources: []string{filepath.Dir(destination)}}); err != nil {
+		t.Fatal(err)
+	}
+	service := lifecycle.New(filepath.Join(root, "library"), operation.New(filepath.Join(project, ".skill-manager", "journal.json")), func(operation.Plan) bool { return true })
+	service.BatchStore = store
+	if _, err := service.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); !errors.Is(err, operation.ErrPendingBatch) {
+		t.Fatalf("activation with overlapping recovery batch = %v, want ErrPendingBatch", err)
+	}
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("blocked activation changed its destination: %v", err)
+	}
+}
+
 func TestResyncPreviewRejectsChangedDestination(t *testing.T) {
 	root, project, skill := fixture(t)
 	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
@@ -586,6 +699,39 @@ func TestAddManyRollbackRestoresReplacedPathWhenLaterPublicationFails(t *testing
 	}
 }
 
+func TestAddManyRollbackPreservesConcurrentEditToEarlierPublication(t *testing.T) {
+	root, project, one := fixture(t)
+	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
+	a, _ := adapter.For(adapter.Codex)
+	first := a.ProjectSkillPath(project, one.Identifier)
+	second := a.ProjectSkillPath(project, two.Identifier)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	svc := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	calls := 0
+	svc.BeforePublish = func(string) error {
+		calls++
+		if calls != 2 {
+			return nil
+		}
+		if err := os.Remove(first); err != nil {
+			return err
+		}
+		if err := os.WriteFile(first, []byte("concurrent edit"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("second publication interrupted")
+	}
+	if _, err := svc.AddMany(project, []catalog.Skill{one, two}, []adapter.Target{adapter.Codex}); err == nil {
+		t.Fatal("expected second publication failure")
+	}
+	if got, err := os.ReadFile(first); err != nil || string(got) != "concurrent edit" {
+		t.Fatalf("concurrent owner was overwritten during rollback: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(second); !os.IsNotExist(err) {
+		t.Fatalf("unpublished second destination remains: %v", err)
+	}
+}
+
 func TestAddManyPreservesLateOwnerWhileRollingBackEarlierPublication(t *testing.T) {
 	root, project, one := fixture(t)
 	two := writeSkill(t, filepath.Join(root, "library", "two"), "two")
@@ -867,6 +1013,44 @@ func TestAdoptRefusesConflictThenReplacesProjectDirectoryWithManagedLink(t *test
 		t.Fatalf("adopted version metadata = %#v", entry.Metadata)
 	}
 	assertNoAdoptionStages(t, filepath.Dir(local.SourcePath))
+}
+
+func TestAdoptPersistsDurableBatchForNewLibraryVersionLink(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	library := filepath.Join(root, "library")
+	local := writeSkill(t, filepath.Join(project, ".codex", "skills", "demo"), "demo")
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	service := lifecycle.New(library, journal, func(operation.Plan) bool { return true })
+	service.BatchStore = operation.NewBatchStore(filepath.Join(root, "batches"))
+
+	if _, err := service.Adopt(project, adapter.Codex, "demo"); err != nil {
+		t.Fatalf("Adopt() error = %v", err)
+	}
+	batch, ok, err := service.BatchStore.Get(service.LastBatchID)
+	if err != nil || !ok {
+		t.Fatalf("Get(adoption batch) = (%#v, %v), want persisted batch", batch, err)
+	}
+	if batch.Status != operation.BatchCommitted || len(batch.Steps) != 2 {
+		t.Fatalf("adoption batch = %#v, want committed batch with copy and link steps", batch)
+	}
+	linkTarget, err := os.Readlink(local.SourcePath)
+	if err != nil {
+		t.Fatalf("Readlink(adopted path) error = %v", err)
+	}
+	var linkStep *operation.BatchStep
+	for i := range batch.Steps {
+		if filepath.Clean(batch.Steps[i].Resource) == filepath.Clean(local.SourcePath) {
+			linkStep = &batch.Steps[i]
+		}
+	}
+	linkFingerprint, fingerprintErr := operation.FingerprintPath(linkTarget)
+	if fingerprintErr != nil {
+		t.Fatal(fingerprintErr)
+	}
+	if linkStep == nil || linkStep.ExpectedAfter != "symlink\x00"+linkTarget+"\x00"+linkFingerprint {
+		t.Fatalf("adoption link step = %#v, want the published library-version link", linkStep)
+	}
 }
 
 func TestForkMakesIndependentCopyWithoutChangingLibrary(t *testing.T) {
@@ -1284,6 +1468,31 @@ func TestAdoptRefusesProjectEditAfterCopyIsStaged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(library, "demo")); !os.IsNotExist(err) {
 		t.Fatalf("staged library copy was retained: %v", err)
+	}
+}
+
+func TestAdoptPreservesLibraryEditAfterVerifiedPublication(t *testing.T) {
+	root := t.TempDir()
+	project, library := filepath.Join(root, "project"), filepath.Join(root, "library")
+	local := writeSkill(t, filepath.Join(project, ".codex", "skills", "demo"), "demo")
+	svc := lifecycle.New(library, operation.New(filepath.Join(root, "journal.json")), func(operation.Plan) bool { return true })
+	svc.BeforePublish = func(step string) error {
+		if step != "adopt-staged" {
+			return nil
+		}
+		if err := os.WriteFile(filepath.Join(library, "demo", "user-note.txt"), []byte("keep me"), 0o644); err != nil {
+			return err
+		}
+		return errors.New("stop after concurrent library edit")
+	}
+	if _, err := svc.Adopt(project, adapter.Codex, "demo"); err == nil {
+		t.Fatal("Adopt unexpectedly succeeded after the library edit")
+	}
+	if got, err := os.ReadFile(filepath.Join(library, "demo", "user-note.txt")); err != nil || string(got) != "keep me" {
+		t.Fatalf("concurrent library edit was removed: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(local.SourcePath); err != nil {
+		t.Fatalf("original project Skill was removed: %v", err)
 	}
 }
 

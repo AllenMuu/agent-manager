@@ -111,6 +111,24 @@ func (h SkillHandler) Discover(root string) ([]SkillCatalogEntry, []Diagnostic, 
 	return skills, diagnostics, nil
 }
 
+// ReadDirectory reads the Skill metadata from one exact real directory without
+// enumerating its parent or any sibling entries. Callers that discover links
+// must validate the link chain and complete tree before using this method.
+func (h SkillHandler) ReadDirectory(path string) (SkillCatalogEntry, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		return SkillCatalogEntry{}, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return SkillCatalogEntry{}, fmt.Errorf("%s is not a real Skill directory", absPath)
+	}
+	return readSkill(absPath, filepath.Base(absPath))
+}
+
 // Resolve returns one addressable repository version without exposing other
 // version directories as independent catalog identities.
 func (h SkillHandler) Resolve(root, identifier, version string) (SkillCatalogEntry, error) {

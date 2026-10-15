@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { APIError, get, post } from './api'
 import { getSkillSelectionAction, toggleSkillSelection, type SkillSelectionAction } from './skillSelection'
 import { bootstrapSession } from './session'
@@ -28,6 +28,10 @@ import type {
   SkillUpdatePreview,
   SyncSource,
   SyncSourceGroup,
+  SyncMigrationPreview,
+  SyncRecoveryAction,
+  SyncRecoveryCandidate,
+  SyncRecoveryPreview,
 } from './types'
 import styles from './App.module.css'
 
@@ -621,6 +625,7 @@ function LanguageSwitch() {
 type SyncOperationReview =
   | { kind: 'resync'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
   | { kind: 'resync-undo'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
+  | { kind: 'migration-undo'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
 type UpstreamUpdateReview =
   | { kind: 'update'; planId: string; preview: SkillUpdatePreview }
   | { kind: 'undo'; planId: string; plan: SyncPlan['plan'] }
@@ -631,8 +636,13 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const [syncMode, setSyncMode] = useState<SyncMode>('auto')
   const [selectedSyncMode, setSelectedSyncMode] = useState<SyncMode>('auto')
   const [selected, setSelected] = useState<string[]>([])
+  const [selectedMigration, setSelectedMigration] = useState<string[]>([])
   const [currentChoices, setCurrentChoices] = useState<Record<string, string>>({})
+  const [identityChoices, setIdentityChoices] = useState<Record<string, 'entry' | 'resolved'>>({})
   const [importReview, setImportReview] = useState<{ planId: string; preview: SyncImportPreview } | null>(null)
+  const [migrationReview, setMigrationReview] = useState<{ planId: string; preview: SyncMigrationPreview } | null>(null)
+  const [recovery, setRecovery] = useState<SyncRecoveryPreview>({ batches: [] })
+  const [recoveryReview, setRecoveryReview] = useState<{ planId: string; preview: SyncRecoveryCandidate; action: SyncRecoveryAction } | null>(null)
   const [operationReview, setOperationReview] = useState<SyncOperationReview | null>(null)
   const [updateCheckError, setUpdateCheckError] = useState<unknown | null>(null)
   const [checkingUpdates, setCheckingUpdates] = useState(false)
@@ -649,13 +659,15 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     setLoading(true)
     setError(null)
     try {
-      const [settings, sources] = await Promise.all([
+      const [settings, sources, recovery] = await Promise.all([
         get<{ repositoryPath: string; syncMode: SyncMode }>(token, '/api/v1/sync/settings'),
         get<SyncInventory>(token, '/api/v1/sync/sources'),
+        get<SyncRecoveryPreview>(token, '/api/v1/sync/recovery'),
       ])
       setSyncMode(settings.syncMode)
       setSelectedSyncMode(settings.syncMode)
       setInventory(sources)
+      setRecovery({ batches: recovery.batches ?? [] })
     } catch (caught) {
       setError(caught)
     } finally {
@@ -684,7 +696,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     setPreviewingImport(true)
     try {
       await perform(
-        () => post<{ planId: string; preview: SyncImportPreview }>(token, '/api/v1/sync/import/preview', { selectedGroupIds: selected, currentChoices }),
+        () => post<{ planId: string; preview: SyncImportPreview }>(token, '/api/v1/sync/import/preview', { selectedGroupIds: selected, currentChoices, identityChoices }),
         (result) => setImportReview(result),
       )
     } finally {
@@ -697,10 +709,61 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     await perform(
       () => post<{ imported: number }>(token, '/api/v1/sync/import/apply', { planId: importReview.planId }),
       (result) => {
-        setNotice(t('{count} Skill versions imported. Sources were left in place.', { count: result.imported }))
+        setNotice(result.imported === 0
+          ? t('No new Skill versions were needed; source locations were recorded. Sources were left in place.')
+          : t('{count} Skill versions imported. Sources were left in place.', { count: result.imported }))
         setImportReview(null)
         setSelected([])
         setCurrentChoices({})
+        setIdentityChoices({})
+        void refresh()
+      },
+    )
+  }
+
+  const previewMigration = async (scope: 'global' | 'project') => {
+    const sourceIds = selectedMigration.filter((id) => inventory?.sources.some((source) => source.id === id && source.scope === scope))
+    if (sourceIds.length === 0) return
+    await perform(
+      () => post<{ planId: string; preview: SyncMigrationPreview }>(token, '/api/v1/sync/migration/preview', { selectedSourceIds: sourceIds }),
+      (result) => setMigrationReview(result),
+    )
+  }
+
+  const applyMigration = async () => {
+    if (!migrationReview) return
+    await perform(
+      () => post<{ batchId: string; scope: 'global' | 'project'; entries: SyncMigrationPreview['entries'] }>(token, '/api/v1/sync/migration/apply', { planId: migrationReview.planId }),
+      (result) => {
+        setNotice(t('{count} existing references are now managed in the {scope} scope.', { count: result.entries.length, scope: scopeLabel(result.scope, t) }))
+        setMigrationReview(null)
+        setSelectedMigration([])
+        void refresh()
+      },
+    )
+  }
+
+  const previewMigrationUndo = async (scope: 'global' | 'project') => {
+    await perform(
+      () => post<{ planId: string; plan: SyncPlan['plan'] }>(token, '/api/v1/sync/migration/undo/preview', { scope }),
+      (result) => setOperationReview({ kind: 'migration-undo', planId: result.planId, scope, plan: result.plan }),
+    )
+  }
+
+  const previewRecovery = async (batch: SyncRecoveryCandidate, action: SyncRecoveryAction) => {
+    await perform(
+      () => post<{ planId: string; preview: SyncRecoveryCandidate }>(token, '/api/v1/sync/recovery/preview', { batchId: batch.batchId, action }),
+      (result) => setRecoveryReview({ ...result, action }),
+    )
+  }
+
+  const applyRecovery = async () => {
+    if (!recoveryReview) return
+    await perform(
+      () => post<SyncRecoveryCandidate>(token, '/api/v1/sync/recovery/apply', { planId: recoveryReview.planId }),
+      () => {
+        setNotice(t('Pending recovery was resolved.'))
+        setRecoveryReview(null)
         void refresh()
       },
     )
@@ -771,11 +834,13 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const applyOperationReview = async () => {
     if (!operationReview) return
     const { kind, planId, scope } = operationReview
-    const route = kind === 'resync' ? '/api/v1/sync/resync/apply' : '/api/v1/sync/resync/undo/apply'
+    const route = kind === 'resync' ? '/api/v1/sync/resync/apply'
+      : kind === 'migration-undo' ? '/api/v1/sync/migration/undo/apply'
+        : '/api/v1/sync/resync/undo/apply'
     await perform(
       () => post<{ operation?: string; status?: string }>(token, route, { planId }),
       () => {
-        setNotice(kind === 'resync' ? t('{scope} activations resynchronized.', { scope: scopeLabel(scope, t) }) : t('{scope} resync was undone.', { scope: scopeLabel(scope, t) }))
+        setNotice(kind === 'resync' ? t('{scope} activations resynchronized.', { scope: scopeLabel(scope, t) }) : kind === 'migration-undo' ? t('{scope} reference migration was undone.', { scope: scopeLabel(scope, t) }) : t('{scope} resync was undone.', { scope: scopeLabel(scope, t) }))
         setOperationReview(null)
         void refresh()
       },
@@ -791,11 +856,14 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     ...currentPreviewNeedsChoice,
     ...currentPreviewChoices.filter((identifier) => currentChoices[identifier] && currentChoices[identifier] !== importReview?.preview.currentChoices?.[identifier]),
   ]))
+  const identityChoiceRequired = importReview?.preview.identityChoiceRequired ?? []
+  const identitySourceIDs = Array.from(new Set(importReview?.preview.groups.flatMap((group) => group.sources.filter((source) => source.identityConflict).map((source) => source.id)) ?? []))
+  const pendingIdentityChoices = identitySourceIDs.filter((id) => identityChoices[id] !== importReview?.preview.identityChoices?.[id])
   const conflictingIdentifiers = Array.from(new Set(importReview?.preview.groups.filter((group) => group.conflict).map((group) => group.identifier) ?? []))
   const hasImportableVersion = Boolean(importReview?.preview.groups.some((group) => !group.alreadyPresent))
-  const canApplyImport = Boolean(importReview && currentPreviewNeedsChoice.length === 0 && !hasUnappliedCurrentChoice && importReview.preview.groups.some((group) => !group.alreadyPresent) && importReview.preview.groups.every((group) => !group.conflict))
+  const canApplyImport = Boolean(importReview && importReview.preview.groups.length > 0 && identityChoiceRequired.length === 0 && pendingIdentityChoices.length === 0 && currentPreviewNeedsChoice.length === 0 && !hasUnappliedCurrentChoice && importReview.preview.groups.every((group) => !group.conflict))
   const availableUpdates = updateCheck?.items.filter((item) => item.canUpdate) ?? []
-  const reviewActive = Boolean(importReview || operationReview || upstreamReview)
+  const reviewActive = Boolean(importReview || migrationReview || recoveryReview || operationReview || upstreamReview)
 
   if (loading && !inventory) return <LoadingState label={t('Reading supported Skill locations…')} />
   if (error && !inventory) return <ErrorState error={error} />
@@ -803,7 +871,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
 
   return <div className={styles.syncPage}>
     {notice && <div className={styles.syncNotice} role="status">{notice}<button type="button" onClick={() => setNotice('')} aria-label={t('Dismiss message')}>×</button></div>}
-    {error !== null && !importReview && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+    {error !== null && !importReview && !migrationReview && !recoveryReview && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
 
     <section className={styles.panel} aria-labelledby="sync-library-heading">
       <div className={styles.panelTop}><span className={styles.kicker}>{t('CENTRAL SKILL LIBRARY')}</span><span className={styles.statusDot}><i /> {t('Local only')}</span></div>
@@ -828,13 +896,54 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
         <SyncSourceSection scope="global" groups={allGroups} sources={inventory.sources} selected={selected} disabled={busy || reviewActive} onToggle={toggleGroup} onSelectAll={(ids, checked) => setSelected((current) => checked ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !ids.includes(id)))} />
         <SyncSourceSection scope="project" groups={allGroups} sources={inventory.sources} selected={selected} disabled={busy || reviewActive || !hasProject} onToggle={toggleGroup} onSelectAll={(ids, checked) => setSelected((current) => checked ? Array.from(new Set([...current, ...ids])) : current.filter((id) => !ids.includes(id)))} />
       </div>
+      {inventory.complete === false && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('The source scan is incomplete. Refresh and resolve the scan notes before importing or migrating references.')}</p>}
       {inventory.diagnostics.length > 0 && <div className={styles.syncDiagnostics}>
         <strong>{t('{count} scan notes', { count: inventory.diagnostics.length })}</strong>
         {inventory.diagnostics.map((item, index) => <div key={`${item.path}-${index}`}><code>{item.scope === 'global' ? t('Global') : t('Project')} · {item.path}</code><span>{item.message}</span></div>)}
       </div>}
       <div className={styles.syncActions}>
-        <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selected.length === 0} onClick={() => void createImportPreview()}>{previewingImport ? t('Creating import preview…') : t('Review selected import')}</button>
+        <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || selected.length === 0 || inventory.complete === false} onClick={() => void createImportPreview()}>{previewingImport ? t('Creating import preview…') : t('Review selected import')}</button>
       </div>
+    </section>
+
+    <section className={styles.panel} aria-labelledby="migration-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('EXISTING REFERENCES')}</span><span className={styles.countMark}>{t('Select specific links')}</span></div>
+      <h2 id="migration-heading">{t('Migrate existing references')}</h2>
+      <p>{t('Only supported adapter symlinks can be taken over. Migration replaces the selected link with its exact matching library version and keeps the old source directory.')}</p>
+      <div className={styles.syncScopes}>
+        {(['global', 'project'] as const).map((scope) => <MigrationSourceSection
+          key={scope}
+          scope={scope}
+          sources={inventory.sources}
+          selected={selectedMigration}
+          disabled={busy || reviewActive || (scope === 'project' && !hasProject)}
+          onToggle={(id) => setSelectedMigration((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])}
+        />)}
+      </div>
+      <div className={styles.syncActions}>
+        <button className={styles.secondaryButton} type="button" disabled={busy || reviewActive || !selectionIsInScope(selectedMigration, inventory.sources, 'global') || inventory.complete === false} onClick={() => void previewMigration('global')}>{t('Review global migration')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy || reviewActive || !hasProject || !selectionIsInScope(selectedMigration, inventory.sources, 'project') || inventory.complete === false} onClick={() => void previewMigration('project')}>{t('Review project migration')}</button>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive || !inventory.globalMigrationUndoAvailable} onClick={() => void previewMigrationUndo('global')}>{t('Undo global migration')}</button>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive || !hasProject || !inventory.projectMigrationUndoAvailable} onClick={() => void previewMigrationUndo('project')}>{t('Undo project migration')}</button>
+      </div>
+    </section>
+
+    <section className={styles.panel} aria-labelledby="recovery-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('DURABLE OPERATIONS')}</span><span className={`${styles.pill} ${recovery.batches.length ? styles.pillReady : styles.pillMuted}`}>{t('{count} pending', { count: recovery.batches.length })}</span></div>
+      <h2 id="recovery-heading">{t('Pending recovery')}</h2>
+      <p>{t('Interrupted operations block overlapping writes until you review and confirm a safe completion or rollback.')}</p>
+      {recovery.batches.length === 0 ? <EmptyInline title={t('No pending batches')} detail={t('There are no interrupted Skill sync operations in the current local state.')} /> : <div className={styles.recoveryList}>
+        {recovery.batches.map((batch) => <article className={styles.recoveryRow} key={batch.batchId}>
+          <div className={styles.updateRowHeading}><strong>{batch.kind} · {batch.scope}</strong><span className={`${styles.pill} ${styles.pillQuiet}`}>{batch.status}</span></div>
+          <code>{batch.batchId}</code>
+          {batch.diagnostic && <small>{batch.diagnostic}</small>}
+          {batch.steps.map((step) => <small key={step.id}>{step.classification} · {step.action} · {step.resource}{step.diagnostic ? ` · ${step.diagnostic}` : ''}</small>)}
+          <div className={styles.syncActions}>
+            {batch.actions.map((action) => <button className={action === 'rollback' ? styles.subtleDangerButton : styles.secondaryButton} type="button" key={action} disabled={busy || reviewActive} onClick={() => void previewRecovery(batch, action)}>{recoveryActionLabel(action, t)}</button>)}
+            {batch.actions.length === 0 && <strong className={styles.syncProblem}>{t('Conflict detected. Current files and recovery backups are preserved.')}</strong>}
+          </div>
+        </article>)}
+      </div>}
     </section>
 
     <section className={styles.panel} aria-labelledby="upstream-updates-heading">
@@ -878,7 +987,16 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
       {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
       {previewingImport && <p className={styles.syncReviewStatus} role="status">{t('Updating import preview…')}</p>}
       <p className={styles.syncMuted}>{t('Local timestamps are comparison hints only; choose the version you want to keep.')}</p>
-      {importReview.preview.groups.map((group) => <SyncGroupReview key={group.id} group={group} t={t} />)}
+      {importReview.preview.groups.map((group) => <React.Fragment key={group.id}>
+        <SyncGroupReview group={group} t={t} />
+        {group.sources.filter((source) => source.identityConflict).map((source) => <fieldset className={styles.currentChoice} key={source.id}>
+          <legend>{t('Resolve the identity for {entry}', { entry: source.identifier })}</legend>
+          <small>{t('This entry name differs from the resolved Skill directory identity {identifier}. Choose which identity the library version should use.', { identifier: source.resolvedIdentifier ?? '' })}</small>
+          <label><input type="radio" name={`identity-${source.id}`} checked={identityChoices[source.id] === 'entry'} disabled={busy} onChange={() => { setIdentityChoices((current) => ({ ...current, [source.id]: 'entry' })); setCurrentChoices({}) }} />{t('Use entry identity: {identifier}', { identifier: source.identifier })}</label>
+          <label><input type="radio" name={`identity-${source.id}`} checked={identityChoices[source.id] === 'resolved'} disabled={busy} onChange={() => { setIdentityChoices((current) => ({ ...current, [source.id]: 'resolved' })); setCurrentChoices({}) }} />{t('Use resolved identity: {identifier}', { identifier: source.resolvedIdentifier ?? '' })}</label>
+          {identityChoices[source.id] !== importReview.preview.identityChoices?.[source.id] && <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => void createImportPreview()}>{previewingImport ? t('Updating preview…') : t('Update preview with this identity')}</button>}
+        </fieldset>)}
+      </React.Fragment>)}
       {currentPreviewChoices.map((identifier) => <fieldset className={styles.currentChoice} key={identifier}>
         <legend>{t('Choose the current version for {identifier}', { identifier })}</legend>
         {importReview.preview.groups.filter((group) => group.identifier === identifier).map((group) => <label key={group.id}>
@@ -895,14 +1013,56 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
         {currentChoices[identifier] && currentChoices[identifier] === importReview.preview.currentChoices?.[identifier] && <small>{t('This choice is already included in the preview.')}</small>}
         <button className={styles.secondaryButton} type="button" disabled={busy || !currentChoices[identifier] || currentChoices[identifier] === importReview.preview.currentChoices?.[identifier]} onClick={() => void createImportPreview()}>{previewingImport ? t('Updating preview…') : t('Update preview with this choice')}</button>
       </fieldset>)}
-      {importReview.preview.groups.some((group) => group.alreadyPresent) && <p className={styles.syncMuted}>{t('Versions already in the repository will be skipped.')}</p>}
+      {importReview.preview.groups.some((group) => group.alreadyPresent) && <p className={styles.syncMuted}>{t('Versions already in the repository will be reused, and their source locations will be recorded.')}</p>}
       {pendingCurrentChoices.length > 0 && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('Complete the current-version choices for {skills}: select each candidate and update the preview before confirming.', { skills: pendingCurrentChoices.join(', ') })}</p>}
+      {(identityChoiceRequired.length > 0 || pendingIdentityChoices.length > 0) && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('Choose an identity for each conflicting source and update the preview before importing.')}</p>}
       {pendingCurrentChoices.length === 0 && conflictingIdentifiers.length > 0 && <p className={styles.syncReviewStatus} data-state="blocked" role="alert">{t('Resolve the repository conflicts for {skills} before importing.', { skills: conflictingIdentifiers.join(', ') })}</p>}
-      {pendingCurrentChoices.length === 0 && conflictingIdentifiers.length === 0 && !hasImportableVersion && <p className={styles.syncReviewStatus} data-state="blocked" role="status">{t('All selected versions are already in the repository; there is nothing to import.')}</p>}
-      {canApplyImport && <p className={styles.syncReviewStatus} data-state="ready" role="status">{t('The preview is current and ready for confirmation.')}</p>}
+      {pendingCurrentChoices.length === 0 && conflictingIdentifiers.length === 0 && importReview.preview.groups.length > 0 && !hasImportableVersion && <p className={styles.syncReviewStatus} data-state="ready" role="status">{t('All selected versions are already in the repository; confirmation will record their source locations.')}</p>}
+      {canApplyImport && hasImportableVersion && <p className={styles.syncReviewStatus} data-state="ready" role="status">{t('The preview is current and ready for confirmation.')}</p>}
       <div className={styles.syncActions}>
         <button className={styles.primaryButton} type="button" disabled={busy || !canApplyImport} onClick={() => void applyImport()}>{busy && !previewingImport ? t('Importing…') : t('Confirm import')}</button>
         <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setImportReview(null)}>{t('Cancel')}</button>
+      </div>
+    </section>}
+
+    {migrationReview && <section className={styles.syncReview} aria-labelledby="migration-review-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('REFERENCE MIGRATION PREVIEW')}</span><span className={styles.pill}>{scopeLabel(migrationReview.preview.scope, t)} · {modeLabel(migrationReview.preview.syncMode, t)}</span></div>
+      <h2 id="migration-review-heading">{t('Review existing references')}</h2>
+      {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+      {migrationReview.preview.entries.map((entry) => <div className={styles.syncPlanRow} key={entry.sourceId}>
+        <strong>{entry.identifier} · {entry.target} · {t('Version {version}', { version: entry.versionKey })}</strong>
+        <small>{t('Entry: {path}', { path: entry.entryPath })}</small>
+        <small>{t('Original link: {target}', { target: entry.originalLink })}</small>
+        <small>{t('Resolved source: {path}', { path: entry.realPath })}</small>
+        <small>{t('Exact library version: {path}', { path: entry.versionPath })}</small>
+        <small>{t('Planned materialization: {mode}', { mode: modeLabel(entry.method, t) })}</small>
+        {entry.linkChain.map((hop, index) => <small key={`${hop.path}-${index}`}>{t('Link: {path} → {target}', { path: hop.path, target: hop.target })}</small>)}
+        {entry.impactWarning && <small className={styles.syncProblem}>{entry.impactWarning}</small>}
+      </div>)}
+      {migrationReview.preview.warnings.map((warning) => <p className={styles.syncReviewStatus} key={warning}>{warning}</p>)}
+      {migrationReview.preview.plan.changes.map((change, index) => <div className={styles.syncPlanRow} key={`${change.path}-${index}`}><strong>{change.action}</strong><code>{change.path}</code>{change.detail && <small>{change.detail}</small>}</div>)}
+      <p className={styles.syncMuted}>{t('Only these selected entries change. Existing source directories remain in place. Undo checks the saved link chain and source content.')}</p>
+      <div className={styles.syncActions}>
+        <button className={styles.primaryButton} type="button" disabled={busy || migrationReview.preview.entries.length === 0} onClick={() => void applyMigration()}>{t('Confirm reference migration')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setMigrationReview(null)}>{t('Cancel')}</button>
+      </div>
+    </section>}
+
+    {recoveryReview && <section className={styles.syncReview} aria-labelledby="recovery-review-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOVERY PREVIEW')}</span><span className={styles.pill}>{recoveryActionLabel(recoveryReview.action, t)}</span></div>
+      <h2 id="recovery-review-heading">{t('Review pending batch recovery')}</h2>
+      {error !== null && <div className={styles.syncError} role="alert">{formatError(error)}</div>}
+      <code>{recoveryReview.preview.batchId}</code>
+      {recoveryReview.preview.diagnostic && <p className={styles.syncMuted}>{recoveryReview.preview.diagnostic}</p>}
+      {recoveryReview.preview.steps.map((step) => <div className={styles.syncPlanRow} key={step.id}>
+        <strong>{step.classification} · {step.action}</strong><code>{step.resource}</code>
+        {step.beforeState && <small>{t('Before state: {state}', { state: step.beforeState })}</small>}
+        {step.currentState && <small>{t('Current state: {state}', { state: step.currentState })}</small>}
+        {step.diagnostic && <small className={styles.syncProblem}>{step.diagnostic}</small>}
+      </div>)}
+      <div className={styles.syncActions}>
+        <button className={recoveryReview.action === 'rollback' ? styles.subtleDangerButton : styles.primaryButton} type="button" disabled={busy} onClick={() => void applyRecovery()}>{recoveryConfirmLabel(recoveryReview.action, t)}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setRecoveryReview(null)}>{t('Cancel')}</button>
       </div>
     </section>}
 
@@ -926,12 +1086,12 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     </section>}
 
     {operationReview && <section className={styles.syncReview} aria-labelledby="resync-review-heading">
-      <div className={styles.panelTop}><span className={styles.kicker}>{operationReview.kind === 'resync' ? t('RESYNC PREVIEW') : t('OPERATION UNDO')}</span><span className={styles.pill}>{scopeLabel(operationReview.scope, t)}</span></div>
-      <h2 id="resync-review-heading">{operationReview.kind === 'resync' ? t('Review managed destinations') : t('Review the latest scope operation')}</h2>
+      <div className={styles.panelTop}><span className={styles.kicker}>{operationReview.kind === 'resync' ? t('RESYNC PREVIEW') : operationReview.kind === 'migration-undo' ? t('MIGRATION UNDO') : t('OPERATION UNDO')}</span><span className={styles.pill}>{scopeLabel(operationReview.scope, t)}</span></div>
+      <h2 id="resync-review-heading">{operationReview.kind === 'resync' ? t('Review managed destinations') : operationReview.kind === 'migration-undo' ? t('Review reference migration Undo') : t('Review the latest scope operation')}</h2>
       {operationReview.plan.changes.length ? operationReview.plan.changes.map((change, index) => <div className={styles.syncPlanRow} key={`${change.path}-${index}`}><strong>{change.action}</strong><code>{change.path}</code>{change.detail && <small>{change.detail}</small>}</div>) : <EmptyInline title={t('No managed activations to resync')} detail={t('This scope has no journal-managed Skills.')} />}
       {operationReview.plan.warnings.map((warning) => <p className={styles.syncMuted} key={warning}>{warning}</p>)}
       <div className={styles.syncActions}>
-        <button className={operationReview.kind === 'resync' ? styles.primaryButton : styles.subtleDangerButton} type="button" disabled={busy || operationReview.plan.changes.length === 0} onClick={() => void applyOperationReview()}>{operationReview.kind === 'resync' ? t('Confirm resync') : t('Confirm scope Undo')}</button>
+        <button className={operationReview.kind === 'resync' ? styles.primaryButton : styles.subtleDangerButton} type="button" disabled={busy || operationReview.plan.changes.length === 0} onClick={() => void applyOperationReview()}>{operationReview.kind === 'resync' ? t('Confirm resync') : operationReview.kind === 'migration-undo' ? t('Confirm migration Undo') : t('Confirm scope Undo')}</button>
         <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setOperationReview(null)}>{t('Cancel')}</button>
       </div>
     </section>}
@@ -987,13 +1147,52 @@ function SyncSourceSection({ scope, groups, sources, selected, disabled, onToggl
         {group.sources.filter((source) => source.scope === scope).map((source) => <small key={source.id}>
           {source.location} · {source.path} · {source.originType === 'local' ? t('Local source') : `${source.originType || t('Unknown source')} · ${source.origin || t('Unknown source')}`}
           {source.modifiedAt ? ` · ${t('Local modified: {time}', { time: new Date(source.modifiedAt).toLocaleString() })}` : ` · ${t('Local modification time unavailable')}`}
+          {source.identityConflict && ` · ${t('Identity conflict: resolved Skill directory is {identifier}', { identifier: source.resolvedIdentifier ?? '' })}`}
         </small>)}
+        {group.sources.filter((source) => source.scope === scope).map((source) => <React.Fragment key={`${source.id}-reference`}>
+          {source.entryType && <small>{t('Entry type: {type}', { type: source.entryType })}</small>}
+          {source.realPath && source.realPath !== source.path && <small>{t('Resolved source: {path}', { path: source.realPath })}</small>}
+          {(source.linkChain ?? []).map((hop, index) => <small key={`${source.id}-${hop.path}-${index}`}>{t('Link: {path} → {target}', { path: hop.path, target: hop.target })}</small>)}
+        </React.Fragment>)}
         <small>{t('Content checksum: {checksum}', { checksum: group.checksum })}</small>
         {group.newerLocalModification && <small><strong className={`${styles.pill} ${styles.pillReady}`}>{t('Local modification time is newer')}</strong></small>}
         {group.sources.length > 1 && <small>{t('Same content appears in {count} locations', { count: group.sources.length })}</small>}
       </span>
     </label>)}</div>
     {otherSources.map((source) => <div className={styles.syncSourceNote} key={source.id}><strong>{source.identifier}</strong><small>{source.alreadyManaged ? t('Already managed as {method}', { method: source.managedMaterial ?? '' }) : t('Not eligible · {problem}', { problem: source.problem ?? '' })}</small><code>{source.path}</code></div>)}
+  </section>
+}
+
+function MigrationSourceSection({ scope, sources, selected, disabled, onToggle }: {
+  scope: 'global' | 'project'
+  sources: SyncSource[]
+  selected: string[]
+  disabled: boolean
+  onToggle: (id: string) => void
+}) {
+  const { t } = useLanguage()
+  const label = scopeLabel(scope, t)
+  const scoped = sources.filter((source) => source.scope === scope)
+  const eligible = scoped.filter((source) => source.migrationEligible && source.entryType === 'external-symlink' && source.eligible)
+  const importOnly = scoped.filter((source) => source.eligible && !source.migrationEligible && !source.alreadyManaged)
+  return <section className={styles.syncScope} aria-label={t('{scope} reference entries', { scope: label })}>
+    <div className={styles.syncScopeHeading}><div><span className={styles.kicker}>{scope === 'global' ? t('GLOBAL REFERENCES') : t('PROJECT REFERENCES')}</span><h3>{label}</h3></div><span className={styles.countMark}>{eligible.length}</span></div>
+    {eligible.length === 0 ? <EmptyInline title={t('No eligible references')} detail={scope === 'project' ? t('This project has no supported external adapter links to migrate.') : t('No supported global adapter links can be migrated.')} /> : <div className={styles.syncGroupList}>
+      {eligible.map((source) => <label className={styles.syncSourceRow} key={source.id}>
+        <input type="checkbox" checked={selected.includes(source.id)} disabled={disabled} onChange={() => onToggle(source.id)} aria-label={t('Select reference {identifier} at {path}', { identifier: source.identifier, path: source.path })} />
+        <span><strong>{source.identifier} · {source.target}</strong>
+          <small>{t('Entry: {path}', { path: source.path })}</small>
+          {source.originalLink && <small>{t('Original link: {target}', { target: source.originalLink })}</small>}
+          {source.realPath && <small>{t('Resolved source: {path}', { path: source.realPath })}</small>}
+          {(source.linkChain ?? []).map((hop, index) => <small key={`${hop.path}-${index}`}>{t('Link: {path} → {target}', { path: hop.path, target: hop.target })}</small>)}
+        </span>
+      </label>)}
+    </div>}
+    {importOnly.map((source) => <div className={styles.syncSourceNote} key={source.id}>
+      <strong>{source.identifier} · {t('Import only')}</strong>
+      <small>{t('This entry can be copied into the library, but its location is not enabled for managed reference migration.')}</small>
+      <code>{source.path}</code>
+    </div>)}
   </section>
 }
 
@@ -1010,6 +1209,15 @@ function SyncGroupReview({ group, t }: { group: SyncSourceGroup; t: (source: str
 }
 
 function scopeLabel(scope: 'global' | 'project', t: (source: string) => string) { return scope === 'global' ? t('Global') : t('Project') }
+function selectionIsInScope(ids: string[], sources: SyncSource[], scope: 'global' | 'project') {
+  return ids.some((id) => sources.some((source) => source.id === id && source.scope === scope))
+}
+function recoveryActionLabel(action: SyncRecoveryAction, t: (source: string) => string) {
+  return action === 'resolve-import' ? t('Review import recovery') : action === 'complete' ? t('Review completion') : t('Review rollback')
+}
+function recoveryConfirmLabel(action: SyncRecoveryAction, t: (source: string) => string) {
+  return action === 'resolve-import' ? t('Resolve import recovery') : action === 'complete' ? t('Confirm completion') : t('Confirm rollback')
+}
 function modeLabel(mode: SyncMode, t: (source: string) => string) { return t(mode === 'auto' ? 'Automatic' : mode === 'symlink-only' ? 'Symlink only' : 'Copy only') }
 function modeDescription(mode: SyncMode, t: (source: string) => string) {
   return t(mode === 'auto' ? 'Try a symbolic link first, then copy if links are unavailable.' : mode === 'symlink-only' ? 'Use symbolic links. Link errors are shown for review.' : 'Copy Skill files into the agent location.')

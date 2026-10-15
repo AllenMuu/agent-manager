@@ -65,7 +65,7 @@ func destinationCopyMatches(destination, source string) (bool, error) {
 	return sourceDigest == destinationDigest, nil
 }
 
-func publishSkillCopy(project, destination, source string, replace bool, snapshot operation.Snapshot, beforeFinalPublish func() error) error {
+func publishSkillCopy(project, destination, source string, replace bool, snapshot operation.Snapshot, beforeStageMove func(string) error, beforeFinalPublish func() error) error {
 	sourceDigest, err := fingerprintPlainSkillTree(source)
 	if err != nil {
 		return err
@@ -126,6 +126,11 @@ func publishSkillCopy(project, destination, source string, replace bool, snapsho
 
 	if !snapshot.Exists || filepath.Clean(snapshot.Path) != filepath.Clean(destination) || !matchesSnapshot(snapshot) {
 		return errors.Join(ErrUnsafePath, ErrLateConflict)
+	}
+	if beforeStageMove != nil {
+		if err := beforeStageMove(stage.Path()); err != nil {
+			return err
+		}
 	}
 	if err := stage.MoveFrom(name); err != nil {
 		return err

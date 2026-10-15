@@ -96,14 +96,9 @@ func (s *Service) PreviewResync(scope ResyncScope, root string) (ResyncPlan, err
 			return ResyncPlan{}, err
 		}
 		plan.Options.ExpectedConflictFingerprints[item.Path] = pathFingerprint
-		if _, exists := skillIndices[item.Identifier]; !exists {
-			skillIndices[item.Identifier] = len(plan.Skills)
+		if _, exists := skillIndices[filepath.Clean(skill.SourcePath)]; !exists {
+			skillIndices[filepath.Clean(skill.SourcePath)] = len(plan.Skills)
 			plan.Skills = append(plan.Skills, skill)
-		} else {
-			prior := plan.Skills[skillIndices[item.Identifier]]
-			if filepath.Clean(prior.SourcePath) != filepath.Clean(skill.SourcePath) {
-				return ResyncPlan{}, fmt.Errorf("managed activations for %s refer to different repository versions", item.Identifier)
-			}
 		}
 		if !targetSet[item.Target] {
 			targetSet[item.Target] = true
@@ -120,9 +115,25 @@ func (s *Service) PreviewResync(scope ResyncScope, root string) (ResyncPlan, err
 		if !alreadySelected {
 			plan.Options.TargetSelections[item.Identifier] = append(selected, item.Target)
 		}
+		plan.Options.TargetBindings = append(plan.Options.TargetBindings, TargetBinding{Target: item.Target, Skill: skill})
 	}
-	sort.Slice(plan.Skills, func(i, j int) bool { return plan.Skills[i].Identifier < plan.Skills[j].Identifier })
+	sort.Slice(plan.Skills, func(i, j int) bool {
+		if plan.Skills[i].Identifier != plan.Skills[j].Identifier {
+			return plan.Skills[i].Identifier < plan.Skills[j].Identifier
+		}
+		return plan.Skills[i].SourcePath < plan.Skills[j].SourcePath
+	})
 	sort.Slice(plan.Targets, func(i, j int) bool { return plan.Targets[i] < plan.Targets[j] })
+	sort.Slice(plan.Options.TargetBindings, func(i, j int) bool {
+		left, right := plan.Options.TargetBindings[i], plan.Options.TargetBindings[j]
+		if left.Target != right.Target {
+			return left.Target < right.Target
+		}
+		if left.Skill.Identifier != right.Skill.Identifier {
+			return left.Skill.Identifier < right.Skill.Identifier
+		}
+		return left.Skill.SourcePath < right.Skill.SourcePath
+	})
 	if scope == ResyncGlobal {
 		plan.Plan, err = s.PreviewGlobalMany(absoluteRoot, plan.Skills, plan.Targets, plan.Options)
 	} else {
