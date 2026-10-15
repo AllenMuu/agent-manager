@@ -221,7 +221,7 @@ agent-manager web --project . --port 0
 
 每个进程只注册一个规范项目。控制台没有任意路径读取接口；激活、移除和可用的撤销操作会显示由服务端生成、有效期为 10 分钟的计划，并要求操作者再次确认。替换冲突还需要额外的强制确认。撤销仅覆盖控制台管理的项目目录；涉及共享 Skill 库或其他非托管路径的操作不会提供撤销入口。
 
-“诊断”页会把 Doctor 问题和静态项目扫描记录分开展示。若失效的托管链接能在已配置 Skill 库中找到可用目标，或 Git 即将跟踪某个托管链接，页面可为所选问题生成预览并在确认后修复：前者只重新关联该链接，后者只向 `.gitignore` 追加精确规则。操作会写入日志，可在操作记录中撤销。无效目录条目、未托管资源、归属不明确的链接、不受支持的位置，以及已在 Git 索引中的链接会显示人工处理建议，不会自动修改。适配器能力仍显示在 Agent 清单中，不属于 Doctor 检查结果。
+“诊断”页会把 Doctor 问题和静态项目扫描记录分开展示。若失效的托管链接能在已配置 Skill 库中找到可用目标，或 Git 即将跟踪某个托管链接，页面可为所选问题生成预览并在确认后修复：前者只重新关联该链接，后者只向 `.gitignore` 追加精确规则。操作会写入日志，可在操作记录中撤销。无效目录条目、未托管资源、归属不明确的链接、不受支持的位置，以及已在 Git 索引中的链接会显示人工处理建议，不会自动修改。Doctor 还会按 ID 和状态报告待处理 Memory 提案，不展示提案内容，也不会接受或拒绝提案；未初始化流水线的项目不会因此创建数据库。
 
 ## 规范化 SubAgent
 
@@ -240,13 +240,13 @@ intent → spec → plan → implementation → verification
 
 工件使用版本化 `v1` 信封，类型包括 `intent`、`spec`、`plan`、`implementation`、`verification` 和 `lessons`。Lessons 使用带范围和置信度的结构化条目，不会自动写入 Memory。
 
-内置角色包括 planner、implementer、reviewer 和 verifier。角色契约声明输入、输出及文件系统、Shell、网络权限；`roles bind` 会报告适配器无法保证的能力。`roles context` 会将受限的项目指引、已选 Skills、角色输入工件和可选 Memory 搜索结果打包为交接 JSON，但不会调用代理或写入 Memory。后续步骤由外部代理或人工完成，再通过 `artifacts save` 保存结果。
+内置角色包括 planner、implementer、reviewer 和 verifier。角色契约声明输入、输出及文件系统、Shell、网络权限；`roles bind` 会报告适配器无法保证的能力。流水线已初始化时，`roles context` 会将受限项目指引、已选 Skills、角色输入工件、紧凑流水线摘要和受限的规范 Memory 结果打包为交接 JSON。派生记忆和原始证据仍需显式继续检索。该命令不会调用代理或写入 Memory；后续由外部代理或人工生成工件，再通过 `artifacts save` 保存。
 
 本地评估套件位于 `evals/<suite>/cases/<case-id>/`，结果保存在被忽略的 `.agent-manager/evals/`。响应文件评估读取外部生成的 `<case-id>.md`，治理套件读取本地事件证据；两者都使用确定性规则，不会启动代理或调用 LLM 裁判。
 
 ## 共享 Memory
 
-`memory status` 检查配置的提供器、能力和作用范围。若配置了本地文件提供器，Agent Manager 会确认文件状态；Claude Code、Codex 和 Pi 当前没有原生共享 Memory 映射，因此会显示为不支持。
+`memory status` 检查配置的提供器、能力和作用范围。若配置了本地文件提供器，Agent Manager 会确认文件状态；Claude Code、Codex 和 Pi 当前没有原生规范 Memory 映射，因此会显示为不支持。项目经验流水线另提供显式、只读的 Codex/Pi 会话证据导入。
 
 写入必须由操作者明确调用并确认。可提交文本或经过校验的 lessons 工件：
 
@@ -257,6 +257,71 @@ agent-manager memory promote --scope project \
 ```
 
 计划只展示提供器、作用范围和字节数，不会回显知识内容。`memory promote` 写入的是提供器拥有的数据，不属于文件操作日志，也不能通过 `undo` 撤销。Skill、SubAgent、状态、目录或列表流程都不会自动复制内容或代理会话数据到 Memory。
+
+### 本地项目经验流水线
+
+显式启用后，流水线把派生经验保存在项目目录的
+`.agent-manager/memory.db` SQLite 数据库中，该文件及其 sidecar 已加入
+Git 忽略规则。流水线不复制或接管运行历史；执行 `memory status` 或读取规范
+Memory 不会初始化数据库或导入运行。先注册稳定项目身份，再显式初始化和导入：
+
+```sh
+agent-manager memory project register --project . --yes
+agent-manager memory pipeline init --project .
+agent-manager memory pipeline import --project .
+agent-manager memory pipeline extract ev_<id> --project .
+agent-manager memory pipeline consolidate --project .
+agent-manager memory pipeline summary --project .
+agent-manager memory pipeline search "policy decision" --project .
+agent-manager memory pipeline evidence ev_<id> --project .
+```
+
+如需读取原生会话证据，必须显式指定来源目录；对 `extract`、`consolidate`、`evidence` 和候选检测命令重复相同参数：
+
+```sh
+agent-manager memory pipeline import --project . \
+  --codex-sessions-dir ~/.codex/sessions \
+  --pi-sessions-dir ~/.pi/agent/sessions
+```
+
+只会导入工作目录与已注册项目一致且带有终止标记的会话。流水线仅保存受限且明确标为不可信的摘要和来源哈希；提示词与回复仍留在运行时的 JSONL 文件中。再次读取时，如果来源缺失或内容已变化，读取会失败。
+
+导入只保存不可变来源引用和哈希；提取会通过来源 provider 读取原始证据，并生成带来源、
+始终不可信的派生记录。当前 Agent Manager 运行记录只有生命周期、策略和治理审计数据，
+不包含对话文本、命令或通用代理输出；来源缺少的字段会保持为空。检索按层进行：先看紧凑
+摘要，再通过 Gateway 查询规范 Memory，按需搜索派生记录，最后仅通过 `pipeline evidence`
+显式打开原始证据。
+
+派生记录不会进入规范 Memory，除非操作者审核提案并确认准确的 Gateway 计划。拒绝只修改本地
+提案账本；发布结果不确定时只能对账，不能重放。活跃派生记录最多保留 500 条；超出上限的低优先级记录会
+标记为 expired，来源 lineage 仍保留。只有存在明确替代记录时才会标记为 superseded。如需停止向角色交接注入本地摘要但保留流水线状态，可在
+`roles context` 命令上添加 `--disable-memory-pipeline`。已接受的规范记录属于独立 Gateway 写入；
+如需删除，必须单独执行规范 Memory 生命周期操作。
+
+```sh
+agent-manager memory pipeline proposal list --project .
+agent-manager memory pipeline proposal create <derived-id> --project .
+agent-manager memory pipeline proposal accept <proposal-id> --project .
+agent-manager memory pipeline proposal reject <proposal-id> --project .
+agent-manager memory pipeline proposal reconcile <proposal-id> --project .
+agent-manager memory pipeline candidates detect --project .
+agent-manager memory pipeline candidates claim <evidence-id> \
+  --key cache-key-validation --workflow "Validate cache keys include project identity." \
+  --outcome verified --generalizable=true --project . --yes
+agent-manager memory pipeline candidates list --project .
+agent-manager memory pipeline candidates review <candidate-id> --decision approve --project .
+agent-manager memory pipeline candidates convert <candidate-id> \
+  --identifier reviewed-procedure --library /path/to/skill-repository --project . --yes
+```
+
+Skill 候选必须来自至少两个独立的已完成运行，并且每个运行都明确报告成功或已验证结果，
+同时明确声明该 procedure 可泛化。内置 Agent Manager、Codex 和 Pi 证据适配器不会从治理日志或
+会话文本中推断 procedure。操作者检查某次运行后，可用 `candidates claim` 附加有界的本地声明；
+声明仍然不可信，候选仍需单独审核。声明或检测原生会话证据时，需再次传入显式 Codex/Pi 来源目录。
+任一已导入运行报告同一 procedure 失败，都会使已有候选失效并保留该证据引用。检测后又导入新证据时，必须重新检测，
+才能评审或转换。批准只记录候选评审决定；转换还需单独确认，并会向指定 Skill 仓库添加一个
+不可信版本，不会安装或激活它。
+停用流水线只需停止调用相关命令；数据库会保留，状态检查和普通读取不会删除或迁移它。
 
 ## 运行时策略与治理
 

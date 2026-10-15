@@ -1,3 +1,4 @@
 .worktrees/
 .agent-manager/evals/
+**/.agent-manager/memory.db*
 web/node_modules/

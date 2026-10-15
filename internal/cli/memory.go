@@ -37,6 +37,7 @@ func newMemoryCommand(rootOptions *rootOptions) *cobra.Command {
 	command.AddCommand(newMemoryIntegrationConfigCommand())
 	command.AddCommand(newMemoryPromoteCommand(rootOptions))
 	command.AddCommand(newMemoryProjectCommand(rootOptions))
+	command.AddCommand(newMemoryPipelineCommand(rootOptions))
 	for _, operation := range []memory.Operation{memory.OperationAdd, memory.OperationUpdate, memory.OperationSupersede, memory.OperationForget, memory.OperationImport} {
 		command.AddCommand(newStructuredMutationCommand(rootOptions, operation))
 	}

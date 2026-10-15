@@ -2,11 +2,13 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/memorypipeline"
 	"github.com/AllenMuu/skill-manager/internal/role"
 	"github.com/AllenMuu/skill-manager/internal/taskcontext"
 	"github.com/spf13/cobra"
@@ -36,6 +38,7 @@ func newRolesCommand(rootOptions *rootOptions) *cobra.Command {
 func newRoleContextCommand(rootOptions *rootOptions) *cobra.Command {
 	var project, library, target, roleID, registryPath string
 	var selectedSkills []string
+	var disableMemoryPipeline bool
 	command := &cobra.Command{Use: "context <task-id>", Short: "Assemble a role's canonical task inputs for an external agent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		contract, ok := role.For(role.ID(roleID))
 		if !ok {
@@ -50,11 +53,37 @@ func newRoleContextCommand(rootOptions *rootOptions) *cobra.Command {
 		if err != nil {
 			return fmt.Errorf("invalid Memory configuration")
 		}
+		var gateway *memory.Gateway
+		var owner memory.Owner
 		if loaded.Memory != nil && loaded.Memory.Provider == memory.StructuredLocalProviderID {
-			gateway, owner, err := configuredGateway(rootOptions, memoryOwnerOptions{project: project, registry: registryPath}, false)
+			gateway, owner, err = configuredGateway(rootOptions, memoryOwnerOptions{project: project, registry: registryPath}, false)
 			if err != nil {
 				return err
 			}
+		}
+		pipelineStore, pipelineErr := (*memorypipeline.Store)(nil), memorypipeline.ErrPipelineNotInitialized
+		if !disableMemoryPipeline {
+			pipelineStore, pipelineErr = memorypipeline.OpenProjectStoreReadOnly(project)
+		}
+		if pipelineErr == nil {
+			if owner.Kind != memory.OwnerProject {
+				owner, _, err = pipelineProject(rootOptions, memoryOwnerOptions{project: project, registry: registryPath})
+				if err != nil {
+					_ = pipelineStore.Close()
+					return err
+				}
+			}
+			resolver, resolverErr := memorypipeline.NewResolver(owner.ProjectID, pipelineStore, gateway, nil)
+			if resolverErr != nil {
+				_ = pipelineStore.Close()
+				return resolverErr
+			}
+			defer pipelineStore.Close()
+			options.MemoryPipeline = resolver
+			options.MemoryPipelineOwner = owner
+		} else if !errors.Is(pipelineErr, memorypipeline.ErrPipelineNotInitialized) {
+			return pipelineErr
+		} else if gateway != nil {
 			options.MemoryGateway = gateway
 			options.MemoryOwner = owner
 		}
@@ -74,6 +103,7 @@ func newRoleContextCommand(rootOptions *rootOptions) *cobra.Command {
 	command.Flags().StringVar(&roleID, "role", "", "canonical role id")
 	command.Flags().StringVar(&registryPath, "memory-registry", "", "explicit Memory project registry file")
 	command.Flags().StringSliceVar(&selectedSkills, "skill", nil, "explicitly selected Skill identifier (repeatable)")
+	command.Flags().BoolVar(&disableMemoryPipeline, "disable-memory-pipeline", false, "omit the local pipeline summary from this handoff")
 	_ = command.MarkFlagRequired("agent")
 	_ = command.MarkFlagRequired("role")
 	return command

@@ -113,15 +113,101 @@ The file must already exist, be an absolute path to a direct regular local file,
 and not be a symlink. Discovery rejects missing, replaced, non-regular, or
 inaccessible files with an actionable status; it never creates the file.
 Configure a non-secret provider reference rather than placing credentials in
-this file. The initial release does not provide a native Memory integration for
-Claude Code, Codex, or Pi, so `memory status` reports those mappings as
-unsupported even when the local provider is available.
+this file. `memory status` reports native canonical Memory mappings for Claude
+Code, Codex, and Pi as unsupported. The local experience pipeline separately
+supports explicit, read-only Codex and Pi session evidence imports.
 
 For owned canonical records, explicitly select `structured-local` and use the
 [Memory Gateway guide](docs/memory-gateway.md) for registration, confirmed
 lifecycle operations, bounded search and read-only role context. Status separates
 requested text search from unsupported implementation; existing text promotion
 remains available.
+
+### Local project memory experience pipeline
+
+The opt-in pipeline keeps derived experience in the project-local
+`.agent-manager/memory.db` SQLite database (ignored by Git). It never copies or
+owns run history and never initializes or imports data as a side effect of
+`memory status` or canonical Memory reads. Register the stable project owner,
+then initialize and import explicitly:
+
+```sh
+agent-manager memory project register --project . --yes
+agent-manager memory pipeline init --project .
+agent-manager memory pipeline import --project .
+agent-manager memory pipeline extract ev_<id> --project .
+agent-manager memory pipeline consolidate --project .
+agent-manager memory pipeline summary --project .
+agent-manager memory pipeline search "policy decision" --project .
+agent-manager memory pipeline evidence ev_<id> --project .
+```
+
+To opt into native session evidence, name the source directories explicitly and
+repeat the same options for `extract`, `consolidate`, `evidence`, and candidate
+claim/detection commands:
+
+```sh
+agent-manager memory pipeline import --project . \
+  --codex-sessions-dir ~/.codex/sessions \
+  --pi-sessions-dir ~/.pi/agent/sessions
+```
+
+Only sessions with a terminal marker whose recorded working directory matches
+the registered project are imported. The pipeline stores a bounded, explicitly
+untrusted summary and source digest;
+prompts and responses remain in the native JSONL files. Changed or missing
+sources are rejected when reopened.
+
+Import stores immutable references and hashes; extraction reads the referenced
+source through its provider and creates untrusted, provenance-linked derived
+records. Current Agent Manager run records contain lifecycle, policy, and
+governance audit data, not conversation transcripts, commands, or general agent
+outputs, so missing fields remain absent. Retrieval is progressive: inspect the
+compact summary, query canonical Memory through the Gateway, search derived
+records explicitly, and open raw evidence only with `pipeline evidence`.
+
+Derived records remain outside canonical Memory until an operator reviews a
+proposal and confirms the exact Gateway plan. Rejecting changes only the local
+proposal ledger; uncertain publication must be reconciled and is never replayed.
+The active derived set is capped at 500 records; lower-ranked records beyond
+the cap expire while their evidence lineage remains available. Superseded is
+reserved for records with an explicit replacement. To stop injecting
+the local summary into a role handoff without deleting pipeline state, pass
+`--disable-memory-pipeline` to `roles context`. Accepted
+canonical records are separate Gateway writes and require their own explicit
+canonical lifecycle operation if they should be removed.
+
+```sh
+agent-manager memory pipeline proposal list --project .
+agent-manager memory pipeline proposal create <derived-id> --project .
+agent-manager memory pipeline proposal accept <proposal-id> --project .
+agent-manager memory pipeline proposal reject <proposal-id> --project .
+agent-manager memory pipeline proposal reconcile <proposal-id> --project .
+agent-manager memory pipeline candidates detect --project .
+agent-manager memory pipeline candidates claim <evidence-id> \
+  --key cache-key-validation --workflow "Validate cache keys include project identity." \
+  --outcome verified --generalizable=true --project . --yes
+agent-manager memory pipeline candidates list --project .
+agent-manager memory pipeline candidates review <candidate-id> --decision approve --project .
+agent-manager memory pipeline candidates convert <candidate-id> \
+  --identifier reviewed-procedure --library /path/to/skill-repository --project . --yes
+```
+
+Skill candidates require at least two independent completed runs with explicit
+successful or verified outcomes and an explicit generalizable procedure claim.
+The built-in Agent Manager, Codex, and Pi evidence adapters do not infer
+procedure claims from governance logs or transcript text. After inspecting a
+run, an operator may attach a bounded local claim with `candidates claim`; the
+claim stays untrusted and candidate detection still requires separate review.
+Repeat the explicit Codex/Pi source-directory flags when claiming or detecting
+native-session evidence.
+Any imported run that reports the same procedure failed invalidates an existing
+candidate. New evidence also makes prior detection stale, so rerun detection
+before review or conversion. Approval records a review decision; conversion
+requires a second explicit confirmation and adds one untrusted version to the
+selected Skill repository without installing or activating it. Disable the
+pipeline by ceasing its commands; its database is preserved, and `memory status`
+or ordinary reads do not delete or migrate it.
 
 ## Getting started
 
@@ -168,6 +254,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
 | `memory status` | Show configured Memory provider availability and per-agent capability mappings (read-only) |
 | `memory promote` | Explicitly append confirmed text or typed lessons to the configured provider |
+| `memory pipeline` | Explicitly initialize, import, search, and review project-local derived experience |
 | `select` | Interactive workflow: search, choose skills, choose targets, confirm |
 | `add <skill>` | Activate a library skill for selected target agents |
 | `install <skill-id>...` | Preview and install explicitly selected Skills into a project or, with `--global`, the current user's global agent directories |
@@ -303,7 +390,7 @@ agent-manager doctor --project .                    # show tracked/ignored/would
 agent-manager doctor --project . --update-gitignore --yes  # add exact scoped ignores
 ```
 
-`doctor` only ever appends the exact paths of managed links it owns; it never rewrites unrelated tracking rules.
+`doctor` only ever appends the exact paths of managed links it owns; it never rewrites unrelated tracking rules. It also reports pending memory proposals by ID and state without displaying their contents or changing proposal state.
 
 ## Recovery
 
@@ -352,9 +439,10 @@ bind` reports unsupported runtime permissions until a runtime integration can
 verify them; resource placement support does not prove execution permission.
 
 The task context resolver assembles bounded root `AGENTS.md`/`CLAUDE.md`
-guidance, selected Skills, role input artifacts, and optionally
-search results from an injected read/search-capable Memory provider. It does
-not invoke an agent or write to Memory. An explicitly selected Skill with an
+guidance, selected Skills, role input artifacts, and optionally a compact local
+pipeline summary plus bounded canonical Memory. Derived records and raw run
+evidence stay opt-in drill-downs. It does not invoke an agent or write to Memory.
+An explicitly selected Skill with an
 advisory compatibility mismatch is included with a warning. The `roles context`
 command accepts a task ID, role, and agent, then emits a JSON handoff containing the
 role's canonical input artifacts and its binding gaps. An external agent or
