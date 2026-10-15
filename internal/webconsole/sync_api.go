@@ -26,24 +26,30 @@ const syncPlanTTL = 10 * time.Minute
 type syncPlanKind string
 
 const (
-	syncPlanImport     syncPlanKind = "import"
-	syncPlanResync     syncPlanKind = "resync"
-	syncPlanResyncUndo syncPlanKind = "resync-undo"
-	syncPlanUpdate     syncPlanKind = "upstream-update"
-	syncPlanUpdateUndo syncPlanKind = "upstream-update-undo"
+	syncPlanImport        syncPlanKind = "import"
+	syncPlanResync        syncPlanKind = "resync"
+	syncPlanResyncUndo    syncPlanKind = "resync-undo"
+	syncPlanUpdate        syncPlanKind = "upstream-update"
+	syncPlanUpdateUndo    syncPlanKind = "upstream-update-undo"
+	syncPlanMigration     syncPlanKind = "reference-migration"
+	syncPlanMigrationUndo syncPlanKind = "reference-migration-undo"
+	syncPlanRecovery      syncPlanKind = "recovery"
 )
 
 type storedSyncPlan struct {
-	id            string
-	kind          syncPlanKind
-	expiresAt     time.Time
-	importPreview skillsync.Preview
-	upstreamPlan  skillsync.PreparedUpdatePlan
-	resync        lifecycle.ResyncPlan
-	undoScope     lifecycle.ResyncScope
-	undoJournal   *operation.Journal
-	undoPlan      operation.Plan
-	undoEntry     operation.Entry
+	id             string
+	kind           syncPlanKind
+	expiresAt      time.Time
+	importPreview  skillsync.Preview
+	upstreamPlan   skillsync.PreparedUpdatePlan
+	resync         lifecycle.ResyncPlan
+	undoScope      lifecycle.ResyncScope
+	undoJournal    *operation.Journal
+	undoPlan       operation.Plan
+	undoEntry      operation.Entry
+	migration      skillsync.MigrationPreview
+	recovery       skillsync.RecoveryCandidate
+	recoveryAction skillsync.RecoveryAction
 }
 
 func (s *Server) handleSyncAPI(w http.ResponseWriter, r *http.Request) bool {
@@ -71,6 +77,20 @@ func (s *Server) handleSyncAPI(w http.ResponseWriter, r *http.Request) bool {
 		s.handleImportPreview(w, r)
 	case "/api/v1/sync/import/apply":
 		s.handleImportApply(w, r)
+	case "/api/v1/sync/migration/preview":
+		s.handleMigrationPreview(w, r)
+	case "/api/v1/sync/migration/apply":
+		s.handleMigrationApply(w, r)
+	case "/api/v1/sync/migration/undo/preview":
+		s.handleMigrationUndoPreview(w, r)
+	case "/api/v1/sync/migration/undo/apply":
+		s.handleMigrationUndoApply(w, r)
+	case "/api/v1/sync/recovery":
+		s.handleRecoveryList(w, r)
+	case "/api/v1/sync/recovery/preview":
+		s.handleRecoveryPreview(w, r)
+	case "/api/v1/sync/recovery/apply":
+		s.handleRecoveryApply(w, r)
 	case "/api/v1/sync/resync/preview":
 		s.handleResyncPreview(w, r)
 	case "/api/v1/sync/resync/apply":
@@ -114,6 +134,8 @@ func (s *Server) handleSyncSettings(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid_sync_mode", "Choose auto, symlink-only, or copy-only.")
 			return
 		}
+		s.operationMu.Lock()
+		defer s.operationMu.Unlock()
 		s.mu.Lock()
 		if err := config.SaveSyncMode(s.configPath, mode); err != nil {
 			s.mu.Unlock()
@@ -122,6 +144,7 @@ func (s *Server) handleSyncSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.syncMode = string(mode)
 		s.mu.Unlock()
+		s.discardSyncPlans(syncPlanMigration)
 		writeJSON(w, http.StatusOK, struct {
 			RepositoryPath string          `json:"repositoryPath"`
 			SyncMode       config.SyncMode `json:"syncMode"`
@@ -149,17 +172,22 @@ func (s *Server) handleSyncSources(w http.ResponseWriter, r *http.Request) {
 	globalUndoAvailable := s.latestResyncUndoAvailable(lifecycle.ResyncGlobal, nil)
 	project := s.currentProject()
 	projectUndoAvailable := project != nil && s.latestResyncUndoAvailable(lifecycle.ResyncProject, project)
+	globalMigrationUndo := s.latestMigrationUndoAvailable(lifecycle.ResyncGlobal, nil)
+	projectMigrationUndo := project != nil && s.latestMigrationUndoAvailable(lifecycle.ResyncProject, project)
 	updateUndoAvailable := s.latestUpdateUndoAvailable(project)
 	writeJSON(w, http.StatusOK, struct {
-		RepositoryPath             string                     `json:"repositoryPath"`
-		Locations                  []skillsync.SourceLocation `json:"locations"`
-		Sources                    []skillsync.Source         `json:"sources"`
-		Groups                     []skillsync.SourceGroup    `json:"groups"`
-		Diagnostics                []skillsync.Diagnostic     `json:"diagnostics"`
-		GlobalResyncUndoAvailable  bool                       `json:"globalResyncUndoAvailable"`
-		ProjectResyncUndoAvailable bool                       `json:"projectResyncUndoAvailable"`
-		UpdateUndoAvailable        bool                       `json:"updateUndoAvailable"`
-	}{s.libraryPath, inventory.Locations, inventory.Sources, groups, inventory.Diagnostics, globalUndoAvailable, projectUndoAvailable, updateUndoAvailable})
+		RepositoryPath                string                     `json:"repositoryPath"`
+		Complete                      bool                       `json:"complete"`
+		Locations                     []skillsync.SourceLocation `json:"locations"`
+		Sources                       []skillsync.Source         `json:"sources"`
+		Groups                        []skillsync.SourceGroup    `json:"groups"`
+		Diagnostics                   []skillsync.Diagnostic     `json:"diagnostics"`
+		GlobalResyncUndoAvailable     bool                       `json:"globalResyncUndoAvailable"`
+		ProjectResyncUndoAvailable    bool                       `json:"projectResyncUndoAvailable"`
+		GlobalMigrationUndoAvailable  bool                       `json:"globalMigrationUndoAvailable"`
+		ProjectMigrationUndoAvailable bool                       `json:"projectMigrationUndoAvailable"`
+		UpdateUndoAvailable           bool                       `json:"updateUndoAvailable"`
+	}{s.libraryPath, inventory.Complete, inventory.Locations, inventory.Sources, groups, inventory.Diagnostics, globalUndoAvailable, projectUndoAvailable, globalMigrationUndo, projectMigrationUndo, updateUndoAvailable})
 }
 
 func (s *Server) handleUpdatesCheck(w http.ResponseWriter, r *http.Request) {
@@ -415,6 +443,7 @@ func (s *Server) handleImportPreview(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		SelectedGroupIDs []string          `json:"selectedGroupIds"`
 		CurrentChoices   map[string]string `json:"currentChoices,omitempty"`
+		IdentityChoices  map[string]string `json:"identityChoices,omitempty"`
 	}
 	if !decodeJSONBody(w, r, &request) {
 		return
@@ -430,7 +459,7 @@ func (s *Server) handleImportPreview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	preview, err := service.Preview(request.SelectedGroupIDs, request.CurrentChoices)
+	preview, err := service.PreviewWithIdentityChoices(request.SelectedGroupIDs, request.CurrentChoices, request.IdentityChoices)
 	if err != nil {
 		writeSyncError(w, err)
 		return
@@ -480,15 +509,18 @@ func (s *Server) handleImportApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	service.Now = s.now
-	entries, err := service.ApplyUntil(plan.importPreview, plan.expiresAt)
+	result, err := service.ApplyDetailedUntil(plan.importPreview, plan.expiresAt)
 	if err != nil {
 		writeSyncError(w, err)
 		return
 	}
+	s.discardAllSyncPlans()
 	writeJSON(w, http.StatusOK, struct {
-		Imported int               `json:"imported"`
-		Entries  []skillrepo.Entry `json:"entries"`
-	}{len(entries), entries})
+		BatchID         string            `json:"batchId"`
+		Imported        int               `json:"imported"`
+		Entries         []skillrepo.Entry `json:"entries"`
+		SourceRecordIDs []string          `json:"sourceRecordIds"`
+	}{result.BatchID, result.Imported, result.Entries, result.SourceRecordIDs})
 }
 
 func (s *Server) handleResyncPreview(w http.ResponseWriter, r *http.Request) {
@@ -585,6 +617,7 @@ func (s *Server) handleResyncApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	service.OperationLockHeld = true
 	if !s.now().Before(plan.expiresAt) {
 		writeAPIError(w, http.StatusConflict, "stale_plan", "The resync preview expired while waiting for another local operation. Review a new preview.")
 		return
@@ -600,6 +633,7 @@ func (s *Server) handleResyncApply(w http.ResponseWriter, r *http.Request) {
 		writeSyncError(w, err)
 		return
 	}
+	s.discardAllSyncPlans()
 	writeJSON(w, http.StatusOK, struct {
 		Operation string `json:"operation"`
 		Changes   int    `json:"changes"`
@@ -699,10 +733,15 @@ func (s *Server) handleResyncUndoApply(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "stale_plan", "The Undo preview expired while waiting for another local operation. Review a new preview.")
 		return
 	}
+	var project *registeredProject
 	if plan.undoScope == lifecycle.ResyncProject {
-		project := s.currentProject()
+		project = s.currentProject()
 		if project == nil || project.validate() != nil || plan.undoJournal == nil || filepath.Clean(plan.undoJournal.Path) != filepath.Join(project.Path, ".skill-manager", "journal.json") {
 			writeAPIError(w, http.StatusConflict, "stale_project", "The project changed after Undo preview.")
+			return
+		}
+		if err := validateConsoleUndoEntry(project, s.libraryPath, plan.undoEntry); err != nil {
+			writeAPIError(w, http.StatusConflict, "unsafe_journal_entry", "The project operation is outside its safe Undo boundary.")
 			return
 		}
 	}
@@ -741,10 +780,17 @@ func (s *Server) handleResyncUndoApply(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-	if err := plan.undoJournal.UndoLatest(func(current operation.Plan) bool { return reflect.DeepEqual(current, plan.undoPlan) }); err != nil {
+	service := s.lifecycleService(plan.undoJournal, func(current operation.Plan) bool { return reflect.DeepEqual(current, plan.undoPlan) })
+	fingerprints, err := undoBackupFingerprints(entry)
+	if err != nil {
 		writeSyncError(w, err)
 		return
 	}
+	if err := service.UndoWithFingerprints(fingerprints); err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	s.discardAllSyncPlans()
 	writeJSON(w, http.StatusOK, struct {
 		Status string `json:"status"`
 	}{"undone"})
@@ -796,7 +842,7 @@ func (s *Server) newLifecycleService(scope lifecycle.ResyncScope, project *regis
 		return nil, nil, fmt.Errorf("unsupported resync scope %q", scope)
 	}
 	mode := adapter.MaterializationMode(s.currentSyncMode())
-	service := lifecycle.New(s.libraryPath, journal, nil)
+	service := s.lifecycleService(journal, nil)
 	service.Materialization = mode
 	return service, journal, nil
 }
@@ -853,6 +899,12 @@ func (s *Server) discardSyncPlans(kind syncPlanKind) {
 	}
 }
 
+func (s *Server) discardAllSyncPlans() {
+	s.plansMu.Lock()
+	defer s.plansMu.Unlock()
+	clear(s.syncPlans)
+}
+
 func (s *Server) consumeSyncPlan(id string, kind syncPlanKind) (*storedSyncPlan, bool) {
 	s.plansMu.Lock()
 	defer s.plansMu.Unlock()
@@ -867,6 +919,8 @@ func (s *Server) consumeSyncPlan(id string, kind syncPlanKind) (*storedSyncPlan,
 
 func writeSyncError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, skillsync.ErrMigrationBlocked), errors.Is(err, operation.ErrPendingBatch):
+		writeAPIError(w, http.StatusConflict, "migration_blocked", err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		writeAPIError(w, http.StatusGatewayTimeout, "sync_timeout", "The sync operation did not finish before its request ended.")
 	case errors.Is(err, skillsync.ErrUpdatePlanTooLarge):

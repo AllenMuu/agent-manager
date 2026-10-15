@@ -3,6 +3,7 @@ package lifecycle
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,12 +52,24 @@ type Options struct {
 	// TargetSelections narrows one batch to specific existing activations per
 	// Skill. A nil map preserves the ordinary Skills-by-targets behavior.
 	TargetSelections map[string][]adapter.Target
+	// TargetBindings assigns an exact repository version to one existing
+	// activation entry. It is reserved for maintenance plans such as resync,
+	// where different entries with the same Skill ID may use different versions.
+	TargetBindings []TargetBinding
 	// Rematerialize is reserved for an explicit resync plan and replaces only
 	// destinations that inventory proved are still managed.
 	Rematerialize bool
 	// JournalOperation distinguishes an explicit maintenance operation from a
 	// normal activation while retaining the same atomic mutation path.
 	JournalOperation string
+	// LinkDependencies carry the pre-migration source chain into the Undo log.
+	LinkDependencies []operation.LinkDependency
+}
+
+// TargetBinding binds one selected target entry to an exact Skill version.
+type TargetBinding struct {
+	Target adapter.Target
+	Skill  catalog.Skill
 }
 
 func optionsOf(opts []Options) Options {
@@ -91,9 +104,14 @@ type ConfirmFunc func(operation.Plan) bool
 
 // Service performs guarded lifecycle changes against one local skill library.
 type Service struct {
-	LibraryPath     string
-	Journal         *operation.Journal
-	Materialization adapter.MaterializationMode
+	LibraryPath string
+	Journal     *operation.Journal
+	BatchStore  *operation.BatchStore
+	// OperationLockHeld is for coordinators that already hold Journal's
+	// operation lock while applying a multi-step preview.
+	OperationLockHeld bool
+	Materialization   adapter.MaterializationMode
+	LastBatchID       string
 	// BeforePublish is an optional test seam invoked before each staged publish.
 	BeforePublish func(string) error
 	// BeforeFinalPublish is an optional test seam invoked after the adapter has
@@ -101,9 +119,13 @@ type Service struct {
 	BeforeFinalPublish func() error
 	// BeforeDiscard is an optional test seam invoked after a replacement link is
 	// published and before its staged original is discarded.
-	BeforeDiscard   func() error
-	confirm         ConfirmFunc
-	resourceHandler resource.ResourceHandler
+	BeforeDiscard     func() error
+	confirm           ConfirmFunc
+	resourceHandler   resource.ResourceHandler
+	recordPublication func(string) error
+	recordStageMove   func(string, string) error
+	recordOwnedState  func(string, string) error
+	linkDependencies  []operation.LinkDependency
 }
 
 // preservePathsError marks paths whose current owner won a no-replace race.
@@ -305,7 +327,10 @@ func (s *Service) applyMany(project string, skills []catalog.Skill, targets []ad
 	}
 	service := *s
 	service.confirm = func(plan operation.Plan) bool { return samePlan(expected, plan) }
-	return service.addMany(project, skills, targets, global, opts...)
+	service.linkDependencies = append([]operation.LinkDependency(nil), optionsOf(opts).LinkDependencies...)
+	result, err := service.addMany(project, skills, targets, global, opts...)
+	s.LastBatchID = service.LastBatchID
+	return result, err
 }
 
 func (s *Service) previewMany(project string, skills []catalog.Skill, targets []adapter.Target, global bool, opts ...Options) (operation.Plan, error) {
@@ -417,6 +442,12 @@ func (s *Service) addMany(project string, skills []catalog.Skill, targets []adap
 			return err
 		}
 		for i := range requests {
+			if expected, ok := options.ExpectedConflictFingerprints[paths[i]]; ok {
+				current, err := operation.FingerprintPath(paths[i])
+				if err != nil || current != expected {
+					return errors.Join(ErrUnsafePath, err)
+				}
+			}
 			if err := validateLifecyclePlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], requests[i].Resource.ID, requests[i].GlobalScope); err != nil {
 				return err
 			}
@@ -497,11 +528,23 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 	if err != nil {
 		return preview, err
 	}
+	bindings := append([]TargetBinding(nil), options.TargetBindings...)
+	if options.TargetBindings == nil {
+		for _, skill := range skills {
+			selectedTargets := targets
+			if options.TargetSelections != nil {
+				selectedTargets = options.TargetSelections[skill.Identifier]
+			}
+			for _, target := range selectedTargets {
+				bindings = append(bindings, TargetBinding{Target: target, Skill: skill})
+			}
+		}
+	}
 	seen := map[string]bool{}
-	for _, skill := range skills {
-		selectedTargets := targets
-		if options.TargetSelections != nil {
-			selectedTargets = options.TargetSelections[skill.Identifier]
+	for _, binding := range bindings {
+		skill, target := binding.Skill, binding.Target
+		if skill.Identifier == "" || target == "" {
+			return preview, ErrUnsafePath
 		}
 		base, err := s.planSkill(resource.SkillLifecycleRequest{
 			Action:       resource.LifecycleActivate,
@@ -511,59 +554,62 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 		if err != nil {
 			return preview, err
 		}
-		for _, target := range selectedTargets {
-			placement, err := s.resourcePlacementInScope(project, target, base.Resource, global)
-			if err != nil {
-				return preview, err
+		placement, err := s.resourcePlacementInScope(project, target, base.Resource, global)
+		if err != nil {
+			return preview, err
+		}
+		path := placement.Destination
+		if seen[path] {
+			return preview, ErrUnsafePath
+		}
+		seen[path] = true
+		request := resource.SkillLifecycleRequest{
+			Action:               resource.LifecycleActivate,
+			LibraryPath:          s.LibraryPath,
+			ProjectPath:          project,
+			GlobalScope:          global,
+			Resource:             base.Resource,
+			PlacementPath:        path,
+			Target:               string(target),
+			Conflict:             skillConflict(options.Conflict),
+			Force:                options.Force,
+			RematerializeManaged: options.Rematerialize,
+		}
+		if options.Rematerialize {
+			materialization, status, ok, materialErr := s.copyActivation(path, skill.Identifier)
+			if materialErr != nil {
+				return preview, materialErr
 			}
-			path := placement.Destination
-			if seen[path] {
-				return preview, ErrUnsafePath
+			if ok && status == Managed && materialization.Method == "copy" {
+				request.JournalCopyMatches = true
+				request.JournalMaterialization = "copy"
+				request.JournalSource = materialization.Source
+				request.JournalFingerprint = materialization.DestinationFingerprint
 			}
-			seen[path] = true
-			request := resource.SkillLifecycleRequest{
-				Action:               resource.LifecycleActivate,
-				LibraryPath:          s.LibraryPath,
-				ProjectPath:          project,
-				GlobalScope:          global,
-				Resource:             base.Resource,
-				PlacementPath:        path,
-				Target:               string(target),
-				Conflict:             skillConflict(options.Conflict),
-				Force:                options.Force,
-				RematerializeManaged: options.Rematerialize,
+		}
+		planned, err := s.planSkill(request)
+		if err != nil {
+			conflict, conflictErr := placementConflict(path, base.Resource.Provenance.Source)
+			if conflictErr != nil {
+				return preview, conflictErr
 			}
-			if options.Rematerialize {
-				materialization, status, ok, materialErr := s.copyActivation(path, skill.Identifier)
-				if materialErr != nil {
-					return preview, materialErr
+			if conflict && (errors.Is(err, ErrUnsafePath) || errors.Is(err, ErrForceRequired)) {
+				action := "refuse conflicting destination"
+				if options.Conflict == ConflictReplace && !options.Force {
+					action = "replace conflict (force required)"
 				}
-				if ok && status == Managed && materialization.Method == "copy" {
-					request.JournalCopyMatches = true
-					request.JournalMaterialization = "copy"
-					request.JournalSource = materialization.Source
-					request.JournalFingerprint = materialization.DestinationFingerprint
-				}
+				preview.plan.Changes = append(preview.plan.Changes, operation.Change{Path: path, Action: action, Detail: base.Resource.Provenance.Source})
 			}
-			planned, err := s.planSkill(request)
-			if err != nil {
-				conflict, conflictErr := placementConflict(path, base.Resource.Provenance.Source)
-				if conflictErr != nil {
-					return preview, conflictErr
-				}
-				if conflict && (errors.Is(err, ErrUnsafePath) || errors.Is(err, ErrForceRequired)) {
-					action := "refuse conflicting destination"
-					if options.Conflict == ConflictReplace && !options.Force {
-						action = "replace conflict (force required)"
-					}
-					preview.plan.Changes = append(preview.plan.Changes, operation.Change{Path: path, Action: action, Detail: base.Resource.Provenance.Source})
-				}
-				return preview, err
-			}
-			preview.paths = append(preview.paths, path)
-			preview.requests = append(preview.requests, request)
-			planned = withMaterializationPlan(planned, mode)
-			appendSkillPlan(&preview.plan, planned)
+			return preview, err
+		}
+		preview.paths = append(preview.paths, path)
+		preview.requests = append(preview.requests, request)
+		planned = withMaterializationPlan(planned, mode)
+		appendSkillPlan(&preview.plan, planned)
+	}
+	if s.BatchStore != nil {
+		if err := s.BatchStore.CheckAvailable(preview.paths); err != nil {
+			return preview, err
 		}
 	}
 	return preview, nil
@@ -1050,12 +1096,40 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 		if err != nil {
 			return err
 		}
-		entry, err := repository.AddVersion(identifier, path, skillrepo.VersionMetadata{
+		entry, err := repository.AddVersionWithPostPublish(identifier, path, skillrepo.VersionMetadata{
 			Key: filepath.Base(libraryPath), Version: "unknown", Source: path,
 			SourceType: "local-adoption", Publisher: "unknown", ImmutableRef: "unknown",
 			Checksum: planned.SourceChecksum, TrustLevel: "unknown", VerificationStatus: "unknown",
 			LegacyProvenance: "adopted from project",
-		}, true)
+		}, true, func(published skillrepo.Entry, expectedMetadata skillrepo.Metadata) error {
+			if filepath.Clean(published.Path) != filepath.Clean(libraryPath) || published.Identifier != identifier || published.Key != filepath.Base(libraryPath) || published.Metadata.Checksum != planned.SourceChecksum {
+				return preservePath(errors.Join(ErrUnsafePath, fmt.Errorf("adopted Skill publication differs from confirmed version intent")), libraryRoot)
+			}
+			// Capture before validating the exact published layout. Only retain
+			// this fingerprint if the following checks prove it was the intended
+			// one-version identity; later edits then fail RestoreExpected's guard.
+			ownedFingerprint, fingerprintErr := operation.FingerprintPath(libraryRoot)
+			if fingerprintErr != nil {
+				return preservePath(errors.Join(ErrUnsafePath, fingerprintErr), libraryRoot)
+			}
+			publishedChecksum, checksumErr := skillrepo.ChecksumTree(published.Path)
+			if checksumErr != nil || publishedChecksum != planned.SourceChecksum {
+				return preservePath(errors.Join(ErrUnsafePath, errConcurrentEdit, checksumErr), libraryRoot)
+			}
+			resolved, resolveErr := repository.Resolve(identifier, published.Key)
+			if resolveErr != nil || filepath.Clean(resolved.Path) != filepath.Clean(libraryPath) || resolved.Metadata.Checksum != planned.SourceChecksum {
+				return preservePath(errors.Join(ErrUnsafePath, resolveErr, fmt.Errorf("adopted Skill metadata does not match publication intent")), libraryRoot)
+			}
+			if err := verifyNewAdoptedIdentity(libraryRoot, published.Key, expectedMetadata); err != nil {
+				return preservePath(errors.Join(ErrUnsafePath, err), libraryRoot)
+			}
+			if s.recordOwnedState != nil {
+				if err := s.recordOwnedState(libraryRoot, ownedFingerprint); err != nil {
+					return preservePath(errors.Join(ErrUnsafePath, err), libraryRoot)
+				}
+			}
+			return nil
+		})
 		if err != nil {
 			if errors.Is(err, skillrepo.ErrConflict) {
 				return preservePath(err, libraryRoot)
@@ -1222,10 +1296,429 @@ func (s *Service) ForkMany(project, identifier string, targets []adapter.Target)
 
 // Undo restores the pre-operation state of the latest confirmed operation.
 func (s *Service) Undo() error {
+	return s.UndoWithFingerprints(nil)
+}
+
+// UndoWithFingerprints restores the latest operation only when the reviewed
+// journal backups still match the supplied evidence.
+func (s *Service) UndoWithFingerprints(expected map[string]string) error {
 	if s.Journal == nil {
 		return fmt.Errorf("operation journal is not configured")
 	}
-	return s.Journal.UndoLatest(s.confirm)
+	if s.BatchStore == nil {
+		if s.OperationLockHeld {
+			return s.Journal.UndoLatestWithHooksLocked(s.confirm, expected, nil, nil)
+		}
+		return s.Journal.UndoLatestWithFingerprints(s.confirm, expected)
+	}
+	var batch *operation.Batch
+	beforeRestore := func(entry operation.Entry) error {
+		if err := validateUndoLinkDependencies(entry); err != nil {
+			return err
+		}
+		paths := make([]string, 0, len(entry.After))
+		steps := make([]operation.BatchStep, 0, len(entry.After))
+		for i, snapshot := range entry.After {
+			paths = append(paths, snapshot.Path)
+			before := "absent"
+			if snapshot.Exists {
+				var err error
+				before, err = operation.FingerprintPath(snapshot.Path)
+				if err != nil {
+					return err
+				}
+			}
+			after := "absent"
+			backup := snapshot.Backup
+			if i < len(entry.Before) && entry.Before[i].Exists {
+				var err error
+				after, err = operation.FingerprintPath(entry.Before[i].Backup)
+				if err != nil {
+					return err
+				}
+			}
+			steps = append(steps, operation.BatchStep{ID: fmt.Sprintf("undo-%d", i), Resource: snapshot.Path, Action: "restore previous state", BeforeState: before, ExpectedAfter: "fingerprint\x00" + after, BackupPath: backup})
+		}
+		if err := s.BatchStore.CheckAvailable(paths); err != nil {
+			return err
+		}
+		id, err := operation.NewBatchID()
+		if err != nil {
+			return err
+		}
+		entryCopy := entry
+		prepared, err := s.BatchStore.Prepare(operation.Batch{ID: id, Kind: "undo", Scope: journalScope(s.Journal), Resources: paths, LinkDependencies: append([]operation.LinkDependency(nil), entry.LinkDependencies...), UndoEntry: &entryCopy, Steps: steps})
+		if err != nil {
+			return err
+		}
+		prepared.Status = operation.BatchPublishing
+		if err := s.BatchStore.Update(prepared); err != nil {
+			return err
+		}
+		batch = &prepared
+		return nil
+	}
+	afterCommit := func(entry operation.Entry, outcome error) error {
+		if batch == nil {
+			return nil
+		}
+		if outcome != nil {
+			batch.Status, batch.Error = operation.BatchNeedsRecovery, outcome.Error()
+		} else {
+			batch.Status, batch.Error = operation.BatchCommitted, ""
+			for i := range batch.Steps {
+				batch.Steps[i].Status = "restored"
+				batch.Steps[i].RecoveryClass = "undo-complete"
+				batch.Steps[i].StagedPath = ""
+				batch.Steps[i].StageRoot = ""
+				batch.Steps[i].StagedState = ""
+				if i < len(entry.Before) && entry.Before[i].Exists {
+					batch.Steps[i].AfterState, outcome = operation.FingerprintPath(entry.Before[i].Path)
+					if outcome != nil {
+						batch.Status, batch.Error = operation.BatchNeedsRecovery, outcome.Error()
+						break
+					}
+				} else {
+					batch.Steps[i].AfterState = "absent"
+				}
+			}
+		}
+		return s.BatchStore.Update(*batch)
+	}
+	previousRestoreStage := s.Journal.BeforeRestoreStage
+	s.Journal.BeforeRestoreStage = func(path, stagedPath string) error {
+		if previousRestoreStage != nil {
+			if err := previousRestoreStage(path, stagedPath); err != nil {
+				return err
+			}
+		}
+		if batch == nil {
+			return nil
+		}
+		state, err := operation.FingerprintPath(path)
+		if err != nil {
+			return err
+		}
+		for i := range batch.Steps {
+			if filepath.Clean(batch.Steps[i].Resource) == filepath.Clean(path) {
+				batch.Steps[i].StagedPath = stagedPath
+				batch.Steps[i].StageRoot = filepath.Dir(stagedPath)
+				batch.Steps[i].StagedState = state
+				batch.Steps[i].Status = "restoring-current"
+				return s.BatchStore.Update(*batch)
+			}
+		}
+		return ErrUnsafePath
+	}
+	defer func() { s.Journal.BeforeRestoreStage = previousRestoreStage }()
+	if s.OperationLockHeld {
+		return s.Journal.UndoLatestWithHooksLocked(s.confirm, expected, beforeRestore, afterCommit)
+	}
+	return s.Journal.UndoLatestWithHooks(s.confirm, expected, beforeRestore, afterCommit)
+}
+
+func validateUndoLinkDependencies(entry operation.Entry) error {
+	return ValidateLinkDependenciesWithBefore(entry.LinkDependencies, entry.Before)
+}
+
+// ValidateLinkDependenciesWithBefore evaluates persisted source chains over a
+// proposed before-state overlay. Paths present in before use their captured
+// snapshots; external nodes are read from the current filesystem.
+func ValidateLinkDependenciesWithBefore(dependencies []operation.LinkDependency, snapshots []operation.Snapshot) error {
+	if len(dependencies) == 0 {
+		return nil
+	}
+	before := make(map[string]operation.Snapshot, len(snapshots))
+	for _, snapshot := range snapshots {
+		before[filepath.Clean(snapshot.Path)] = snapshot
+	}
+	for _, dependency := range dependencies {
+		current := filepath.Clean(dependency.EntryPath)
+		for _, hop := range dependency.LinkChain {
+			if current != filepath.Clean(hop.Path) {
+				return errors.Join(operation.ErrUnexpectedState, fmt.Errorf("link dependency chain changed at %s", hop.Path))
+			}
+			target, err := projectedLinkTarget(current, before)
+			if err != nil || target != hop.Target {
+				return errors.Join(operation.ErrUnexpectedState, fmt.Errorf("link dependency changed at %s", current), err)
+			}
+			resolved := target
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(current), resolved)
+			}
+			current, err = filepath.Abs(resolved)
+			if err != nil {
+				return errors.Join(operation.ErrUnexpectedState, err)
+			}
+			current = filepath.Clean(current)
+		}
+		if current != filepath.Clean(dependency.RealPath) {
+			return errors.Join(operation.ErrUnexpectedState, fmt.Errorf("link dependency resolves to a different source"))
+		}
+		checksum, err := skillrepo.ChecksumTree(current)
+		if err != nil || checksum != dependency.SourceChecksum {
+			return errors.Join(operation.ErrUnexpectedState, fmt.Errorf("link dependency source content changed"), err)
+		}
+	}
+	return nil
+}
+
+func rollbackExpectedCurrent(snapshots []operation.Snapshot, plan operation.Plan, additional map[string]string) (map[string]string, error) {
+	afterByPath := make(map[string]string, len(plan.Changes))
+	knownSources := plannedCopyFingerprints(plan)
+	for _, change := range plan.Changes {
+		path, err := filepath.Abs(change.Path)
+		if err != nil {
+			return nil, err
+		}
+		expected, err := expectedLifecycleAfterWithSourceFingerprints(change, knownSources)
+		if err != nil {
+			continue
+		}
+		afterByPath[filepath.Clean(path)] = expected
+	}
+	expected := make(map[string]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		before := "absent"
+		if snapshot.Exists {
+			fingerprint, err := operation.FingerprintPath(snapshot.Backup)
+			if err != nil {
+				return nil, err
+			}
+			before = fingerprint
+		}
+		current, err := lifecycleFingerprintOrAbsent(snapshot.Path)
+		if err != nil {
+			expected[snapshot.Path] = "unverified-current-state"
+			continue
+		}
+		if current == before {
+			expected[snapshot.Path] = current
+			continue
+		}
+		if after := additional[filepath.Clean(snapshot.Path)]; after != "" {
+			matches, matchErr := matchesLifecyclePublication(snapshot.Path, after)
+			if matchErr == nil && matches {
+				expected[snapshot.Path] = current
+				continue
+			}
+		}
+		if after := afterByPath[filepath.Clean(snapshot.Path)]; after != "" {
+			matches, matchErr := matchesLifecyclePublication(snapshot.Path, after)
+			if matchErr == nil && matches {
+				expected[snapshot.Path] = current
+				continue
+			}
+		}
+		expected[snapshot.Path] = "unowned-current-state"
+	}
+	return expected, nil
+}
+
+func verifyNewAdoptedIdentity(identity, versionKey string, expectedMetadata skillrepo.Metadata) error {
+	entries, err := os.ReadDir(identity)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 2 || entries[0].Name() != skillrepo.MetadataFilename || entries[1].Name() != "versions" {
+		return fmt.Errorf("new adopted Skill identity contains unexpected entries")
+	}
+	identityInfo, err := os.Lstat(identity)
+	if err != nil || !identityInfo.IsDir() || identityInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.Join(err, fmt.Errorf("new adopted Skill identity is not a real directory"))
+	}
+	metadataInfo, err := os.Lstat(filepath.Join(identity, skillrepo.MetadataFilename))
+	if err != nil || !metadataInfo.Mode().IsRegular() || metadataInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.Join(err, fmt.Errorf("new adopted Skill metadata is not a regular file"))
+	}
+	metadataBytes, err := os.ReadFile(filepath.Join(identity, skillrepo.MetadataFilename))
+	if err != nil {
+		return err
+	}
+	var actualMetadata skillrepo.Metadata
+	if err := json.Unmarshal(metadataBytes, &actualMetadata); err != nil {
+		return err
+	}
+	actualMetadataJSON, err := json.Marshal(actualMetadata)
+	if err != nil {
+		return err
+	}
+	expectedMetadataJSON, err := json.Marshal(expectedMetadata)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(actualMetadataJSON, expectedMetadataJSON) || actualMetadata.Identifier == "" || actualMetadata.CurrentVersion != versionKey || len(actualMetadata.Versions) != 1 || actualMetadata.Versions[0].Key != versionKey {
+		return fmt.Errorf("new adopted Skill metadata differs from the published identity")
+	}
+	versionsPath := filepath.Join(identity, "versions")
+	versionsInfo, err := os.Lstat(versionsPath)
+	if err != nil || !versionsInfo.IsDir() || versionsInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.Join(err, fmt.Errorf("new adopted Skill versions path is not a real directory"))
+	}
+	versions, err := os.ReadDir(versionsPath)
+	if err != nil {
+		return err
+	}
+	if len(versions) != 1 || versions[0].Name() != versionKey || !versions[0].IsDir() {
+		return fmt.Errorf("new adopted Skill identity contains an unexpected version entry")
+	}
+	versionInfo, err := os.Lstat(filepath.Join(versionsPath, versionKey))
+	if err != nil || !versionInfo.IsDir() || versionInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.Join(err, fmt.Errorf("new adopted Skill version is not a real directory"))
+	}
+	return nil
+}
+
+func lifecycleFingerprintOrAbsent(path string) (string, error) {
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return "absent", nil
+	} else if err != nil {
+		return "", err
+	}
+	return operation.FingerprintPath(path)
+}
+
+func matchesLifecyclePublication(path, expected string) (bool, error) {
+	if expected == "absent" {
+		_, err := os.Lstat(path)
+		return os.IsNotExist(err), err
+	}
+	parts := strings.Split(expected, "\x00")
+	if len(parts) < 2 {
+		return false, nil
+	}
+	switch parts[0] {
+	case "fingerprint":
+		if len(parts) != 2 {
+			return false, nil
+		}
+		fingerprint, err := operation.FingerprintPath(path)
+		return err == nil && fingerprint == parts[1], err
+	case "symlink":
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) || err == nil && info.Mode()&os.ModeSymlink == 0 {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		target, err := os.Readlink(path)
+		return err == nil && target == parts[1], err
+	case "copy":
+		want := parts[1]
+		if len(parts) == 3 {
+			want = parts[2]
+		}
+		fingerprint, err := operation.FingerprintPath(path)
+		return err == nil && fingerprint == want, err
+	case "auto":
+		if len(parts) != 3 {
+			return false, nil
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			return err == nil && target == parts[1], err
+		}
+		fingerprint, err := operation.FingerprintPath(path)
+		return err == nil && fingerprint == parts[2], err
+	default:
+		return false, nil
+	}
+}
+
+func expectedLifecycleAfter(change operation.Change) (string, error) {
+	return expectedLifecycleAfterWithSourceFingerprints(change, nil)
+}
+
+func expectedLifecycleAfterWithSourceFingerprints(change operation.Change, knownSources map[string]string) (string, error) {
+	action := strings.ToLower(change.Action)
+	if strings.Contains(action, "remove") {
+		return "absent", nil
+	}
+	parts := strings.SplitN(change.Detail, " (", 2)
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return "", fmt.Errorf("lifecycle publication is missing its source")
+	}
+	source, err := filepath.Abs(parts[0])
+	if err != nil {
+		return "", err
+	}
+	mode := "symlink-only"
+	if strings.Contains(change.Detail, "copy-only") || strings.Contains(change.Action, "copy Skill tree") {
+		mode = "copy-only"
+	} else if strings.Contains(change.Detail, "auto: symlink first, copy fallback") {
+		mode = "auto"
+	} else if strings.Contains(change.Detail, "symlink-only") {
+		mode = "symlink-only"
+	}
+	fingerprint, err := operation.FingerprintPath(source)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fingerprint = knownSources[filepath.Clean(source)]
+		}
+		if fingerprint == "" {
+			return "", fmt.Errorf("fingerprint lifecycle source: %w", err)
+		}
+	}
+	switch mode {
+	case "copy-only":
+		return "copy\x00" + source + "\x00" + fingerprint, nil
+	case "auto":
+		return "auto\x00" + source + "\x00" + fingerprint, nil
+	default:
+		if strings.Contains(action, "copy") {
+			return "copy\x00" + source + "\x00" + fingerprint, nil
+		}
+		return "symlink\x00" + source + "\x00" + fingerprint, nil
+	}
+}
+
+func plannedCopyFingerprints(plan operation.Plan) map[string]string {
+	known := make(map[string]string)
+	for _, change := range plan.Changes {
+		if !strings.Contains(strings.ToLower(change.Action), "copy") {
+			continue
+		}
+		parts := strings.SplitN(change.Detail, " (", 2)
+		if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+			continue
+		}
+		source, err := filepath.Abs(parts[0])
+		if err != nil {
+			continue
+		}
+		destination, err := filepath.Abs(change.Path)
+		if err != nil {
+			continue
+		}
+		fingerprint, err := operation.FingerprintPath(source)
+		if err == nil {
+			known[filepath.Clean(destination)] = fingerprint
+		}
+	}
+	return known
+}
+
+func projectedLinkTarget(path string, before map[string]operation.Snapshot) (string, error) {
+	if snapshot, ok := before[filepath.Clean(path)]; ok {
+		if !snapshot.Exists || snapshot.Backup == "" {
+			return "", operation.ErrUnexpectedState
+		}
+		info, err := os.Lstat(snapshot.Backup)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			return "", errors.Join(operation.ErrUnexpectedState, err)
+		}
+		return os.Readlink(snapshot.Backup)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", errors.Join(operation.ErrUnexpectedState, err)
+	}
+	return os.Readlink(path)
 }
 
 func (s *Service) resourcePlacement(project string, target adapter.Target, managed resource.ManagedResource) (adapter.Placement, error) {
@@ -1302,6 +1795,18 @@ func (s *Service) mutateWithBeforeMaterializations(plan operation.Plan, paths []
 	if s.Journal == nil {
 		return fmt.Errorf("operation journal is not configured")
 	}
+	if !s.OperationLockHeld {
+		unlock, err := s.Journal.LockOperation()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+	if s.BatchStore != nil {
+		if err := s.BatchStore.CheckAvailable(paths); err != nil {
+			return err
+		}
+	}
 	if err := validate(); err != nil {
 		return err
 	}
@@ -1312,28 +1817,283 @@ func (s *Service) mutateWithBeforeMaterializations(plan operation.Plan, paths []
 			return err
 		}
 	}
+	if err := operation.SyncSnapshots(before); err != nil {
+		removeSnapshots(before)
+		return err
+	}
+	var batch *operation.Batch
+	batchID := ""
+	knownSources := plannedCopyFingerprints(plan)
+	if s.BatchStore != nil {
+		id, err := operation.NewBatchID()
+		if err != nil {
+			removeSnapshots(before)
+			return err
+		}
+		batchID = id
+		s.LastBatchID = id
+		steps := make([]operation.BatchStep, 0, len(paths))
+		for i, path := range paths {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				removeSnapshots(before)
+				return err
+			}
+			step := operation.BatchStep{ID: fmt.Sprintf("step-%d", i), Resource: abs, Action: "publish planned state"}
+			if i < len(before) {
+				if before[i].Exists {
+					step.BeforeState, err = operation.FingerprintPath(before[i].Backup)
+					if err != nil {
+						removeSnapshots(before)
+						return err
+					}
+				} else {
+					step.BeforeState = "absent"
+				}
+				step.BackupPath = before[i].Backup
+			}
+			for _, planned := range plan.Changes {
+				plannedPath, absErr := filepath.Abs(planned.Path)
+				if absErr == nil && filepath.Clean(plannedPath) == filepath.Clean(abs) {
+					step.Action = planned.Action
+					step.ExpectedAfter, err = expectedLifecycleAfterWithSourceFingerprints(planned, knownSources)
+					if err != nil {
+						removeSnapshots(before)
+						return err
+					}
+					break
+				}
+			}
+			steps = append(steps, step)
+		}
+		prepared, err := s.BatchStore.Prepare(operation.Batch{ID: id, Kind: plan.Operation, Scope: journalScope(s.Journal), Resources: paths, LinkDependencies: append([]operation.LinkDependency(nil), s.linkDependencies...), Plan: plan, Steps: steps})
+		if err != nil {
+			removeSnapshots(before)
+			return err
+		}
+		prepared.Status = operation.BatchPublishing
+		if err := s.BatchStore.Update(prepared); err != nil {
+			return err
+		}
+		batch = &prepared
+		previousRecorder := s.recordPublication
+		previousStageRecorder := s.recordStageMove
+		s.recordPublication = func(path string) error {
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			fingerprint, err := operation.FingerprintPath(abs)
+			if err != nil {
+				return err
+			}
+			for i := range batch.Steps {
+				if filepath.Clean(batch.Steps[i].Resource) == filepath.Clean(abs) {
+					batch.Steps[i].AfterState = fingerprint
+					batch.Steps[i].Status = "published"
+					batch.Steps[i].RecoveryClass = "after-state-recorded"
+					batch.Steps[i].StagedPath = ""
+					batch.Steps[i].StageRoot = ""
+					batch.Steps[i].StagedState = ""
+					return s.BatchStore.Update(*batch)
+				}
+			}
+			return ErrUnsafePath
+		}
+		s.recordStageMove = func(destination, stagedPath string) error {
+			absDestination, err := filepath.Abs(destination)
+			if err != nil {
+				return err
+			}
+			absStage, err := filepath.Abs(stagedPath)
+			if err != nil {
+				return err
+			}
+			state, err := operation.FingerprintPath(absDestination)
+			if err != nil {
+				return err
+			}
+			for i := range batch.Steps {
+				if filepath.Clean(batch.Steps[i].Resource) == filepath.Clean(absDestination) {
+					batch.Steps[i].StagedPath = filepath.Clean(absStage)
+					batch.Steps[i].StageRoot = filepath.Dir(absStage)
+					batch.Steps[i].StagedState = state
+					batch.Steps[i].Status = "moving-away"
+					batch.Steps[i].RecoveryClass = "staged-before-publication"
+					return s.BatchStore.Update(*batch)
+				}
+			}
+			return ErrUnsafePath
+		}
+		defer func() {
+			s.recordPublication = previousRecorder
+			s.recordStageMove = previousStageRecorder
+		}()
+		previousRestoreStage := s.Journal.BeforeRestoreStage
+		s.Journal.BeforeRestoreStage = func(path, stagedPath string) error {
+			if previousRestoreStage != nil {
+				if err := previousRestoreStage(path, stagedPath); err != nil {
+					return err
+				}
+			}
+			return s.recordStageMove(path, stagedPath)
+		}
+		defer func() { s.Journal.BeforeRestoreStage = previousRestoreStage }()
+	}
+	additionalExpected := make(map[string]string)
+	previousOwnedStateRecorder := s.recordOwnedState
+	s.recordOwnedState = func(path, fingerprint string) error {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		abs = filepath.Clean(abs)
+		if fingerprint == "" {
+			return operation.ErrUnexpectedState
+		}
+		expected := "fingerprint\x00" + fingerprint
+		additionalExpected[abs] = expected
+		if batch == nil {
+			return nil
+		}
+		for i := range batch.Steps {
+			if filepath.Clean(batch.Steps[i].Resource) == abs {
+				batch.Steps[i].AfterState = fingerprint
+				batch.Steps[i].Status = "published"
+				batch.Steps[i].RecoveryClass = "after-state-recorded"
+				return s.BatchStore.Update(*batch)
+			}
+		}
+		return operation.ErrUnexpectedState
+	}
+	defer func() { s.recordOwnedState = previousOwnedStateRecorder }()
+	finishBatch := func(status operation.BatchStatus, cause error) error {
+		if batch == nil {
+			return nil
+		}
+		batch.Status = status
+		batch.Error = ""
+		if cause != nil {
+			batch.Error = cause.Error()
+		}
+		return s.BatchStore.Update(*batch)
+	}
+	restoreBefore := func(snapshots []operation.Snapshot) error {
+		expected, err := rollbackExpectedCurrent(snapshots, plan, additionalExpected)
+		if err != nil {
+			return err
+		}
+		return s.Journal.RestoreExpected(snapshots, expected)
+	}
 	materializations, err := change()
 	if err != nil {
 		var preserve *preservePathsError
 		if errors.As(err, &preserve) {
-			return rollbackError(err, s.Journal.Restore(excludingPaths(before, preserve.paths)))
+			rollbackErr := restoreBefore(excludingPaths(before, preserve.paths))
+			status := operation.BatchNeedsRecovery
+			if rollbackErr == nil {
+				status = operation.BatchRolledBack
+			}
+			finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+			return errors.Join(err, rollbackErr, finishErr)
 		}
 		if errors.Is(err, errConcurrentEdit) {
-			return err
+			return errors.Join(err, finishBatch(operation.BatchNeedsRecovery, err))
 		}
-		return rollbackError(err, s.Journal.Restore(before))
+		rollbackErr := restoreBefore(before)
+		status := operation.BatchNeedsRecovery
+		if rollbackErr == nil {
+			status = operation.BatchRolledBack
+		}
+		finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+		return errors.Join(err, rollbackErr, finishErr)
+	}
+	if err := operation.SyncPaths(paths); err != nil {
+		rollbackErr := restoreBefore(before)
+		status := operation.BatchNeedsRecovery
+		if rollbackErr == nil {
+			status = operation.BatchRolledBack
+		}
+		finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+		return errors.Join(err, rollbackErr, finishErr)
 	}
 	after, err := s.Journal.Capture(paths)
 	if err != nil {
-		return rollbackError(err, s.Journal.Restore(before))
-	}
-	if err := s.Journal.RecordPlanWithMaterializations(plan, before, after, materializations); err != nil {
-		if errors.Is(err, operation.ErrJournalCommitted) {
-			return err
+		rollbackErr := restoreBefore(before)
+		status := operation.BatchNeedsRecovery
+		if rollbackErr == nil {
+			status = operation.BatchRolledBack
 		}
-		return rollbackError(err, s.Journal.Restore(before))
+		finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+		return errors.Join(err, rollbackErr, finishErr)
+	}
+	if err := operation.SyncSnapshots(after); err != nil {
+		removeSnapshots(after)
+		rollbackErr := restoreBefore(before)
+		status := operation.BatchNeedsRecovery
+		if rollbackErr == nil {
+			status = operation.BatchRolledBack
+		}
+		finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+		return errors.Join(err, rollbackErr, finishErr)
+	}
+	if batch != nil {
+		for i := range batch.Steps {
+			for _, snapshot := range after {
+				if filepath.Clean(snapshot.Path) == filepath.Clean(batch.Steps[i].Resource) {
+					if snapshot.Exists {
+						batch.Steps[i].AfterState, err = operation.FingerprintPath(snapshot.Path)
+						if err != nil {
+							rollbackErr := restoreBefore(before)
+							status := operation.BatchNeedsRecovery
+							if rollbackErr == nil {
+								status = operation.BatchRolledBack
+							}
+							finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+							return errors.Join(err, rollbackErr, finishErr)
+						}
+						batch.Steps[i].Status = "published"
+					} else {
+						batch.Steps[i].AfterState = "absent"
+						batch.Steps[i].Status = "absent"
+					}
+				}
+			}
+		}
+		batch.Materializations = append([]operation.Materialization(nil), materializations...)
+		if err := s.BatchStore.Update(*batch); err != nil {
+			rollbackErr := restoreBefore(before)
+			status := operation.BatchNeedsRecovery
+			if rollbackErr == nil {
+				status = operation.BatchRolledBack
+			}
+			finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+			return errors.Join(err, rollbackErr, finishErr)
+		}
+	}
+	if err := s.Journal.RecordPlanWithEvidence(plan, before, after, materializations, batchID, s.linkDependencies); err != nil {
+		if errors.Is(err, operation.ErrJournalCommitted) {
+			return errors.Join(err, finishBatch(operation.BatchNeedsRecovery, err))
+		}
+		rollbackErr := restoreBefore(before)
+		status := operation.BatchNeedsRecovery
+		if rollbackErr == nil {
+			status = operation.BatchRolledBack
+		}
+		finishErr := finishBatch(status, errors.Join(err, rollbackErr))
+		return errors.Join(err, rollbackErr, finishErr)
+	}
+	if err := finishBatch(operation.BatchCommitted, nil); err != nil {
+		return fmt.Errorf("operation journal is committed but its batch marker could not be finalized: %w", err)
 	}
 	return nil
+}
+
+func journalScope(journal *operation.Journal) string {
+	if journal != nil && filepath.Base(journal.Path) == "global.json" {
+		return "global"
+	}
+	return "project"
 }
 
 func excludingPaths(snapshots []operation.Snapshot, paths map[string]struct{}) []operation.Snapshot {
@@ -1385,7 +2145,13 @@ func (s *Service) publishSkill(request resource.SkillLifecycleRequest, path, exp
 	if planned.SourcePath != expectedSource {
 		return ErrUnsafePath
 	}
-	if err := placeFilesystem(planned, request, journal, initialSnapshot, s.Materialization, s.BeforeFinalPublish, s.BeforeDiscard); err != nil {
+	beforeStageMove := func(stagedPath string) error {
+		if s.recordStageMove != nil {
+			return s.recordStageMove(path, stagedPath)
+		}
+		return nil
+	}
+	if err := placeFilesystem(planned, request, journal, initialSnapshot, s.Materialization, beforeStageMove, s.BeforeFinalPublish, s.BeforeDiscard); err != nil {
 		var preserved *adapter.PreservedPathError
 		if errors.As(err, &preserved) {
 			return preservePath(err, preserved.Path)
@@ -1395,10 +2161,15 @@ func (s *Service) publishSkill(request resource.SkillLifecycleRequest, path, exp
 		}
 		return err
 	}
+	if s.recordPublication != nil {
+		if err := s.recordPublication(path); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.SkillLifecycleRequest, journal *operation.Journal, initialSnapshot *operation.Snapshot, mode adapter.MaterializationMode, beforeFinalPublish, beforeDiscard func() error) error {
+func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.SkillLifecycleRequest, journal *operation.Journal, initialSnapshot *operation.Snapshot, mode adapter.MaterializationMode, beforeStageMove func(string) error, beforeFinalPublish, beforeDiscard func() error) error {
 	_, err := adapter.PlaceFilesystem(resource.PlacementPlan{Project: request.ProjectPath, Resource: planned.Resource}, adapter.FilesystemPlacementOptions{
 		Project:            request.ProjectPath,
 		Target:             adapter.Target(request.Target),
@@ -1412,6 +2183,7 @@ func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.Skill
 		Journal:            journal,
 		InitialSnapshot:    initialSnapshot,
 		BeforeFinalPublish: beforeFinalPublish,
+		BeforeStageMove:    beforeStageMove,
 		BeforeDiscard:      beforeDiscard,
 		// The lifecycle coordinator already confirmed the aggregate plan. The
 		// adapter still performs its own final source and destination checks.

@@ -1,6 +1,8 @@
 package skillsync
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,6 +70,274 @@ func TestDiscoverTreatsMissingLocationsAsEmpty(t *testing.T) {
 	}
 	if len(inventory.Sources) != 0 || len(inventory.Diagnostics) != 0 {
 		t.Fatalf("absent source roots were not empty: %+v", inventory)
+	}
+}
+
+func TestDiscoverResolvesRelativeMultiHopAdapterLink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(home, ".claude", "skills", "linked-demo")
+	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "external", "linked-demo")
+	writeSkill(t, real, "linked source")
+	hop := filepath.Join(root, "links", "first-hop")
+	if err := os.MkdirAll(filepath.Dir(hop), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, hop); err != nil {
+		t.Fatal(err)
+	}
+	originalLink, err := filepath.Rel(filepath.Dir(entry), hop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(originalLink, entry); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source *Source
+	for i := range inventory.Sources {
+		if inventory.Sources[i].Identifier == "linked-demo" {
+			source = &inventory.Sources[i]
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("linked Skill is missing from inventory: %+v", inventory)
+	}
+	wantChecksum, err := skillrepo.ChecksumTree(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !source.Eligible || source.Checksum != wantChecksum {
+		t.Fatalf("link source was not resolved and hashed: %+v", source)
+	}
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &details); err != nil {
+		t.Fatal(err)
+	}
+	var realPath, observedLink string
+	if err := json.Unmarshal(details["realPath"], &realPath); err != nil {
+		t.Fatalf("source omits resolved realPath: %s", encoded)
+	}
+	if err := json.Unmarshal(details["originalLink"], &observedLink); err != nil {
+		t.Fatalf("source omits original link text: %s", encoded)
+	}
+	var chain []struct {
+		Path   string `json:"path"`
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal(details["linkChain"], &chain); err != nil {
+		t.Fatalf("source omits link chain: %s", encoded)
+	}
+	var migrationEligible bool
+	if err := json.Unmarshal(details["migrationEligible"], &migrationEligible); err != nil {
+		t.Fatalf("source omits migration eligibility: %s", encoded)
+	}
+	if realPath != real || observedLink != originalLink || len(chain) != 2 || chain[0].Path != entry || chain[0].Target != originalLink || chain[1].Path != hop || chain[1].Target != real || !migrationEligible {
+		t.Fatalf("resolved link evidence = %s", encoded)
+	}
+}
+
+func TestDiscoverMarksInventoryIncompleteWhenScopeEntryLimitIsExceeded(t *testing.T) {
+	root := t.TempDir()
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	entries := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(entries, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4097; i++ {
+		path := filepath.Join(entries, fmt.Sprintf("entry-%04d", i))
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Complete    *bool        `json:"complete"`
+		Diagnostics []Diagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Complete == nil || *response.Complete {
+		t.Fatalf("inventory did not report an incomplete scan: %s", encoded)
+	}
+	for _, diagnostic := range response.Diagnostics {
+		if strings.Contains(diagnostic.Message, "4096") && strings.Contains(diagnostic.Message, "scope") {
+			return
+		}
+	}
+	t.Fatalf("inventory omits the scope entry-limit diagnostic: %s", encoded)
+}
+
+func TestDiscoverRejectsSkillTreeAboveContentLimit(t *testing.T) {
+	root := t.TempDir()
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(home, ".agents", "skills", "large-tree")
+	writeSkill(t, skillPath, "large")
+	largeFile := filepath.Join(skillPath, "payload.bin")
+	file, err := os.Create(largeFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate((64 << 20) + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range inventory.Sources {
+		if source.Identifier == "large-tree" {
+			if source.Eligible || !strings.Contains(source.Problem, "64 MiB") {
+				t.Fatalf("oversized tree was not rejected: %+v", source)
+			}
+			return
+		}
+	}
+	t.Fatalf("oversized Skill was omitted without a diagnostic: %+v", inventory)
+}
+
+func TestDiscoverRetainsEveryReferenceToOneRealSkill(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	real := filepath.Join(root, "external", "shared-demo")
+	writeSkill(t, real, "shared")
+	for _, path := range []string{
+		filepath.Join(home, ".claude", "skills", "shared-demo"),
+		filepath.Join(home, ".codex", "skills", "shared-demo"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var references []Source
+	for _, source := range inventory.Sources {
+		if source.Identifier == "shared-demo" {
+			references = append(references, source)
+		}
+	}
+	if len(references) != 2 || references[0].RealPath != references[1].RealPath || references[0].Checksum != references[1].Checksum {
+		t.Fatalf("references to shared Skill were not preserved: %+v", references)
+	}
+	groups := groupSources(references)
+	if len(groups) != 1 || len(groups[0].Sources) != 2 {
+		t.Fatalf("shared references did not group into one content candidate: %+v", groups)
+	}
+}
+
+func TestDiscoverDiagnosesCyclicMissingAndOverlongLinks(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	entries := filepath.Join(home, ".claude", "skills")
+	if err := os.MkdirAll(entries, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cycleA, cycleB := filepath.Join(root, "cycle-a"), filepath.Join(root, "cycle-b")
+	if err := os.Symlink(cycleB, cycleA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cycleA, cycleB); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cycleA, filepath.Join(entries, "cycle-demo")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(entries, "missing-demo")); err != nil {
+		t.Fatal(err)
+	}
+	previous := filepath.Join(root, "overlong-0")
+	for i := 0; i < maxSourceLinkHops+1; i++ {
+		next := filepath.Join(root, fmt.Sprintf("overlong-%d", i+1))
+		if err := os.Symlink(next, previous); err != nil {
+			t.Fatal(err)
+		}
+		previous = next
+	}
+	if err := os.Symlink(filepath.Join(root, "overlong-0"), filepath.Join(entries, "deep-demo")); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProblem := map[string]string{"cycle-demo": "cycle", "missing-demo": "missing", "deep-demo": "exceeds 16 hops"}
+	for identifier, fragment := range wantProblem {
+		found := false
+		for _, source := range inventory.Sources {
+			if source.Identifier == identifier {
+				found = true
+				if source.Eligible || source.MigrationEligible || !strings.Contains(source.Problem, fragment) {
+					t.Errorf("%s was not safely blocked: %+v", identifier, source)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s missing from inventory: %+v", identifier, inventory)
+		}
 	}
 }
 

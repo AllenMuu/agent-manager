@@ -66,7 +66,7 @@ func newInstallCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			service := installation.NewWithMaterialization(settings.LibraryPath, adapter.MaterializationMode(settings.SyncMode))
+			service := newInstallationService(settings.LibraryPath, adapter.MaterializationMode(settings.SyncMode))
 			preview, previewErr := service.Preview("cli", installation.Request{
 				Project:  project,
 				Global:   global,

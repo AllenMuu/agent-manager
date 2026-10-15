@@ -75,7 +75,7 @@ describe('console entry and guarded installation', () => {
     expect(screen.getByRole('checkbox', { name: 'Select demo-skill' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: /Copy only/ })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm import' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 Skill versions imported.'))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 Skill versions imported. Sources were left in place.'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Review global resync' }))
     expect(await screen.findByRole('heading', { name: 'Review managed destinations', level: 2 })).toBeInTheDocument()
@@ -86,9 +86,197 @@ describe('console entry and guarded installation', () => {
     const saveCall = calls.find((call) => call.route === '/api/v1/sync/settings' && call.init.method === 'PUT')
     expect(saveCall?.init.body).toBe(JSON.stringify({ syncMode: 'copy-only' }))
     const importCall = calls.find((call) => call.route === '/api/v1/sync/import/preview')
-    expect(importCall?.init.body).toBe(JSON.stringify({ selectedGroupIds: ['group-demo'], currentChoices: {} }))
+    expect(importCall?.init.body).toBe(JSON.stringify({ selectedGroupIds: ['group-demo'], currentChoices: {}, identityChoices: {} }))
     const resyncCall = calls.find((call) => call.route === '/api/v1/sync/resync/preview')
     expect(resyncCall?.init.body).toBe(JSON.stringify({ scope: 'global' }))
+  })
+
+  it('requires an explicit identity choice before importing an aliased source', async () => {
+    const source = {
+      id: 'alias-source', identifier: 'alias-skill', resolvedIdentifier: 'real-skill', identityConflict: true,
+      scope: 'global', location: 'Claude Code', path: '/home/user/.claude/skills/alias-skill',
+      realPath: '/home/user/skills/real-skill', checksum: 'sha256-alias', eligible: true,
+    }
+    const group = {
+      id: 'alias-skill@sha256-alias', identifier: 'alias-skill', checksum: 'sha256-alias', versionKey: 'sync-sha256-alias',
+      sources: [source], alreadyPresent: false, conflict: false, identityConflict: true,
+    }
+    const calls: { route: string; body: string }[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const route = String(input)
+      const body = String(init.body ?? '')
+      calls.push({ route, body })
+      if (route === '/api/v1/system') return jsonResponse({})
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [source], groups: [group], diagnostics: [] })
+      if (route === '/api/v1/sync/import/preview') {
+        const { identityChoices = {} } = JSON.parse(body) as { identityChoices?: Record<string, 'entry' | 'resolved'> }
+        const resolved = identityChoices['alias-source'] === 'resolved'
+        const previewGroup = resolved ? { ...group, id: 'real-skill@sha256-alias', identifier: 'real-skill' } : group
+        return jsonResponse({ planId: resolved ? 'resolved-plan' : 'choice-required-plan', preview: {
+          repositoryPath: '/home/user/.agent-manager/skills', groups: [previewGroup], selectedGroupIds: [group.id],
+          currentChoices: {}, identityChoices, identityChoiceRequired: resolved || identityChoices['alias-source'] === 'entry' ? [] : ['alias-source'],
+          repositoryStates: {}, confirmationToken: resolved ? 'resolved-token' : 'choice-token',
+        } }, 201)
+      }
+      if (route === '/api/v1/sync/import/apply') return jsonResponse({ imported: 1, entries: [] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    await screen.findByRole('heading', { name: 'Storage & Sync', level: 2 })
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select alias-skill' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review selected import' }))
+
+    expect(await screen.findByText('Choose an identity for each conflicting source and update the preview before importing.')).toBeInTheDocument()
+    const confirm = screen.getByRole('button', { name: 'Confirm import' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(screen.getByRole('radio', { name: 'Use resolved identity: real-skill' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Update preview with this identity' }))
+    expect(await screen.findByText('real-skill · New version')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Confirm import' })).toBeEnabled()
+    expect(calls.filter((call) => call.route === '/api/v1/sync/import/apply')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm import' }))
+    expect(await screen.findByText('1 Skill versions imported. Sources were left in place.')).toBeInTheDocument()
+    const previewBody = JSON.parse(calls.filter((call) => call.route === '/api/v1/sync/import/preview')[1].body)
+    expect(previewBody).toEqual({ selectedGroupIds: [group.id], currentChoices: {}, identityChoices: { 'alias-source': 'resolved' } })
+    expect(JSON.stringify(previewBody)).not.toContain('/home/user')
+  })
+
+  it('previews only selected references and displays their exact versions and impact', async () => {
+    const source = {
+      id: 'migration-source', identifier: 'demo-skill', scope: 'global', location: 'Claude Code', target: 'claude',
+      path: '/home/user/.claude/skills/demo-skill', entryType: 'external-symlink', realPath: '/home/user/.agents/skills/demo-skill',
+      originalLink: '../../.agents/skills/demo-skill', linkChain: [{ path: '/home/user/.claude/skills/demo-skill', target: '../../.agents/skills/demo-skill' }],
+      checksum: 'sha256-demo', eligible: true, migrationEligible: true,
+    }
+    const calls: { route: string; body: string }[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const route = String(input)
+      const body = String(init.body ?? '')
+      calls.push({ route, body })
+      if (route === '/api/v1/system') return jsonResponse({})
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'copy-only' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [source], groups: [], diagnostics: [] })
+      if (route === '/api/v1/sync/migration/preview') return jsonResponse({ planId: 'migration-plan', preview: {
+        scope: 'global', syncMode: 'copy-only', selectedSourceIds: ['migration-source'], entries: [{
+          sourceId: 'migration-source', scope: 'global', location: 'Claude Code', target: 'claude', entryPath: source.path,
+          originalLink: source.originalLink, linkChain: source.linkChain, realPath: source.realPath, checksum: source.checksum,
+          identifier: 'demo-skill', versionKey: 'sha256-demo', versionPath: '/home/user/.agent-manager/skills/demo-skill/versions/sha256-demo',
+          method: 'copy-only', impactWarning: 'Other projects that reach this global entry will use the managed version.',
+        }], plan: { operation: 'migrate', changes: [{ path: source.path, action: 'copy Skill tree' }], warnings: [] }, warnings: [], confirmationToken: 'migration-token',
+      } }, 201)
+      if (route === '/api/v1/sync/migration/apply') return jsonResponse({ batchId: 'batch-1', scope: 'global', entries: [{ sourceId: 'migration-source' }] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    await screen.findByRole('heading', { name: 'Storage & Sync', level: 2 })
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Select reference demo-skill/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review global migration' }))
+    expect(await screen.findByRole('heading', { name: 'Review existing references' })).toBeInTheDocument()
+    expect(screen.getByText(/\/home\/user\/\.agent-manager\/skills\/demo-skill\/versions\/sha256-demo/)).toBeInTheDocument()
+    expect(screen.getAllByText('Link: /home/user/.claude/skills/demo-skill → ../../.agents/skills/demo-skill').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('Other projects that reach this global entry will use the managed version.')).toBeInTheDocument()
+    expect(calls.filter((call) => call.route === '/api/v1/sync/migration/apply')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm reference migration' }))
+    expect(await screen.findByText('1 existing references are now managed in the Global scope.')).toBeInTheDocument()
+    const previewBody = JSON.parse(calls.find((call) => call.route === '/api/v1/sync/migration/preview')!.body)
+    expect(previewBody).toEqual({ selectedSourceIds: ['migration-source'] })
+    expect(JSON.stringify(previewBody)).not.toContain('/home/user')
+  })
+
+  it('keeps indirect project references selectable after their global target is managed', async () => {
+    const source = {
+      id: 'indirect-project-reference', identifier: 'demo-skill', scope: 'project', location: 'Codex', target: 'codex',
+      path: '/workspace/.codex/skills/demo-skill', entryType: 'external-symlink', realPath: '/home/user/.agent-manager/skills/demo-skill/versions/sha256-demo',
+      originalLink: '/home/user/.claude/skills/demo-skill', checksum: 'sha256-demo', eligible: true, migrationEligible: true, alreadyManaged: true,
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({ project: { id: 'project-session-id', name: 'sample', path: '/workspace' } })
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [source], groups: [], diagnostics: [] })
+      if (route === '/api/v1/sync/recovery') return jsonResponse({ batches: [] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    await screen.findByRole('heading', { name: 'Storage & Sync', level: 2 })
+
+    const reference = await screen.findByRole('checkbox', { name: /Select reference demo-skill/ })
+    expect(reference).toBeEnabled()
+    fireEvent.click(reference)
+    expect(screen.getByRole('button', { name: 'Review project migration' })).toBeEnabled()
+  })
+
+  it('shows neutral source entries as import-only', async () => {
+    const source = {
+      id: 'neutral-source', identifier: 'neutral-skill', scope: 'global', location: '.agents',
+      path: '/home/user/.agents/skills/neutral-skill', realPath: '/home/user/.agents/skills/neutral-skill',
+      entryType: 'directory', checksum: 'sha256-neutral', eligible: true, migrationEligible: false,
+    }
+    const group = { id: 'neutral-skill@sha256-neutral', identifier: 'neutral-skill', checksum: 'sha256-neutral', versionKey: 'sync-sha256-neutral', sources: [source], alreadyPresent: false, conflict: false }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/system') return jsonResponse({})
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [source], groups: [group], diagnostics: [] })
+      if (route === '/api/v1/sync/recovery') return jsonResponse({ batches: [] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    await screen.findByRole('heading', { name: 'Storage & Sync', level: 2 })
+    expect(screen.getByText('neutral-skill · Import only')).toBeInTheDocument()
+    expect(screen.getByText('This entry can be copied into the library, but its location is not enabled for managed reference migration.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review global migration' })).toBeDisabled()
+  })
+
+  it('requires recovery preview and confirmation before resolving a pending batch', async () => {
+    const batch = { batchId: 'batch-recovery', kind: 'resync', scope: 'global', status: 'needs-recovery', actions: ['rollback'], diagnostic: 'one path is published', steps: [
+      { id: 'step-1', resource: '/home/user/.codex/skills/demo', action: 'replace', classification: 'after', beforeState: 'old', currentState: 'new' },
+    ] }
+    const conflictBatch = { batchId: 'conflict-batch', kind: 'migration', scope: 'project', status: 'needs-recovery', actions: [], diagnostic: 'user changed a destination', steps: [] }
+    const calls: { route: string; body: string }[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const route = String(input)
+      const body = String(init.body ?? '')
+      calls.push({ route, body })
+      if (route === '/api/v1/system') return jsonResponse({})
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [], groups: [], diagnostics: [] })
+      if (route === '/api/v1/sync/recovery') return jsonResponse({ batches: calls.some((call) => call.route === '/api/v1/sync/recovery/apply') ? [] : [batch, conflictBatch] })
+      if (route === '/api/v1/sync/recovery/preview') return jsonResponse({ planId: 'recovery-plan', preview: { ...batch, steps: [{ ...batch.steps[0], classification: 'after', diagnostic: 'safe to restore' }] } }, 201)
+      if (route === '/api/v1/sync/recovery/apply') return jsonResponse({ ...batch, status: 'rolled-back', steps: [] })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    await screen.findByRole('heading', { name: 'Storage & Sync', level: 2 })
+    await screen.findByRole('heading', { name: 'Pending recovery', level: 2 })
+    expect(calls.filter((call) => call.route === '/api/v1/sync/recovery')).toHaveLength(1)
+    expect(await screen.findByText('2 pending')).toBeInTheDocument()
+    expect(await screen.findByText(/\/home\/user\/\.codex\/skills\/demo/)).toBeInTheDocument()
+    expect(screen.getByText('Conflict detected. Current files and recovery backups are preserved.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Review rollback' }))
+    expect(await screen.findByRole('heading', { name: 'Review pending batch recovery' })).toBeInTheDocument()
+    expect(screen.getByText('safe to restore')).toBeInTheDocument()
+    expect(calls.filter((call) => call.route === '/api/v1/sync/recovery/apply')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rollback' }))
+    expect(await screen.findByText('Pending recovery was resolved.')).toBeInTheDocument()
+    expect(JSON.parse(calls.find((call) => call.route === '/api/v1/sync/recovery/preview')!.body)).toEqual({ batchId: 'batch-recovery', action: 'rollback' })
+    expect(JSON.parse(calls.find((call) => call.route === '/api/v1/sync/recovery/apply')!.body)).toEqual({ planId: 'recovery-plan' })
   })
 
   it('keeps divergent-version choices visible and requires a refreshed preview before import', async () => {
@@ -151,7 +339,7 @@ describe('console entry and guarded installation', () => {
     expect(choiceRadios()[0]).toBeChecked()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm import' }))
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('2 Skill versions imported.'))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('2 Skill versions imported. Sources were left in place.'))
     const previewCalls = calls.filter((call) => call.route === '/api/v1/sync/import/preview')
     expect(previewCalls.map((call) => JSON.parse(call.body).currentChoices['demo-skill'])).toEqual([undefined, 'group-b', 'group-a'])
   })

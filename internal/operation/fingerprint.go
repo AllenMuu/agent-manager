@@ -26,6 +26,15 @@ func FingerprintPath(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+func fingerprintOrAbsent(path string) (string, error) {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return "absent", nil
+	} else if err != nil {
+		return "", err
+	}
+	return FingerprintPath(path)
+}
+
 func fingerprintPath(h hash.Hash, root, current string) error {
 	info, err := os.Lstat(current)
 	if err != nil {

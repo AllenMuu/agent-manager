@@ -255,7 +255,7 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 	if err != nil {
 		return operation.Plan{}, "", nil, nil, err
 	}
-	service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+	service := s.lifecycleService(journal, func(operation.Plan) bool { return true })
 	service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 	plan, err := service.PreviewAddMany(project.Path, selected, targets, options)
 	if err != nil {
@@ -303,7 +303,7 @@ func (s *Server) previewRemoval(project *registeredProject, request removalReque
 	if err != nil {
 		return operation.Plan{}, "", err
 	}
-	service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+	service := s.lifecycleService(journal, func(operation.Plan) bool { return true })
 	plan, err := service.PreviewRemove(project.Path, target, request.SkillIdentifier)
 	if err != nil {
 		return plan, "", fmt.Errorf("removal cannot be safely planned: %w", err)
@@ -515,7 +515,8 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			err = journalErr
 			break
 		}
-		service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+		service := s.lifecycleService(journal, func(operation.Plan) bool { return true })
+		service.OperationLockHeld = true
 		service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 		service.BeforeFinalPublish = func() error {
 			if err := validateProjectJournalLayout(project); err != nil {
@@ -539,7 +540,8 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			err = journalErr
 			break
 		}
-		service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+		service := s.lifecycleService(journal, func(operation.Plan) bool { return true })
+		service.OperationLockHeld = true
 		service.BeforePublish = func(string) error { return validateProjectJournalLayout(project) }
 		_, err = service.Remove(project.Path, adapter.Target(plan.removal.TargetAgent), plan.removal.SkillIdentifier)
 	case "undo":
@@ -549,7 +551,9 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			break
 		}
 		journal.BeforeRestorePublish = func(string) error { return validateProjectJournalLayout(project) }
-		err = journal.UndoLatestWithFingerprints(func(operation.Plan) bool { return true }, cloneFingerprints(plan.snapshotFingerprints))
+		service := s.lifecycleService(journal, func(operation.Plan) bool { return true })
+		service.OperationLockHeld = true
+		err = service.UndoWithFingerprints(cloneFingerprints(plan.snapshotFingerprints))
 	case doctorReconcilePlan, doctorGitignorePlan:
 		err = s.executeDoctorRepair(project, plan)
 	}

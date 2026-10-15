@@ -92,6 +92,46 @@ func TestRecordedMaterializationRecognizesOwnedCopyAndRejectsChangedAfterState(t
 	}
 }
 
+func TestRecordMaterializationRejectsSourceDriftFromDurableIntent(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "library", "demo", "versions", "v1")
+	destination := filepath.Join(root, "project", ".codex", "skills", "demo")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("reviewed version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	j := operation.New(filepath.Join(root, "journal.json"))
+	before, err := j.Capture([]string{destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, destination); err != nil {
+		t.Skipf("create materialization link: %v", err)
+	}
+	after, err := j.Capture([]string{destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedSourceFingerprint, err := operation.FingerprintPath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("changed before journal commit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = j.RecordPlanWithEvidence(operation.NewPlan("activate"), before, after, []operation.Materialization{{
+		Destination: destination, Source: source, SourceVersion: "v1", Method: "symlink", SourceFingerprint: expectedSourceFingerprint,
+	}}, "interrupted-materialization", nil)
+	if !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("RecordPlanWithEvidence() error = %v, want ErrUnexpectedState after source drift", err)
+	}
+}
+
 func TestUndoLatestRestoresLegacyJournalEntry(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "skill")
@@ -823,6 +863,98 @@ func TestRestoreDoesNotOverwriteLateOwnerForPublishedExistingSnapshot(t *testing
 	}
 	if got, readErr := os.ReadFile(filepath.Join(staging, "previous")); readErr != nil || string(got) != "current-first" {
 		t.Fatalf("staged original was not retained for recovery: %q, %v", got, readErr)
+	}
+}
+
+func TestRestoreDoesNotOverwriteOwnerCreatedImmediatelyBeforePublish(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal.BeforeRestorePublish = func(string) error {
+		return os.WriteFile(path, []byte("late owner"), 0o644)
+	}
+	if err := journal.Restore(snapshots); err == nil {
+		t.Fatal("Restore unexpectedly published over a late owner")
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "late owner" {
+		t.Fatalf("late owner = %q, %v; Restore replaced it", got, err)
+	}
+}
+
+func TestRestoreExpectedRejectsStateChangedAfterClassification(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("classified current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := operation.FingerprintPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("late owner"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RestoreExpected(snapshots, map[string]string{path: expected}); !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("RestoreExpected() error = %v, want changed-state conflict", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "late owner" {
+		t.Fatalf("late owner = %q, %v; guarded restore changed it", got, err)
+	}
+}
+
+func TestRestoreVerifiesObjectMovedIntoStagingBeforePublishingBackup(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "project", "skill")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	snapshots, err := journal.Capture([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("expected current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := operation.FingerprintPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.BeforeRestoreMove = func(path, _ string) error {
+		return os.WriteFile(path, []byte("late moved owner"), 0o644)
+	}
+	if err := journal.RestoreExpected(snapshots, map[string]string{path: expected}); !errors.Is(err, operation.ErrUnexpectedState) {
+		t.Fatalf("RestoreExpected() error = %v, want moved-object conflict", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "late moved owner" {
+		t.Fatalf("moved owner = %q, %v; restore replaced it", got, err)
 	}
 }
 

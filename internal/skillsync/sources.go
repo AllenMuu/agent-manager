@@ -2,10 +2,14 @@
 package skillsync
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -18,6 +22,13 @@ import (
 
 var ErrUnsafeSource = errors.New("unsafe Skill source")
 
+const (
+	maxSourceEntriesPerScope = 4096
+	maxSourceLinkHops        = 16
+	maxSourceSkillFiles      = 2048
+	maxSourceSkillBytes      = 64 << 20
+)
+
 type Scope string
 
 const (
@@ -27,33 +38,48 @@ const (
 
 // Source describes one Skill candidate and the supported location that owns it.
 type Source struct {
-	ID              string     `json:"id"`
-	Identifier      string     `json:"identifier"`
-	Scope           Scope      `json:"scope"`
-	Location        string     `json:"location"`
-	Path            string     `json:"path"`
-	Checksum        string     `json:"checksum,omitempty"`
-	ModifiedAt      *time.Time `json:"modifiedAt,omitempty"`
-	Origin          string     `json:"origin,omitempty"`
-	OriginType      string     `json:"originType,omitempty"`
-	OriginRef       string     `json:"originRef,omitempty"`
-	OriginSkillPath string     `json:"originSkillPath,omitempty"`
-	InstalledAt     *time.Time `json:"installedAt,omitempty"`
-	UpdatedAt       *time.Time `json:"updatedAt,omitempty"`
-	StoredHash      string     `json:"-"`
-	HashKind        string     `json:"-"`
-	LockPath        string     `json:"-"`
-	LockKey         string     `json:"-"`
-	Eligible        bool       `json:"eligible"`
-	Problem         string     `json:"problem,omitempty"`
-	AlreadyManaged  bool       `json:"alreadyManaged,omitempty"`
-	ManagedMaterial string     `json:"managedMaterial,omitempty"`
+	ID                 string         `json:"id"`
+	Identifier         string         `json:"identifier"`
+	ResolvedIdentifier string         `json:"resolvedIdentifier,omitempty"`
+	Scope              Scope          `json:"scope"`
+	Location           string         `json:"location"`
+	Target             adapter.Target `json:"target,omitempty"`
+	Path               string         `json:"path"`
+	EntryType          string         `json:"entryType,omitempty"`
+	RealPath           string         `json:"realPath,omitempty"`
+	OriginalLink       string         `json:"originalLink,omitempty"`
+	LinkChain          []LinkHop      `json:"linkChain,omitempty"`
+	MigrationEligible  bool           `json:"migrationEligible"`
+	IdentityConflict   bool           `json:"identityConflict,omitempty"`
+	Checksum           string         `json:"checksum,omitempty"`
+	ModifiedAt         *time.Time     `json:"modifiedAt,omitempty"`
+	Origin             string         `json:"origin,omitempty"`
+	OriginType         string         `json:"originType,omitempty"`
+	OriginRef          string         `json:"originRef,omitempty"`
+	OriginSkillPath    string         `json:"originSkillPath,omitempty"`
+	InstalledAt        *time.Time     `json:"installedAt,omitempty"`
+	UpdatedAt          *time.Time     `json:"updatedAt,omitempty"`
+	StoredHash         string         `json:"-"`
+	HashKind           string         `json:"-"`
+	LockPath           string         `json:"-"`
+	LockKey            string         `json:"-"`
+	Eligible           bool           `json:"eligible"`
+	Problem            string         `json:"problem,omitempty"`
+	AlreadyManaged     bool           `json:"alreadyManaged,omitempty"`
+	ManagedMaterial    string         `json:"managedMaterial,omitempty"`
 }
 
 type SourceLocation struct {
-	Scope Scope  `json:"scope"`
-	Label string `json:"label"`
-	Path  string `json:"path"`
+	Scope Scope          `json:"scope"`
+	Label string         `json:"label"`
+	Path  string         `json:"path"`
+	Agent adapter.Target `json:"agent,omitempty"`
+}
+
+// LinkHop records the exact path and unmodified target text for one link.
+type LinkHop struct {
+	Path   string `json:"path"`
+	Target string `json:"target"`
 }
 
 type Diagnostic struct {
@@ -66,6 +92,7 @@ type Inventory struct {
 	Locations   []SourceLocation `json:"locations"`
 	Sources     []Source         `json:"sources"`
 	Diagnostics []Diagnostic     `json:"diagnostics"`
+	Complete    bool             `json:"complete"`
 }
 
 // Discover inspects only adapter-owned and neutral Skills directories below
@@ -90,8 +117,16 @@ func Discover(home, project, repository string, globalJournal, projectJournal *o
 		return Inventory{}, err
 	}
 	locations := sourceLocations(absHome, absProject)
-	result := Inventory{Locations: locations, Sources: []Source{}, Diagnostics: []Diagnostic{}}
+	result := Inventory{Locations: locations, Sources: []Source{}, Diagnostics: []Diagnostic{}, Complete: true}
+	entriesByScope := map[Scope]int{}
+	limitReached := map[Scope]bool{}
+	trees := map[string]sourceTreeResult{}
 	for _, location := range locations {
+		if limitReached[location.Scope] {
+			result.Complete = false
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: fmt.Sprintf("source scan stopped because the %d-entry scope limit was reached", maxSourceEntriesPerScope)})
+			continue
+		}
 		boundary := absHome
 		if location.Scope == ScopeProject {
 			boundary = absProject
@@ -101,6 +136,7 @@ func Discover(home, project, repository string, globalJournal, projectJournal *o
 				continue
 			}
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: err.Error()})
+			result.Complete = false
 			continue
 		}
 		info, err := os.Lstat(location.Path)
@@ -109,10 +145,12 @@ func Discover(home, project, repository string, globalJournal, projectJournal *o
 		}
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: fmt.Sprintf("inspect source directory: %v", err)})
+			result.Complete = false
 			continue
 		}
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: "source location must be a real directory; symbolic links are not followed"})
+			result.Complete = false
 			continue
 		}
 		overlaps, err := skillrepo.PathsOverlap(repo.Root(), location.Path)
@@ -124,12 +162,20 @@ func Discover(home, project, repository string, globalJournal, projectJournal *o
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: "configured repository is excluded from Skill sources"})
 			continue
 		}
-		found, diagnostics, err := discoverLocation(location, boundary, globalJournal, projectJournal, repo)
+		remaining := maxSourceEntriesPerScope - entriesByScope[location.Scope]
+		found, diagnostics, observed, overflow, err := discoverLocation(location, boundary, remaining, globalJournal, projectJournal, repo, trees)
 		if err != nil {
-			return Inventory{}, err
+			result.Diagnostics = append(result.Diagnostics, Diagnostic{Scope: location.Scope, Path: location.Path, Message: err.Error()})
+			result.Complete = false
+			continue
 		}
 		result.Sources = append(result.Sources, found...)
 		result.Diagnostics = append(result.Diagnostics, diagnostics...)
+		entriesByScope[location.Scope] += observed
+		if overflow {
+			limitReached[location.Scope] = true
+			result.Complete = false
+		}
 	}
 	attachSourceProvenance(result.Sources, absHome, absProject)
 	sort.Slice(result.Sources, func(i, j int) bool {
@@ -165,9 +211,9 @@ func sourceLocations(home, project string) []SourceLocation {
 			continue
 		}
 		label := map[adapter.Target]string{adapter.ClaudeCode: "Claude Code", adapter.Codex: "Codex", adapter.Pi: "Pi"}[target.Target()]
-		locations = append(locations, SourceLocation{Scope: ScopeGlobal, Label: label, Path: filepath.Dir(agent.GlobalSkillPath(home, "placeholder"))})
+		locations = append(locations, SourceLocation{Scope: ScopeGlobal, Label: label, Path: filepath.Dir(agent.GlobalSkillPath(home, "placeholder")), Agent: target.Target()})
 		if project != "" {
-			locations = append(locations, SourceLocation{Scope: ScopeProject, Label: label, Path: filepath.Dir(agent.ProjectSkillPath(project, "placeholder"))})
+			locations = append(locations, SourceLocation{Scope: ScopeProject, Label: label, Path: filepath.Dir(agent.ProjectSkillPath(project, "placeholder")), Agent: target.Target()})
 		}
 	}
 	locations = append(locations,
@@ -183,23 +229,12 @@ func sourceLocations(home, project string) []SourceLocation {
 	return locations
 }
 
-func discoverLocation(location SourceLocation, boundary string, globalJournal, projectJournal *operation.Journal, repo *skillrepo.Repository) ([]Source, []Diagnostic, error) {
-	children, err := os.ReadDir(location.Path)
+func discoverLocation(location SourceLocation, boundary string, limit int, globalJournal, projectJournal *operation.Journal, repo *skillrepo.Repository, trees map[string]sourceTreeResult) ([]Source, []Diagnostic, int, bool, error) {
+	children, overflow, err := readDirectoryEntries(location.Path, limit)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read supported Skill source %s: %w", location.Path, err)
+		return nil, nil, 0, false, fmt.Errorf("read supported Skill source %s: %w", location.Path, err)
 	}
-	parsed, catalogDiagnostics, err := catalog.Discover(location.Path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse supported Skill source %s: %w", location.Path, err)
-	}
-	byID := make(map[string]catalog.Skill, len(parsed))
-	for _, skill := range parsed {
-		byID[skill.Identifier] = skill
-	}
-	diagnostics := make([]Diagnostic, 0, len(catalogDiagnostics))
-	for _, item := range catalogDiagnostics {
-		diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: item.Path, Message: item.Message})
-	}
+	diagnostics := make([]Diagnostic, 0)
 	sources := make([]Source, 0, len(children))
 	for _, child := range children {
 		path := filepath.Join(location.Path, child.Name())
@@ -211,53 +246,111 @@ func discoverLocation(location SourceLocation, boundary string, globalJournal, p
 		if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
-		candidate := Source{ID: sourceID(location, child.Name(), path), Identifier: child.Name(), Scope: location.Scope, Location: location.Label, Path: path}
+		candidate := Source{ID: sourceID(location, child.Name(), path), Identifier: child.Name(), Scope: location.Scope, Location: location.Label, Target: location.Agent, Path: path}
 		if info.Mode()&os.ModeSymlink != 0 {
-			if source, err := os.Readlink(path); err == nil {
-				if !filepath.IsAbs(source) {
-					source = filepath.Join(filepath.Dir(path), source)
-				}
-				if owned, _ := repo.OwnsPath(child.Name(), source); owned {
-					candidate.AlreadyManaged = true
-					candidate.ManagedMaterial = "symlink"
-					candidate.Eligible = true
-					sources = append(sources, candidate)
-					continue
-				}
+			candidate.EntryType = "external-symlink"
+			realPath, chain, original, resolveErr := resolveEntryLink(path)
+			candidate.LinkChain = chain
+			candidate.OriginalLink = original
+			if resolveErr != nil {
+				candidate.Problem = resolveErr.Error()
+				sources = append(sources, candidate)
+				diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
+				continue
 			}
-			candidate.Problem = "symbolic-link Skills are not followed"
-			sources = append(sources, candidate)
-			diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
-			continue
+			candidate.RealPath = realPath
+			candidate.ResolvedIdentifier = filepath.Base(realPath)
+			candidate.MigrationEligible = location.Agent != ""
+		} else {
+			candidate.EntryType = "directory"
+			candidate.RealPath = path
+			candidate.ResolvedIdentifier = child.Name()
 		}
-		if err := validateBelowBoundary(boundary, path); err != nil {
-			candidate.Problem = err.Error()
-			sources = append(sources, candidate)
-			diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
-			continue
+		if info.Mode()&os.ModeSymlink == 0 {
+			if err := validateBelowBoundary(boundary, path); err != nil {
+				candidate.Problem = err.Error()
+				sources = append(sources, candidate)
+				diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
+				continue
+			}
 		}
 		if journal := journalFor(location.Scope, globalJournal, projectJournal); journal != nil {
-			if materialization, managed, err := journal.RecordedMaterialization(path); err != nil {
-				candidate.Problem = fmt.Sprintf("validate managed Skill journal: %v", err)
-			} else if managed && materialization.Method == "copy" && materialization.Source != "" {
+			materialization, managed, journalErr := journal.RecordedMaterialization(path)
+			if journalErr != nil {
+				candidate.Problem = fmt.Sprintf("validate managed Skill journal: %v", journalErr)
+				sources = append(sources, candidate)
+				diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
+				continue
+			}
+			if managed && materialization.Source != "" {
 				if owned, ownErr := repo.OwnsPath(child.Name(), materialization.Source); ownErr == nil && owned {
 					candidate.AlreadyManaged = true
-					candidate.ManagedMaterial = "copy"
+					candidate.ManagedMaterial = materialization.Method
+					candidate.EntryType = "managed-copy"
+					if materialization.Method == "symlink" {
+						candidate.EntryType = "managed-link"
+					}
 					candidate.Eligible = true
+					candidate.MigrationEligible = false
 					sources = append(sources, candidate)
 					continue
 				}
 			}
 		}
-		checksum, err := skillrepo.ChecksumTree(path)
+		overlaps, err := skillrepo.PathsOverlap(repo.Root(), candidate.RealPath)
 		if err != nil {
-			candidate.Problem = fmt.Sprintf("unsafe Skill tree: %v", err)
-		} else if _, ok := byID[child.Name()]; !ok {
+			candidate.Problem = fmt.Sprintf("validate repository exclusion: %v", err)
+			sources = append(sources, candidate)
+			diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
+			continue
+		}
+		if overlaps {
+			if owned, ownErr := repo.OwnsPath(child.Name(), candidate.RealPath); ownErr == nil && owned {
+				candidate.AlreadyManaged = true
+				candidate.ManagedMaterial = "symlink"
+				candidate.ResolvedIdentifier = child.Name()
+				candidate.ResolvedIdentifier = child.Name()
+			} else {
+				candidate.Problem = "resolved Skill source overlaps the configured repository"
+				sources = append(sources, candidate)
+				diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})
+				continue
+			}
+		}
+		tree, inspected := trees[candidate.RealPath]
+		if !inspected {
+			tree.checksum, tree.err = skillrepo.ChecksumTreeWithLimits(candidate.RealPath, maxSourceSkillFiles, maxSourceSkillBytes)
+			if tree.err == nil {
+				tree.skill, tree.err = catalog.ReadDirectory(candidate.RealPath)
+			}
+			if tree.err == nil {
+				modifiedAt, modifiedErr := newestRegularFileMTime(candidate.RealPath)
+				tree.err = modifiedErr
+				if modifiedErr == nil {
+					tree.modifiedAt = &modifiedAt
+				}
+			}
+			trees[candidate.RealPath] = tree
+		}
+		if tree.err != nil {
+			candidate.Problem = fmt.Sprintf("unsafe Skill tree: %v", tree.err)
+		} else if candidate.ResolvedIdentifier != child.Name() {
+			candidate.IdentityConflict = true
+			candidate.MigrationEligible = false
+			candidate.Problem = fmt.Sprintf("source entry %q does not match resolved Skill identity %q; choose which identity to use before importing", child.Name(), candidate.ResolvedIdentifier)
+			candidate.Checksum = tree.checksum
+			candidate.Eligible = tree.checksum != ""
+			if tree.modifiedAt != nil && !tree.modifiedAt.IsZero() {
+				modifiedAt := *tree.modifiedAt
+				candidate.ModifiedAt = &modifiedAt
+			}
+		} else if tree.checksum == "" {
 			candidate.Problem = "directory does not contain a valid SKILL.md"
 		} else {
-			candidate.Checksum = checksum
+			candidate.Checksum = tree.checksum
 			candidate.Eligible = true
-			if modifiedAt, err := newestRegularFileMTime(path); err == nil && !modifiedAt.IsZero() {
+			if tree.modifiedAt != nil && !tree.modifiedAt.IsZero() {
+				modifiedAt := *tree.modifiedAt
 				candidate.ModifiedAt = &modifiedAt
 			}
 		}
@@ -266,7 +359,136 @@ func discoverLocation(location SourceLocation, boundary string, globalJournal, p
 		}
 		sources = append(sources, candidate)
 	}
-	return sources, diagnostics, nil
+	return sources, diagnostics, len(children), overflow, nil
+}
+
+func readDirectoryEntries(path string, limit int) ([]os.DirEntry, bool, error) {
+	directory, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer directory.Close()
+	readLimit := limit + 1
+	if readLimit < 1 {
+		readLimit = 1
+	}
+	entries, err := directory.ReadDir(readLimit)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false, err
+	}
+	overflow := len(entries) > limit
+	if overflow {
+		entries = entries[:limit]
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, overflow, nil
+}
+
+type sourceTreeResult struct {
+	skill      catalog.Skill
+	checksum   string
+	modifiedAt *time.Time
+	err        error
+}
+
+func resolveEntryLink(entry string) (string, []LinkHop, string, error) {
+	current, err := filepath.Abs(entry)
+	if err != nil {
+		return "", nil, "", err
+	}
+	seen := map[string]bool{}
+	chain := make([]LinkHop, 0, 2)
+	original := ""
+	for hop := 0; hop <= maxSourceLinkHops; hop++ {
+		current = filepath.Clean(current)
+		if seen[current] {
+			return "", chain, original, fmt.Errorf("symbolic-link cycle detected")
+		}
+		seen[current] = true
+		if err := validateRealPathParents(current); err != nil {
+			return "", chain, original, err
+		}
+		info, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return "", chain, original, fmt.Errorf("symbolic-link target is missing")
+			}
+			return "", chain, original, fmt.Errorf("inspect symbolic-link target: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			if !info.IsDir() {
+				return "", chain, original, fmt.Errorf("symbolic-link target is not a Skill directory")
+			}
+			return current, chain, original, nil
+		}
+		if hop == maxSourceLinkHops {
+			return "", chain, original, fmt.Errorf("symbolic-link chain exceeds %d hops", maxSourceLinkHops)
+		}
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", chain, original, fmt.Errorf("read symbolic link: %w", err)
+		}
+		if hop == 0 {
+			original = target
+		}
+		chain = append(chain, LinkHop{Path: current, Target: target})
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		current, err = filepath.Abs(target)
+		if err != nil {
+			return "", chain, original, err
+		}
+	}
+	return "", chain, original, fmt.Errorf("symbolic-link chain exceeds %d hops", maxSourceLinkHops)
+}
+
+func validateRealPathParents(path string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(absPath)
+	root := volume + string(filepath.Separator)
+	relative, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return err
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	current := root
+	for _, component := range components[:max(0, len(components)-1)] {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("inspect link-path ancestor %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if !trustedSystemPathSymlink(current) {
+				return fmt.Errorf("%w: link-path ancestor %s is not a real directory", ErrUnsafeSource, current)
+			}
+			resolved, err := os.Stat(current)
+			if err != nil || !resolved.IsDir() {
+				return fmt.Errorf("%w: link-path ancestor %s is not a real directory", ErrUnsafeSource, current)
+			}
+		} else if !info.IsDir() {
+			return fmt.Errorf("%w: link-path ancestor %s is not a real directory", ErrUnsafeSource, current)
+		}
+	}
+	return nil
+}
+
+func trustedSystemPathSymlink(path string) bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return (path == "/var" && resolved == "/private/var") || (path == "/tmp" && resolved == "/private/tmp")
 }
 
 func journalFor(scope Scope, global, project *operation.Journal) *operation.Journal {
@@ -277,7 +499,9 @@ func journalFor(scope Scope, global, project *operation.Journal) *operation.Jour
 }
 
 func sourceID(location SourceLocation, identifier, path string) string {
-	return string(location.Scope) + ":" + location.Label + ":" + identifier + ":" + filepath.Clean(path)
+	identity := string(location.Scope) + "\x00" + location.Label + "\x00" + identifier + "\x00" + filepath.Clean(path)
+	digest := sha256.Sum256([]byte(identity))
+	return hex.EncodeToString(digest[:])
 }
 
 func validateBelowBoundary(boundary, path string) error {

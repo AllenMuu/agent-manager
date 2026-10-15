@@ -37,7 +37,7 @@ func TestImportGroupsIdenticalSourcesAndPreservesSources(t *testing.T) {
 	if len(entries) != 1 || entries[0].Metadata.SourceType != "local-web-sync" || len(entries[0].Metadata.SourceOrigins) != 2 {
 		t.Fatalf("import provenance = %+v", entries)
 	}
-	if snapshots, err := os.ReadDir(service.syncRoot); err != nil {
+	if snapshots, err := os.ReadDir(filepath.Join(service.syncRoot, "import-snapshots")); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	} else {
 		for _, snapshot := range snapshots {
@@ -52,6 +52,287 @@ func TestImportGroupsIdenticalSourcesAndPreservesSources(t *testing.T) {
 	repository, _ := skillrepo.Open(fixture.repository)
 	if _, err := repository.Resolve("demo", ""); err != nil {
 		t.Fatalf("imported repository version is missing: %v", err)
+	}
+}
+
+func TestImportFromExternalLinkUsesExactTargetAndReturnsCommittedEvidence(t *testing.T) {
+	fixture := newSyncFixture(t)
+	target := filepath.Join(t.TempDir(), "external", "demo")
+	writeSkill(t, target, "linked source")
+	if err := os.MkdirAll(filepath.Join(fixture.home, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(fixture.home, ".claude", "skills", "demo")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("create source symlink: %v", err)
+	}
+	// A neighboring directory must not participate in exact-target metadata
+	// inspection or import.
+	if err := os.Mkdir(filepath.Join(filepath.Dir(target), "not-a-skill"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service := fixture.service(t)
+	_, groups, err := service.Inventory()
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("Inventory() = %d groups, err %v", len(groups), err)
+	}
+	preview, err := service.Preview([]string{groups[0].ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ApplyDetailed(preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BatchID == "" || len(result.Entries) != 1 || len(result.SourceRecordIDs) != 1 {
+		t.Fatalf("import result lacks exact batch/version/source evidence: %#v", result)
+	}
+	entry := result.Entries[0]
+	if entry.Key != groups[0].VersionKey || entry.Path == "" {
+		t.Fatalf("imported version = %#v, want exact selected version %q", entry, groups[0].VersionKey)
+	}
+	record, ok, err := NewDiscoveryStore(filepath.Join(service.syncRoot, "discoveries")).Get(result.SourceRecordIDs[0])
+	if err != nil || !ok || record.Status != DiscoveryCommitted || record.RealPath != target || record.EntryPath != filepath.Join(service.home, ".claude", "skills", "demo") || record.VersionKey != entry.Key {
+		t.Fatalf("committed source record = %#v (ok=%v, err=%v)", record, ok, err)
+	}
+}
+
+func TestImportRequiresExplicitChoiceWhenEntryAndResolvedIdentityDiffer(t *testing.T) {
+	for _, choice := range []string{"entry", "resolved"} {
+		t.Run(choice, func(t *testing.T) {
+			fixture := newSyncFixture(t)
+			real := filepath.Join(t.TempDir(), "external", "real-skill")
+			writeSkill(t, real, "content")
+			entry := filepath.Join(fixture.home, ".claude", "skills", "alias-skill")
+			if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(real, entry); err != nil {
+				t.Skipf("create source symlink: %v", err)
+			}
+			service := fixture.service(t)
+			inventory, groups, err := service.Inventory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(groups) != 1 || len(inventory.Sources) == 0 {
+				t.Fatalf("identity-conflict source was not importable: sources=%+v groups=%+v", inventory.Sources, groups)
+			}
+			source := groups[0].Sources[0]
+			if !source.Eligible || !source.IdentityConflict || source.MigrationEligible || source.ResolvedIdentifier != "real-skill" {
+				t.Fatalf("identity conflict was not represented safely: %+v", source)
+			}
+			unresolved, err := service.Preview([]string{groups[0].ID}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(unresolved.IdentityChoiceRequired) != 1 || unresolved.IdentityChoiceRequired[0] != source.ID {
+				t.Fatalf("missing explicit choice was not returned: %+v", unresolved)
+			}
+			if _, err := service.Apply(unresolved); !errors.Is(err, ErrNeedsIdentityChoice) {
+				t.Fatalf("Apply without an identity choice error = %v", err)
+			}
+			preview, err := service.PreviewWithIdentityChoices([]string{groups[0].ID}, nil, map[string]string{source.ID: choice})
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries, err := service.Apply(preview)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantIdentifier := "alias-skill"
+			if choice == "resolved" {
+				wantIdentifier = "real-skill"
+			}
+			if len(entries) != 1 || entries[0].Identifier != wantIdentifier {
+				t.Fatalf("imported identity = %+v, want %q", entries, wantIdentifier)
+			}
+			if _, err := os.Stat(entry); err != nil {
+				t.Fatalf("source link was modified: %v", err)
+			}
+		})
+	}
+}
+
+func TestImportRecordsSourceWhenVersionAlreadyExists(t *testing.T) {
+	fixture := newSyncFixture(t)
+	source := filepath.Join(fixture.home, ".claude", "skills", "demo")
+	writeSkill(t, source, "reused source")
+	service := fixture.service(t)
+	_, groups, err := service.Inventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Preview([]string{groups[0].ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.ApplyDetailed(preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err = service.Preview([]string{groups[0].ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Groups[0].AlreadyPresent {
+		t.Fatal("second preview did not recognize the existing version")
+	}
+	second, err := service.ApplyDetailed(preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.BatchID == "" || second.BatchID == first.BatchID || len(second.Entries) != 1 || second.Entries[0].Key != first.Entries[0].Key || len(second.SourceRecordIDs) != 1 {
+		t.Fatalf("reused import lost exact version/source evidence: first=%#v second=%#v", first, second)
+	}
+	store := NewDiscoveryStore(filepath.Join(service.syncRoot, "discoveries"))
+	record, ok, err := store.Get(second.SourceRecordIDs[0])
+	if err != nil || !ok || record.Status != DiscoveryCommitted || !record.ReusedVersion || record.VersionKey != first.Entries[0].Key {
+		t.Fatalf("reused source record = %#v (ok=%v, err=%v)", record, ok, err)
+	}
+}
+
+func TestImportSourceRecordCommitFailureRetainsPublishedVersionAndRecoveryEvidence(t *testing.T) {
+	fixture := newSyncFixture(t)
+	source := filepath.Join(fixture.home, ".claude", "skills", "demo")
+	writeSkill(t, source, "published before evidence commit")
+	service := fixture.service(t)
+	_, groups, err := service.Inventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Preview([]string{groups[0].ID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.BeforeDiscoveryCommit = func([]string) error { return errors.New("injected discovery commit failure") }
+	if _, err := service.ApplyDetailed(preview); err == nil {
+		t.Fatal("injected source record commit failure unexpectedly succeeded")
+	}
+	repository, _ := skillrepo.Open(fixture.repository)
+	entry, err := repository.Resolve("demo", groups[0].VersionKey)
+	if err != nil {
+		t.Fatalf("successfully published immutable version was removed: %v", err)
+	}
+	batchStore := operation.NewBatchStore(filepath.Join(service.syncRoot, "batches"))
+	pending, err := batchStore.Pending()
+	if err != nil || len(pending) != 1 || pending[0].Status != operation.BatchNeedsRecovery {
+		t.Fatalf("pending import batches = %#v, err %v", pending, err)
+	}
+	records, err := NewDiscoveryStore(filepath.Join(service.syncRoot, "discoveries")).ForBatch(pending[0].ID)
+	if err != nil || len(records) != 1 || records[0].Status != DiscoveryStaged || records[0].VersionKey != entry.Key {
+		t.Fatalf("staged recovery evidence = %#v, err %v", records, err)
+	}
+	// Simulate a crash after the immutable directory rename but before the
+	// repository metadata rename. Recovery must reconstruct the index from its
+	// durable import intent before it commits source discovery evidence.
+	if err := os.Remove(filepath.Join(fixture.repository, "demo", skillrepo.MetadataFilename)); err != nil {
+		t.Fatalf("remove repository metadata to simulate crash window: %v", err)
+	}
+	previewRecovery, err := service.PreviewRecovery()
+	if err != nil || len(previewRecovery.Batches) != 1 || !hasAction(previewRecovery.Batches[0].Actions, RecoveryResolve) {
+		t.Fatalf("recovery preview = %#v, err %v", previewRecovery, err)
+	}
+	if _, err := service.ApplyRecovery(pending[0].ID, RecoveryResolve); err != nil {
+		t.Fatalf("recover import evidence: %v", err)
+	}
+	recoveredEntry, err := repository.Resolve("demo", entry.Key)
+	if err != nil || recoveredEntry.Metadata.Checksum != records[0].Checksum || recoveredEntry.Metadata.SourceType != "local-web-sync" {
+		t.Fatalf("recovery did not restore repository metadata: entry=%#v err=%v", recoveredEntry, err)
+	}
+	recovered, ok, err := batchStore.Get(pending[0].ID)
+	if err != nil || !ok || recovered.Status != operation.BatchCommitted {
+		t.Fatalf("recovered batch = %#v (ok=%v, err=%v)", recovered, ok, err)
+	}
+	record, ok, err := NewDiscoveryStore(filepath.Join(service.syncRoot, "discoveries")).Get(records[0].ID)
+	if err != nil || !ok || record.Status != DiscoveryCommitted {
+		t.Fatalf("recovered discovery record = %#v (ok=%v, err=%v)", record, ok, err)
+	}
+}
+
+func TestImportRecoveryRemovesEmptyIdentityCreatedBeforeVersionPublication(t *testing.T) {
+	fixture := newSyncFixture(t)
+	source := filepath.Join(fixture.home, ".claude", "skills", "demo")
+	writeSkill(t, source, "interrupted before version publication")
+	service := fixture.service(t)
+	_, groups, err := service.Inventory()
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("source groups = %#v, err %v", groups, err)
+	}
+	group := groups[0]
+	metadata, _, err := versionMetadata(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchID := "prepublish-import"
+	recordID := discoveryRecordID(batchID, group.Sources[0].ID)
+	store := operation.NewBatchStore(filepath.Join(service.syncRoot, "batches"))
+	identity := filepath.Join(fixture.repository, group.Identifier)
+	batch, err := store.Prepare(operation.Batch{
+		ID: batchID, Kind: "import", Scope: "local", Resources: []string{identity},
+		SourceRecordIDs: []string{recordID},
+		Steps:           []operation.BatchStep{{ID: group.ID, Resource: identity, Action: "publish:" + group.VersionKey, BeforeState: "absent", ExpectedAfter: group.Checksum}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch.Status = operation.BatchPublishing
+	if err := store.Update(batch); err != nil {
+		t.Fatal(err)
+	}
+	discovery := NewDiscoveryStore(filepath.Join(service.syncRoot, "discoveries"))
+	if _, err := discovery.Prepare(DiscoveryRecord{
+		ID: recordID, BatchID: batchID, Scope: group.Sources[0].Scope,
+		Location: group.Sources[0].Location, EntryPath: group.Sources[0].Path, EntryType: group.Sources[0].EntryType,
+		OriginalLink: group.Sources[0].OriginalLink, LinkChain: group.Sources[0].LinkChain,
+		RealPath: group.Sources[0].RealPath, Checksum: group.Checksum, Identifier: group.Identifier,
+		VersionKey: group.VersionKey, VersionMetadata: metadata, ObservedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(identity, "versions", ".stage-interrupted")
+	if err := os.MkdirAll(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	preview, err := service.PreviewRecovery()
+	if err != nil || len(preview.Batches) != 1 || !hasAction(preview.Batches[0].Actions, RecoveryResolve) {
+		t.Fatalf("recovery preview = %#v, err %v", preview, err)
+	}
+	if _, err := service.ApplyRecovery(batchID, RecoveryResolve); err != nil {
+		t.Fatalf("resolve interrupted pre-publication import: %v", err)
+	}
+	if _, err := os.Lstat(identity); !os.IsNotExist(err) {
+		t.Fatalf("empty transaction-owned identity remains after rollback: %v", err)
+	}
+	importPreview, err := service.Preview([]string{group.ID}, nil)
+	if err != nil {
+		t.Fatalf("preview retry after recovery: %v", err)
+	}
+	if _, err := service.ApplyDetailed(importPreview); err != nil {
+		t.Fatalf("retry import after recovery: %v", err)
+	}
+}
+
+func TestImportRecoveryPreservesUnexpectedNonEmptyStage(t *testing.T) {
+	root := t.TempDir()
+	identity := filepath.Join(root, "demo")
+	stage := filepath.Join(identity, "versions", ".stage-interrupted")
+	stagedFile := filepath.Join(stage, "SKILL.md")
+	if err := os.MkdirAll(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stagedFile, []byte("unpublished staged content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := removeEmptyUnpublishedIdentity(identity)
+	if !errors.Is(err, ErrRecoveryConflict) {
+		t.Fatalf("removeEmptyUnpublishedIdentity() error = %v, want recovery conflict", err)
+	}
+	contents, readErr := os.ReadFile(stagedFile)
+	if readErr != nil || string(contents) != "unpublished staged content" {
+		t.Fatalf("unexpected non-empty stage was changed: %q, %v", contents, readErr)
 	}
 }
 
@@ -263,9 +544,12 @@ func TestImportBatchFailureRollsBackEveryPublishedIdentity(t *testing.T) {
 			t.Fatalf("batch rollback left %s in the repository: %v", identifier, err)
 		}
 	}
-	entries, err := os.ReadDir(service.syncRoot)
+	entries, err := os.ReadDir(filepath.Join(service.syncRoot, "import-snapshots"))
 	if err != nil {
-		t.Fatal(err)
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {

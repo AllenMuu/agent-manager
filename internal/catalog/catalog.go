@@ -15,3 +15,10 @@ type Diagnostic = resource.Diagnostic
 func Discover(root string) ([]Skill, []Diagnostic, error) {
 	return resource.NewSkillHandler().Discover(root)
 }
+
+// ReadDirectory inspects one exact real Skill directory without discovering
+// its siblings. The caller is responsible for validating the source boundary
+// and the complete tree before importing the Skill.
+func ReadDirectory(path string) (Skill, error) {
+	return resource.NewSkillHandler().ReadDirectory(path)
+}

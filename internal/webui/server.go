@@ -17,6 +17,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
+	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/recommend"
 	"github.com/AllenMuu/skill-manager/internal/search"
 	"github.com/AllenMuu/skill-manager/internal/stack"
@@ -62,11 +63,15 @@ func NewModuleWithMaterialization(project, library, session string, mode func() 
 			return nil, err
 		}
 	}
+	installs := installation.NewWithMaterializationProvider(library, mode)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		installs.BatchStore = operation.NewBatchStore(filepath.Join(home, ".agent-manager", "skill-sync", "batches"))
+	}
 	module := &Module{server: &server{
 		project:  project,
 		library:  library,
 		session:  session,
-		installs: installation.NewWithMaterializationProvider(library, mode),
+		installs: installs,
 	}}
 	module.api = module.server.apiHandler()
 	return module, nil

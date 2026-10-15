@@ -37,7 +37,7 @@ type anchoredPublicationStage interface {
 	Path() string
 }
 
-func publishLink(project, destination, source string, replace bool, snapshot operation.Snapshot, beforeRemove, beforeFinalPublish, beforeDiscard func() error) error {
+func publishLink(project, destination, source string, replace bool, snapshot operation.Snapshot, beforeStageMove func(string) error, beforeRemove, beforeFinalPublish, beforeDiscard func() error) error {
 	parent, err := openAnchoredPublicationDirectory(project, filepath.Dir(destination))
 	if err != nil {
 		return err
@@ -80,6 +80,13 @@ func publishLink(project, destination, source string, replace bool, snapshot ope
 			_ = stage.Close()
 		}
 	}()
+	if beforeStageMove != nil {
+		if err := beforeStageMove(stage.Path()); err != nil {
+			closeErr := stage.Close()
+			stageClosed = true
+			return errors.Join(err, closeErr)
+		}
+	}
 	if err := stage.MoveFrom(name); err != nil {
 		_ = stage.Discard()
 		stageClosed = true
