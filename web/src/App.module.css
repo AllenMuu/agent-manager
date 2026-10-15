@@ -67,8 +67,10 @@
 .syncDiagnostics span { color: #6b675d; font-size: 11px; }
 .syncActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 15px; }
 .syncActions .textButton { min-height: 36px; }
-.syncReview { padding: 20px; border: 1px solid #d8b99f; border-radius: 10px; background: #fffaf4; }
+.syncReview { min-width: 0; padding: 20px; border: 1px solid #d8b99f; border-radius: 10px; background: #fffaf4; }
 .syncReview h2 { margin: 12px 0; font-size: 20px; }
+.syncReviewStatus { margin: 10px 0; padding: 10px 12px; border: 1px solid #d8c49d; border-radius: 8px; background: #fff8e9; color: #66532e; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.syncReviewStatus[data-state="ready"] { border-color: #b6cbb9; background: #edf3eb; color: #315d42; }
 .updateList { display: grid; margin-top: 10px; border-top: 1px solid #ece8e0; }
 .updateRow { display: grid; grid-template-columns: 17px minmax(0, 1fr); align-items: start; gap: 9px; padding: 12px 0; border-bottom: 1px solid #efede7; }
 .updateRow > input { width: 16px; height: 16px; margin-top: 2px; accent-color: #b84f31; }
@@ -80,11 +82,12 @@
 .syncPlanRow { display: grid; gap: 4px; padding: 11px 0; border-top: 1px solid #e9e0d5; }
 .syncPlanRow > strong { color: #343930; font-size: 12px; }
 .syncProblem { color: #9b3c2b !important; }
-.currentChoice { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid #d8c49d; border-radius: 8px; background: #fffdf7; }
+.currentChoice { display: grid; min-width: 0; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid #d8c49d; border-radius: 8px; background: #fffdf7; }
 .currentChoice legend { padding: 0 5px; color: #64502c; font-size: 12px; font-weight: 700; }
-.currentChoice label { display: flex; gap: 8px; align-items: flex-start; font-size: 11px; }
+.currentChoice label { display: flex; min-width: 0; gap: 8px; align-items: flex-start; font-size: 11px; }
 .currentChoice label span { display: grid; gap: 3px; overflow-wrap: anywhere; }
-.currentChoice code { color: #77796f; font-size: 10px; }
+.currentChoice code { color: #77796f; font-size: 10px; overflow-wrap: anywhere; }
+.currentChoice > button { justify-self: start; max-width: 100%; }
 .syncMuted { color: #77796f; font-size: 11px; }
 .syncNotice, .syncError { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #b6cbb9; border-radius: 8px; background: #edf3eb; color: #315d42; font-size: 12px; }
 .syncNotice button { width: 32px; height: 32px; border: 0; background: transparent; color: inherit; font-size: 20px; cursor: pointer; }

@@ -53,6 +53,8 @@ For copy materialization, stage a validated repository tree beside the destinati
 
 Add a console view that displays the effective repository path, the three strategy options, and the effect of a mode change on future activations. Include distinct Global and Project source groups with per-item and select-all controls, an import preview and explicit confirmation, and separate “resync now” actions for existing managed activations in each scope. Show import status and per-scope resync Undo availability beside the relevant action. Add Simplified Chinese and English strings through the existing console localization.
 
+For divergent version choices, show each source location's local modification time when available and mark a candidate as newer only when the scan finds one uniquely newest time with complete timestamp evidence. Treat timestamps as comparison hints and never choose a current version automatically from them. Keep the import review self-explanatory: show why confirmation is blocked, display preview-update progress and errors beside the choices, and identify when the preview is ready or when every selected version is already present.
+
 ## Risks / Trade-offs
 
 - [Copy activations have no link target to prove ownership] → Record their canonical Skill version, materialization method, and before/after fingerprints in the existing scoped journals; treat copies without valid journal evidence as unmanaged.

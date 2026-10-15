@@ -40,6 +40,10 @@ The console SHALL provide a read-only preview that lists selected Skills, their 
 - **WHEN** Skills with the same identifier have different tree checksums
 - **THEN** the preview shows each content variant as a distinct version candidate and requires an explicit current-version choice when no repository current version already exists
 
+#### Scenario: Compare divergent current-version candidates
+- **WHEN** the user must choose which divergent source version becomes current
+- **THEN** each candidate shows its source location and local modification time when available; only a uniquely newer timestamp is marked as newer, missing or tied timestamps are not ranked, and timestamps never choose a version automatically
+
 #### Scenario: A version already exists in the repository
 - **WHEN** a discovered Skill matches an existing repository version by identifier and checksum
 - **THEN** the preview identifies it as already present and does not plan to rewrite it
@@ -52,6 +56,8 @@ The console SHALL provide a read-only preview that lists selected Skills, their 
 
 The service SHALL require explicit confirmation bound to the displayed preview before copying Skills into the configured repository. Before applying, it SHALL revalidate the registered project, source trees, repository state, and preview token; a stale plan SHALL make no changes. A confirmed batch SHALL be atomic and preserve all source locations. A failed batch SHALL roll back only filesystem state proven to belong to that transaction. Successful imports SHALL remain in the versioned repository because projects outside the currently registered scope may activate them; this workflow SHALL NOT offer to remove an imported version.
 
+The review SHALL explain why confirmation is unavailable, including pending current-version choices, repository conflicts, and selections that are already present. A request to update the preview SHALL show progress, and any failure SHALL be visible in the review area.
+
 #### Scenario: Preview is not confirmed
 - **WHEN** the user reviews a synchronization preview but does not confirm it
 - **THEN** the source directories, repository, and operation journals remain unchanged
@@ -59,6 +65,14 @@ The service SHALL require explicit confirmation bound to the displayed preview b
 #### Scenario: The preview becomes stale
 - **WHEN** a selected source tree, repository destination, or registered project changes after preview
 - **THEN** the service rejects the confirmation without changing any source or repository entry and requires a fresh preview
+
+#### Scenario: A current-version choice has not been previewed
+- **WHEN** the user changes a candidate selection but has not updated the import preview
+- **THEN** confirmation remains unavailable, the selected candidate is marked as not yet included in the preview, and the review identifies the Skills whose choices still need to be included
+
+#### Scenario: An import preview request fails
+- **WHEN** the user requests a new preview and the request fails
+- **THEN** the review shows the failure beside the choices and keeps confirmation unavailable until a valid preview is available
 
 #### Scenario: A confirmed batch succeeds
 - **WHEN** the user confirms a current preview containing one or more eligible Skills
