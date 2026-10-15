@@ -103,7 +103,11 @@ func (s *server) catalog(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]catalogItem, 0, len(skills))
 	for _, skill := range skills {
-		items = append(items, catalogItem{Identifier: skill.Identifier, Name: skill.Name, Description: skill.Description, Tags: nonNil(skill.Tags), Compatibility: nonNil(skill.Compatibility)})
+		items = append(items, catalogItem{
+			Identifier: skill.Identifier, Name: skill.Name, Description: skill.Description,
+			Tags: nonNil(skill.Tags), Compatibility: nonNil(skill.Compatibility),
+			Source: skill.Source, SourceType: skill.SourceType, Publisher: skill.Publisher, ImmutableRef: skill.ImmutableRef,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skills": items, "targets": availableTargets()})
 }
@@ -114,6 +118,10 @@ type catalogItem struct {
 	Description   string   `json:"description"`
 	Tags          []string `json:"tags"`
 	Compatibility []string `json:"compatibility"`
+	Source        string   `json:"source,omitempty"`
+	SourceType    string   `json:"sourceType,omitempty"`
+	Publisher     string   `json:"publisher,omitempty"`
+	ImmutableRef  string   `json:"immutableRef,omitempty"`
 }
 
 type targetOption struct {

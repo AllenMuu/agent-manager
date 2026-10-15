@@ -69,6 +69,14 @@
 .syncActions .textButton { min-height: 36px; }
 .syncReview { padding: 20px; border: 1px solid #d8b99f; border-radius: 10px; background: #fffaf4; }
 .syncReview h2 { margin: 12px 0; font-size: 20px; }
+.updateList { display: grid; margin-top: 10px; border-top: 1px solid #ece8e0; }
+.updateRow { display: grid; grid-template-columns: 17px minmax(0, 1fr); align-items: start; gap: 9px; padding: 12px 0; border-bottom: 1px solid #efede7; }
+.updateRow > input { width: 16px; height: 16px; margin-top: 2px; accent-color: #b84f31; }
+.updateRowMain { display: grid; min-width: 0; gap: 4px; }
+.updateRowHeading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.updateRowHeading > strong { overflow-wrap: anywhere; color: #33382f; font-size: 12px; }
+.updateRowMain > small { overflow-wrap: anywhere; color: #77796f; font-size: 11px; line-height: 1.45; }
+.updateRowMain > code { overflow-wrap: anywhere; color: #666a60; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .syncPlanRow { display: grid; gap: 4px; padding: 11px 0; border-top: 1px solid #e9e0d5; }
 .syncPlanRow > strong { color: #343930; font-size: 12px; }
 .syncProblem { color: #9b3c2b !important; }

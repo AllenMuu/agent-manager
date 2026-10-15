@@ -13,6 +13,7 @@ import (
 
 	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/operation"
+	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
 
 func TestConsoleBatchInstallationUsesSavedCopyOnlyMode(t *testing.T) {
@@ -303,6 +304,29 @@ func TestConsoleInstallationIsSessionScopedAndInstallsOnlyTheExplicitSelection(t
 	}
 	if _, err := os.Lstat(filepath.Join(project, ".codex", "skills", "not-selected")); !os.IsNotExist(err) {
 		t.Fatalf("unselected Skill was activated: %v", err)
+	}
+}
+
+func TestCatalogExposesRecordedSkillSource(t *testing.T) {
+	library := t.TempDir()
+	sourceRoot := t.TempDir()
+	writeInstallationSkill(t, sourceRoot, "remote-skill")
+	source := filepath.Join(sourceRoot, "remote-skill")
+	repository, err := skillrepo.Open(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repository.AddVersion("remote-skill", source, skillrepo.VersionMetadata{
+		Key: "github-abc123", Version: "unknown", Source: "acme/skills", SourceType: "github",
+		ImmutableRef: "abc123", TrustLevel: "unknown", VerificationStatus: "unknown",
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newInstallationTestServer(t, t.TempDir(), library)
+	response := request(t, server, http.MethodGet, "/api/catalog", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"source":"acme/skills"`) || !strings.Contains(response.Body.String(), `"sourceType":"github"`) {
+		t.Fatalf("catalog omitted source metadata: status=%d body=%s", response.Code, response.Body)
 	}
 }
 

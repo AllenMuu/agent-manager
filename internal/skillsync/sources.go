@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/catalog"
@@ -26,16 +27,27 @@ const (
 
 // Source describes one Skill candidate and the supported location that owns it.
 type Source struct {
-	ID              string `json:"id"`
-	Identifier      string `json:"identifier"`
-	Scope           Scope  `json:"scope"`
-	Location        string `json:"location"`
-	Path            string `json:"path"`
-	Checksum        string `json:"checksum,omitempty"`
-	Eligible        bool   `json:"eligible"`
-	Problem         string `json:"problem,omitempty"`
-	AlreadyManaged  bool   `json:"alreadyManaged,omitempty"`
-	ManagedMaterial string `json:"managedMaterial,omitempty"`
+	ID              string     `json:"id"`
+	Identifier      string     `json:"identifier"`
+	Scope           Scope      `json:"scope"`
+	Location        string     `json:"location"`
+	Path            string     `json:"path"`
+	Checksum        string     `json:"checksum,omitempty"`
+	ModifiedAt      *time.Time `json:"modifiedAt,omitempty"`
+	Origin          string     `json:"origin,omitempty"`
+	OriginType      string     `json:"originType,omitempty"`
+	OriginRef       string     `json:"originRef,omitempty"`
+	OriginSkillPath string     `json:"originSkillPath,omitempty"`
+	InstalledAt     *time.Time `json:"installedAt,omitempty"`
+	UpdatedAt       *time.Time `json:"updatedAt,omitempty"`
+	StoredHash      string     `json:"-"`
+	HashKind        string     `json:"-"`
+	LockPath        string     `json:"-"`
+	LockKey         string     `json:"-"`
+	Eligible        bool       `json:"eligible"`
+	Problem         string     `json:"problem,omitempty"`
+	AlreadyManaged  bool       `json:"alreadyManaged,omitempty"`
+	ManagedMaterial string     `json:"managedMaterial,omitempty"`
 }
 
 type SourceLocation struct {
@@ -119,6 +131,7 @@ func Discover(home, project, repository string, globalJournal, projectJournal *o
 		result.Sources = append(result.Sources, found...)
 		result.Diagnostics = append(result.Diagnostics, diagnostics...)
 	}
+	attachSourceProvenance(result.Sources, absHome, absProject)
 	sort.Slice(result.Sources, func(i, j int) bool {
 		left, right := result.Sources[i], result.Sources[j]
 		if left.Scope != right.Scope {
@@ -244,6 +257,9 @@ func discoverLocation(location SourceLocation, boundary string, globalJournal, p
 		} else {
 			candidate.Checksum = checksum
 			candidate.Eligible = true
+			if modifiedAt, err := newestRegularFileMTime(path); err == nil && !modifiedAt.IsZero() {
+				candidate.ModifiedAt = &modifiedAt
+			}
 		}
 		if !candidate.Eligible {
 			diagnostics = append(diagnostics, Diagnostic{Scope: location.Scope, Path: path, Message: candidate.Problem})

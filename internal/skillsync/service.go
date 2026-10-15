@@ -29,17 +29,19 @@ var (
 const importLockName = "imports.lock"
 
 type SourceGroup struct {
-	ID                    string   `json:"id"`
-	Identifier            string   `json:"identifier"`
-	Checksum              string   `json:"checksum"`
-	VersionKey            string   `json:"versionKey"`
-	Sources               []Source `json:"sources"`
-	AlreadyPresent        bool     `json:"alreadyPresent"`
-	Conflict              bool     `json:"conflict"`
-	ConflictReason        string   `json:"conflictReason,omitempty"`
-	ExistingCurrent       string   `json:"existingCurrent,omitempty"`
-	RequiresCurrentChoice bool     `json:"requiresCurrentChoice,omitempty"`
-	MakeCurrent           bool     `json:"makeCurrent,omitempty"`
+	ID                     string     `json:"id"`
+	Identifier             string     `json:"identifier"`
+	Checksum               string     `json:"checksum"`
+	VersionKey             string     `json:"versionKey"`
+	Sources                []Source   `json:"sources"`
+	AlreadyPresent         bool       `json:"alreadyPresent"`
+	Conflict               bool       `json:"conflict"`
+	ConflictReason         string     `json:"conflictReason,omitempty"`
+	ModifiedAt             *time.Time `json:"modifiedAt,omitempty"`
+	NewerLocalModification bool       `json:"newerLocalModification,omitempty"`
+	ExistingCurrent        string     `json:"existingCurrent,omitempty"`
+	RequiresCurrentChoice  bool       `json:"requiresCurrentChoice,omitempty"`
+	MakeCurrent            bool       `json:"makeCurrent,omitempty"`
 }
 
 type Preview struct {
@@ -61,6 +63,7 @@ type Service struct {
 	projectJournal      *operation.Journal
 	Now                 func() time.Time
 	BeforeImportPublish func(int, skillrepo.Entry) error
+	github              *githubClient
 }
 
 func New(repositoryRoot, home, project string, globalJournal, projectJournal *operation.Journal) (*Service, error) {
@@ -93,7 +96,7 @@ func New(repositoryRoot, home, project string, globalJournal, projectJournal *op
 	return &Service{
 		repositoryRoot: repository.Root(), home: filepath.Clean(absHome), project: filepath.Clean(absProject),
 		syncRoot:      filepath.Join(absHome, ".agent-manager", "skill-sync"),
-		globalJournal: globalJournal, projectJournal: projectJournal, Now: time.Now,
+		globalJournal: globalJournal, projectJournal: projectJournal, Now: time.Now, github: newGitHubClient(),
 	}, nil
 }
 
@@ -344,6 +347,10 @@ func groupSources(sources []Source) []SourceGroup {
 			groups[id] = group
 		}
 		group.Sources = append(group.Sources, source)
+		if source.ModifiedAt != nil && (group.ModifiedAt == nil || source.ModifiedAt.After(*group.ModifiedAt)) {
+			modifiedAt := *source.ModifiedAt
+			group.ModifiedAt = &modifiedAt
+		}
 	}
 	result := make([]SourceGroup, 0, len(groups))
 	for _, group := range groups {
@@ -358,6 +365,30 @@ func groupSources(sources []Source) []SourceGroup {
 			return left.Path < right.Path
 		})
 		result = append(result, *group)
+	}
+	newestByIdentifier := map[string]time.Time{}
+	newestCount := map[string]int{}
+	groupCount := map[string]int{}
+	missingTimestamp := map[string]bool{}
+	for _, group := range result {
+		groupCount[group.Identifier]++
+		if group.ModifiedAt == nil || group.ModifiedAt.IsZero() {
+			missingTimestamp[group.Identifier] = true
+			continue
+		}
+		newest := newestByIdentifier[group.Identifier]
+		if group.ModifiedAt.After(newest) {
+			newestByIdentifier[group.Identifier] = *group.ModifiedAt
+			newestCount[group.Identifier] = 1
+		} else if group.ModifiedAt.Equal(newest) {
+			newestCount[group.Identifier]++
+		}
+	}
+	for i := range result {
+		identifier := result[i].Identifier
+		if modifiedAt := result[i].ModifiedAt; groupCount[identifier] > 1 && !missingTimestamp[identifier] && modifiedAt != nil && !modifiedAt.IsZero() && newestCount[identifier] == 1 && modifiedAt.Equal(newestByIdentifier[identifier]) {
+			result[i].NewerLocalModification = true
+		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Identifier != result[j].Identifier {

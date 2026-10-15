@@ -57,6 +57,10 @@ export type Skill = {
   tags: string[]
   compatibility: string[]
   provenance?: string
+  source?: string
+  sourceType?: string
+  publisher?: string
+  immutableRef?: string
   body?: string
 }
 export type SubAgent = {
@@ -112,6 +116,13 @@ export type SyncSource = {
   location: string
   path: string
   checksum?: string
+  modifiedAt?: string
+  origin?: string
+  originType?: string
+  originRef?: string
+  originSkillPath?: string
+  installedAt?: string
+  updatedAt?: string
   eligible: boolean
   problem?: string
   alreadyManaged?: boolean
@@ -126,6 +137,8 @@ export type SyncSourceGroup = {
   alreadyPresent: boolean
   conflict: boolean
   conflictReason?: string
+  modifiedAt?: string
+  newerLocalModification?: boolean
   existingCurrent?: string
   requiresCurrentChoice?: boolean
   makeCurrent?: boolean
@@ -140,6 +153,7 @@ export type SyncInventory = {
   diagnostics: SyncDiagnostic[]
   globalResyncUndoAvailable: boolean
   projectResyncUndoAvailable: boolean
+  updateUndoAvailable: boolean
 }
 export type SyncImportPreview = {
   repositoryPath: string
@@ -151,3 +165,30 @@ export type SyncImportPreview = {
   confirmationToken: string
 }
 export type SyncPlan = { id: string; scope?: string; plan: { operation: string; changes: PlanChange[]; warnings: string[] } }
+export type SkillUpdateItem = {
+  id: string
+  identifier: string
+  scope: 'global' | 'project'
+  path: string
+  origin?: string
+  originType?: string
+  ref?: string
+  status: 'local' | 'available' | 'up-to-date' | 'modified-locally' | 'unsupported' | 'failed' | string
+  currentHash?: string
+  upstreamHash?: string
+  checkedAt: string
+  problem?: string
+  canUpdate: boolean
+}
+export type SkillUpdateCheck = { checkedAt: string; items: SkillUpdateItem[] }
+export type SkillUpdatePreviewItem = {
+  id: string
+  identifier: string
+  scope: 'global' | 'project'
+  origin: string
+  ref: string
+  path: string
+  currentHash: string
+  upstreamHash: string
+}
+export type SkillUpdatePreview = { items: SkillUpdatePreviewItem[] }

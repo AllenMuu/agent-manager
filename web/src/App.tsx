@@ -22,6 +22,9 @@ import type {
   SyncInventory,
   SyncMode,
   SyncPlan,
+  SkillUpdateCheck,
+  SkillUpdateItem,
+  SkillUpdatePreview,
   SyncSource,
   SyncSourceGroup,
 } from './types'
@@ -530,6 +533,9 @@ function LanguageSwitch() {
 type SyncOperationReview =
   | { kind: 'resync'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
   | { kind: 'resync-undo'; planId: string; scope: 'global' | 'project'; plan: SyncPlan['plan'] }
+type UpstreamUpdateReview =
+  | { kind: 'update'; planId: string; preview: SkillUpdatePreview }
+  | { kind: 'undo'; planId: string; plan: SyncPlan['plan'] }
 
 function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boolean }) {
   const { t, error: formatError } = useLanguage()
@@ -540,6 +546,9 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const [currentChoices, setCurrentChoices] = useState<Record<string, string>>({})
   const [importReview, setImportReview] = useState<{ planId: string; preview: SyncImportPreview } | null>(null)
   const [operationReview, setOperationReview] = useState<SyncOperationReview | null>(null)
+  const [updateCheck, setUpdateCheck] = useState<SkillUpdateCheck | null>(null)
+  const [selectedUpdates, setSelectedUpdates] = useState<string[]>([])
+  const [upstreamReview, setUpstreamReview] = useState<UpstreamUpdateReview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown | null>(null)
@@ -615,6 +624,43 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
     )
   }
 
+  const checkUpdates = async () => {
+    await perform(
+      () => post<SkillUpdateCheck>(token, '/api/v1/sync/updates/check'),
+      (result) => { setUpdateCheck(result); setSelectedUpdates([]) },
+    )
+  }
+
+  const previewUpdates = async (ids: string[]) => {
+    if (ids.length === 0) return
+    await perform(
+      () => post<{ planId: string; preview: SkillUpdatePreview }>(token, '/api/v1/sync/updates/preview', { selectedSourceIds: ids }),
+      (result) => setUpstreamReview({ kind: 'update', ...result }),
+    )
+  }
+
+  const previewUpdatesUndo = async () => {
+    await perform(
+      () => post<{ planId: string; plan: SyncPlan['plan'] }>(token, '/api/v1/sync/updates/undo/preview'),
+      (result) => setUpstreamReview({ kind: 'undo', ...result }),
+    )
+  }
+
+  const applyUpstreamReview = async () => {
+    if (!upstreamReview) return
+    const { kind, planId } = upstreamReview
+    await perform(
+      () => post<{ updated?: number; status?: string }>(token, kind === 'update' ? '/api/v1/sync/updates/apply' : '/api/v1/sync/updates/undo/apply', { planId }),
+      (result) => {
+        setNotice(kind === 'update' ? t('{count} Skills updated from their recorded sources.', { count: result.updated ?? 0 }) : t('The latest upstream Skill update was undone.'))
+        setUpstreamReview(null)
+        setUpdateCheck(null)
+        setSelectedUpdates([])
+        void refresh()
+      },
+    )
+  }
+
   const applyOperationReview = async () => {
     if (!operationReview) return
     const { kind, planId, scope } = operationReview
@@ -635,7 +681,8 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const currentPreviewChoices = Array.from(new Set(importReview?.preview.groups.filter((group) => group.requiresCurrentChoice).map((group) => group.identifier) ?? []))
   const hasUnappliedCurrentChoice = Boolean(importReview && currentPreviewChoices.some((identifier) => currentChoices[identifier] !== importReview.preview.currentChoices?.[identifier]))
   const canApplyImport = Boolean(importReview && currentPreviewNeedsChoice.length === 0 && !hasUnappliedCurrentChoice && importReview.preview.groups.some((group) => !group.alreadyPresent) && importReview.preview.groups.every((group) => !group.conflict))
-  const reviewActive = Boolean(importReview || operationReview)
+  const availableUpdates = updateCheck?.items.filter((item) => item.canUpdate) ?? []
+  const reviewActive = Boolean(importReview || operationReview || upstreamReview)
 
   if (loading && !inventory) return <LoadingState label={t('Reading supported Skill locations…')} />
   if (error && !inventory) return <ErrorState error={error} />
@@ -677,6 +724,27 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
       </div>
     </section>
 
+    <section className={styles.panel} aria-labelledby="upstream-updates-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('RECORDED UPSTREAM SOURCES')}</span>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive} onClick={() => void checkUpdates()}>{busy ? t('Checking…') : t('Check for updates')}</button>
+      </div>
+      <h2 id="upstream-updates-heading">{t('Check installed Skill updates')}</h2>
+      <p>{t('Only this button contacts supported GitHub sources recorded by Skills CLI. Local and unsupported sources are shown without a network check.')}</p>
+      {updateCheck && <>
+        <div className={styles.syncMuted}>{t('Last checked: {time}', { time: new Date(updateCheck.checkedAt).toLocaleString() })}</div>
+        {updateCheck.items.length === 0 ? <EmptyInline title={t('No Skills with recorded sources')} detail={t('Refresh the source inventory after installing a Skill with Skills CLI.')} /> : <div className={styles.updateList}>
+          {updateCheck.items.map((item) => <SkillUpdateRow key={item.id} item={item} checked={selectedUpdates.includes(item.id)} disabled={busy || reviewActive} onToggle={() => setSelectedUpdates((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />)}
+        </div>}
+        <div className={styles.syncActions}>
+          <button className={styles.primaryButton} type="button" disabled={busy || reviewActive || availableUpdates.length === 0} onClick={() => void previewUpdates(availableUpdates.map((item) => item.id))}>{t('Update all available')}</button>
+          <button className={styles.secondaryButton} type="button" disabled={busy || reviewActive || selectedUpdates.length === 0} onClick={() => void previewUpdates(selectedUpdates)}>{t('Update selected')}</button>
+        </div>
+      </>}
+      {inventory.updateUndoAvailable && <div className={styles.syncActions}>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive} onClick={() => void previewUpdatesUndo()}>{t('Undo latest Skill update')}</button>
+      </div>}
+    </section>
+
     <section className={styles.panel} aria-labelledby="resync-heading">
       <div className={styles.panelTop}><span className={styles.kicker}>{t('EXISTING ACTIVATIONS')}</span><span className={styles.countMark}>{t('Scope by scope')}</span></div>
       <h2 id="resync-heading">{t('Resync managed Skills')}</h2>
@@ -697,7 +765,7 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
         <legend>{t('Choose the current version for {identifier}', { identifier })}</legend>
         {importReview.preview.groups.filter((group) => group.identifier === identifier).map((group) => <label key={group.id}>
           <input type="radio" name={`current-${identifier}`} checked={currentChoices[identifier] === group.id} onChange={() => setCurrentChoices((current) => ({ ...current, [identifier]: group.id }))} />
-          <span>{group.sources.map((source) => `${source.location} · ${source.scope === 'global' ? t('Global') : t('Project')}`).join(', ')} <code>{group.checksum.slice(0, 12)}</code></span>
+          <span>{group.sources.map((source) => `${source.location} · ${source.scope === 'global' ? t('Global') : t('Project')}`).join(', ')} <code>{group.checksum.slice(0, 12)}</code>{currentChoices[identifier] === group.id && <> <strong className={`${styles.pill} ${styles.pillReady}`}>{t('Selected as current version')}</strong></>}</span>
         </label>)}
         <button className={styles.secondaryButton} type="button" disabled={busy || !currentChoices[identifier] || currentChoices[identifier] === importReview.preview.currentChoices?.[identifier]} onClick={() => void createImportPreview()}>{t('Update preview with this choice')}</button>
       </fieldset>)}
@@ -705,6 +773,25 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
       <div className={styles.syncActions}>
         <button className={styles.primaryButton} type="button" disabled={busy || !canApplyImport} onClick={() => void applyImport()}>{t('Confirm import')}</button>
         <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setImportReview(null)}>{t('Cancel')}</button>
+      </div>
+    </section>}
+
+    {upstreamReview && <section className={styles.syncReview} aria-labelledby="upstream-review-heading">
+      <div className={styles.panelTop}><span className={styles.kicker}>{upstreamReview.kind === 'update' ? t('UPSTREAM UPDATE PREVIEW') : t('UPDATE UNDO')}</span><span className={styles.pill}>{upstreamReview.kind === 'update' ? t('{count} Skills', { count: upstreamReview.preview.items.length }) : t('Reviewed restoration')}</span></div>
+      <h2 id="upstream-review-heading">{upstreamReview.kind === 'update' ? t('Review Skill updates') : t('Review the latest upstream update Undo')}</h2>
+      {upstreamReview.kind === 'update' ? upstreamReview.preview.items.map((item) => <div className={styles.syncPlanRow} key={item.id}>
+        <strong>{item.identifier} · {item.scope === 'global' ? t('Global') : t('Project')}</strong>
+        <small>{t('Source: {source}', { source: item.origin })} · {t('Ref: {ref}', { ref: item.ref })}</small>
+        <code>{item.path}</code>
+        <small>{t('Current hash: {hash}', { hash: item.currentHash })}</small>
+        <small>{t('New hash: {hash}', { hash: item.upstreamHash })}</small>
+      </div>) : upstreamReview.plan.changes.map((change, index) => <div className={styles.syncPlanRow} key={`${change.path}-${index}`}>
+        <strong>{change.action}</strong><code>{change.path}</code>{change.detail && <small>{change.detail}</small>}
+      </div>)}
+      <p className={styles.syncMuted}>{upstreamReview.kind === 'update' ? t('Review each source path and hash. Files change only after you confirm.') : t('Undo restores the Skill files and source lock metadata captured before the update.')}</p>
+      <div className={styles.syncActions}>
+        <button className={upstreamReview.kind === 'update' ? styles.primaryButton : styles.subtleDangerButton} type="button" disabled={busy || (upstreamReview.kind === 'undo' && upstreamReview.plan.changes.length === 0)} onClick={() => void applyUpstreamReview()}>{upstreamReview.kind === 'update' ? t('Confirm Skill updates') : t('Confirm update Undo')}</button>
+        <button className={styles.secondaryButton} type="button" disabled={busy} onClick={() => setUpstreamReview(null)}>{t('Cancel')}</button>
       </div>
     </section>}
 
@@ -719,6 +806,31 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
       </div>
     </section>}
   </div>
+}
+
+function SkillUpdateRow({ item, checked, disabled, onToggle }: {
+  item: SkillUpdateItem
+  checked: boolean
+  disabled: boolean
+  onToggle: () => void
+}) {
+  const { t } = useLanguage()
+  const status = item.status === 'available' ? 'Update available'
+    : item.status === 'up-to-date' ? 'Up to date'
+      : item.status === 'modified-locally' ? 'Locally modified'
+        : item.status === 'unsupported' ? 'Cannot check'
+          : item.status === 'failed' ? 'Check failed' : 'Local source'
+  return <article className={styles.updateRow}>
+    {item.canUpdate && <input type="checkbox" checked={checked} disabled={disabled} aria-label={t('Select update for {identifier}', { identifier: item.identifier })} onChange={onToggle} />}
+    <div className={styles.updateRowMain}>
+      <div className={styles.updateRowHeading}><strong>{item.identifier}</strong><span className={`${styles.pill} ${item.canUpdate ? styles.pillReady : styles.pillMuted}`}>{t(status)}</span></div>
+      <small>{t('Scope: {scope}', { scope: item.scope === 'global' ? t('Global') : t('Project') })} · {t('Source: {source}', { source: item.origin || t('Unknown source') })}{item.ref ? ` · ${t('Ref: {ref}', { ref: item.ref })}` : ''}</small>
+      <code>{item.path}</code>
+      {item.currentHash && <small>{t('Current hash: {hash}', { hash: item.currentHash })}</small>}
+      {item.upstreamHash && <small>{t('New hash: {hash}', { hash: item.upstreamHash })}</small>}
+      {item.problem && <small className={item.status === 'failed' || item.status === 'modified-locally' ? styles.syncProblem : ''}>{item.problem}</small>}
+    </div>
+  </article>
 }
 
 function SyncSourceSection({ scope, groups, sources, selected, disabled, onToggle, onSelectAll }: {
@@ -741,7 +853,15 @@ function SyncSourceSection({ scope, groups, sources, selected, disabled, onToggl
     {scopedGroups.length === 0 && <EmptyInline title={t('No eligible Skills found')} detail={scope === 'project' ? t('This project has no eligible source Skills.') : t('No eligible global source Skills were found.')} />}
     <div className={styles.syncGroupList}>{scopedGroups.map((group) => <label className={styles.syncSourceRow} key={group.id}>
       <input type="checkbox" checked={selected.includes(group.id)} disabled={disabled} onChange={() => onToggle(group.id)} aria-label={t('Select {identifier}', { identifier: group.identifier })} />
-      <span><strong>{group.identifier}</strong><small>{group.sources.filter((source) => source.scope === scope).map((source) => `${source.location} · ${source.path}`).join(' · ')}</small>{group.sources.length > 1 && <small>{t('Same content appears in {count} locations', { count: group.sources.length })}</small>}</span>
+      <span><strong>{group.identifier}</strong>
+        {group.sources.filter((source) => source.scope === scope).map((source) => <small key={source.id}>
+          {source.location} · {source.path} · {source.originType === 'local' ? t('Local source') : `${source.originType || t('Unknown source')} · ${source.origin || t('Unknown source')}`}
+          {source.modifiedAt ? ` · ${t('Local modified: {time}', { time: new Date(source.modifiedAt).toLocaleString() })}` : ` · ${t('Local modification time unavailable')}`}
+        </small>)}
+        <small>{t('Content checksum: {checksum}', { checksum: group.checksum })}</small>
+        {group.newerLocalModification && <small><strong className={`${styles.pill} ${styles.pillReady}`}>{t('Local modification time is newer')}</strong></small>}
+        {group.sources.length > 1 && <small>{t('Same content appears in {count} locations', { count: group.sources.length })}</small>}
+      </span>
     </label>)}</div>
     {otherSources.map((source) => <div className={styles.syncSourceNote} key={source.id}><strong>{source.identifier}</strong><small>{source.alreadyManaged ? t('Already managed as {method}', { method: source.managedMaterial ?? '' }) : t('Not eligible · {problem}', { problem: source.problem ?? '' })}</small><code>{source.path}</code></div>)}
   </section>
@@ -751,6 +871,7 @@ function SyncGroupReview({ group, t }: { group: SyncSourceGroup; t: (source: str
   return <div className={styles.syncPlanRow}>
     <strong>{group.identifier} · {group.alreadyPresent ? t('Already in repository') : group.conflict ? t('Conflict') : t('New version')}</strong>
     <code>{group.versionKey}</code>
+    {group.newerLocalModification && <small><strong className={`${styles.pill} ${styles.pillReady}`}>{t('Local modification time is newer')}</strong></small>}
     {group.makeCurrent && <small>{t('Will become the current version')}</small>}
     {group.conflictReason && <small className={styles.syncProblem}>{group.conflictReason}</small>}
     {group.existingCurrent && <small>{t('Current version stays {version}', { version: group.existingCurrent })}</small>}
@@ -897,14 +1018,14 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
         {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
           <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(skill.identifier)} />
           <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
-          <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small></span><span className={styles.chevron}>›</span>
+            <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small><small>{t('Source: {source}', { source: skill.source || t('Local library') })}</small></span><span className={styles.chevron}>›</span>
         </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
       </section>
       <section className={`${styles.panel} ${styles.skillDetailPanel}`} aria-label={t('Skill detail')}>
         {selected ? <>
-          <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL DETAIL / {identifier}', { identifier: selected.identifier })}</span><span className={styles.pill}>{selected.provenance || t('Local library')}</span></div>
+          <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL DETAIL / {identifier}', { identifier: selected.identifier })}</span><span className={styles.pill}>{selected.sourceType || selected.provenance || t('Local library')}</span></div>
           <h2>{selected.name || selected.identifier}</h2><p className={styles.detailLead}>{selected.description}</p>
-          <div className={styles.metadataRow}><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
+          <div className={styles.metadataRow}><span>{t('Source')} <strong>{selected.source || t('Local library')}</strong></span><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
           <div className={styles.documentLabel}>{t('SKILL.MD CONTENT')} <span>{t('READ ONLY · NEVER EXECUTED')}</span></div>
           <pre className={styles.skillBody}>{selected.body ?? t('Select a Skill to read its content.')}</pre>
         </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}

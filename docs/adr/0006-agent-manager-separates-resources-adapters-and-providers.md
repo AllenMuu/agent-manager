@@ -102,6 +102,26 @@ confirmed Gateway mutations; the CLI Gateway advertises read/search only.
 Versions are observable metadata counters, not compare-and-swap guarantees.
 No second canonical content mirror is maintained.
 
+## Explicit user-initiated Skill upstream updates
+
+Local Skill discovery, catalog reads, imports and activation workflows stay
+offline. A separate user action may check an installed Skill only when a
+supported Skills CLI lock entry records a GitHub repository, Skill path and
+comparable install hash. Requests are bounded HTTPS reads to GitHub's API and
+raw-content hosts; redirects are rejected, and Skill content is never executed.
+Unknown and unsupported sources are displayed without a request.
+
+An available update is first staged in a session-bound preview that identifies
+the source, target path and old/new content hashes. Applying it requires a
+separate confirmation, revalidates the upstream and local state, updates only
+the matching lock record, and records a guarded reversible snapshot. The project
+lock's content hash currently supports single-file Skills only; multi-file
+project entries remain visible but cannot be checked until the CLI's locale
+ordering can be reproduced exactly. The global Git tree hash supports bounded
+multi-file trees. These reads and confirmed writes are a narrow exception to the
+offline default, not permission for automatic checks, arbitrary providers,
+dependency installation or Skill execution.
+
 
 ## Explicit shared stdio delivery (Issue #23 Codex/Pi checkpoint)
 
