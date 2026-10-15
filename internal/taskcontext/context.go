@@ -15,6 +15,7 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/artifact"
 	"github.com/AllenMuu/skill-manager/internal/catalog"
 	"github.com/AllenMuu/skill-manager/internal/memory"
+	"github.com/AllenMuu/skill-manager/internal/memorypipeline"
 	"github.com/AllenMuu/skill-manager/internal/role"
 )
 
@@ -28,6 +29,8 @@ type Bundle struct {
 	Skills              []catalog.Skill                     `json:"skills"`
 	MemoryDiagnostic    string                              `json:"memoryDiagnostic,omitempty"`
 	MemoryRecords       []memory.Record                     `json:"memoryRecords,omitempty"`
+	MemorySummary       *memorypipeline.ProjectSummary      `json:"memorySummary,omitempty"`
+	MemoryDerived       []memorypipeline.SearchResult       `json:"memoryDerived,omitempty"`
 	Memory              []MemoryItem                        `json:"memory"`
 	MemoryState         memory.ProviderStatus               `json:"memoryState"`
 	Warnings            []string                            `json:"warnings"`
@@ -44,17 +47,19 @@ type MemoryItem struct {
 }
 
 type Options struct {
-	Project        string
-	TaskID         string
-	Library        string
-	Contract       role.Contract
-	Agent          string
-	SelectedSkills []string
-	MemoryGateway  *memory.Gateway
-	MemoryOwner    memory.Owner
-	MemoryType     memory.KnowledgeType
-	Memory         memory.Searcher
-	MemoryScopes   []memory.Scope
+	Project             string
+	TaskID              string
+	Library             string
+	Contract            role.Contract
+	Agent               string
+	SelectedSkills      []string
+	MemoryGateway       *memory.Gateway
+	MemoryOwner         memory.Owner
+	MemoryType          memory.KnowledgeType
+	MemoryPipeline      *memorypipeline.Resolver
+	MemoryPipelineOwner memory.Owner
+	Memory              memory.Searcher
+	MemoryScopes        []memory.Scope
 }
 
 const (
@@ -94,6 +99,7 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 		ProjectRoot: store.ProjectRoot, TaskID: options.TaskID, Role: options.Contract.ID,
 		Artifacts: map[artifact.Kind]artifact.Document{}, Missing: []artifact.Kind{},
 		RepositoryKnowledge: []KnowledgeFile{}, Skills: []catalog.Skill{}, Memory: []MemoryItem{}, Warnings: []string{},
+		MemoryRecords: []memory.Record{}, MemoryDerived: []memorypipeline.SearchResult{},
 	}
 	for _, kind := range options.Contract.Inputs {
 		doc, _, loadErr := store.Load(options.TaskID, kind)
@@ -148,10 +154,35 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 	} else if len(options.SelectedSkills) > 0 {
 		return Bundle{}, errors.New("a Skill library is required when selecting Skills")
 	}
-	if options.MemoryGateway != nil && options.Memory != nil {
-		return Bundle{}, errors.New("select exactly one canonical Gateway or legacy text Memory path")
+	if options.MemoryGateway != nil && options.Memory != nil || options.MemoryPipeline != nil && (options.MemoryGateway != nil || options.Memory != nil) {
+		return Bundle{}, errors.New("select exactly one Memory Gateway, pipeline resolver, or legacy text Memory path")
 	}
-	if options.MemoryGateway != nil {
+	if options.MemoryPipeline != nil {
+		query := memoryQuery(bundle.Artifacts)
+		initial, pipelineErr := options.MemoryPipeline.Initial(context.Background(), options.MemoryPipelineOwner, query)
+		bundle.MemorySummary = initial.Summary
+		var omitted int
+		bundle.MemoryRecords, omitted = boundedCanonicalRecords(initial.Canonical)
+		if omitted > 0 {
+			bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("Memory context omitted %d canonical records (limits: %d items, %d bytes per item, %d bytes total)", omitted, maxMemoryItems, maxMemoryItemBytes, maxMemoryContextBytes))
+		}
+		status, statusErr := options.MemoryPipeline.ProviderStatus(context.Background(), options.MemoryPipelineOwner)
+		if statusErr != nil {
+			if errors.Is(statusErr, memory.ErrOwnershipDenied) || errors.Is(statusErr, memory.ErrInvalidInput) {
+				return Bundle{}, memory.SafeError(statusErr)
+			}
+			pipelineErr = errors.Join(pipelineErr, statusErr)
+		} else {
+			bundle.MemoryState = status
+		}
+		if pipelineErr != nil {
+			if errors.Is(pipelineErr, memory.ErrOwnershipDenied) || errors.Is(pipelineErr, memory.ErrInvalidInput) {
+				return Bundle{}, memory.SafeError(pipelineErr)
+			}
+			bundle.MemoryDiagnostic = memory.DiagnosticCategory(pipelineErr)
+			bundle.Warnings = append(bundle.Warnings, "Memory context unavailable: "+bundle.MemoryDiagnostic)
+		}
+	} else if options.MemoryGateway != nil {
 		query := memoryQuery(bundle.Artifacts)
 		if query != "" {
 			records, searchErr := options.MemoryGateway.Search(context.Background(), memory.SearchRequest{Owner: options.MemoryOwner, Text: query, Type: options.MemoryType})
@@ -163,8 +194,12 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 				bundle.MemoryState = memory.ProviderStatus{Reason: memory.SafeError(searchErr).Error(), Unsupported: errors.Is(searchErr, memory.ErrUnsupported)}
 				bundle.Warnings = append(bundle.Warnings, "Memory context unavailable: "+bundle.MemoryDiagnostic)
 			} else {
-				bundle.MemoryRecords = records
+				var omitted int
+				bundle.MemoryRecords, omitted = boundedCanonicalRecords(records)
 				bundle.MemoryState = options.MemoryGateway.ProviderStatus(context.Background())
+				if omitted > 0 {
+					bundle.Warnings = append(bundle.Warnings, fmt.Sprintf("Memory context omitted %d canonical records (limits: %d items, %d bytes per item, %d bytes total)", omitted, maxMemoryItems, maxMemoryItemBytes, maxMemoryContextBytes))
+				}
 			}
 		}
 	}
@@ -215,6 +250,21 @@ func ResolveWithOptions(options Options) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("task context exceeds %d bytes", maxTotalContextBytes)
 	}
 	return bundle, nil
+}
+
+func boundedCanonicalRecords(records []memory.Record) ([]memory.Record, int) {
+	result := make([]memory.Record, 0, min(len(records), maxMemoryItems))
+	usedBytes, omitted := 0, 0
+	for _, record := range records {
+		encoded, err := json.Marshal(record)
+		if err != nil || len(result) >= maxMemoryItems || len(encoded) > maxMemoryItemBytes || len(encoded) > maxMemoryContextBytes-usedBytes {
+			omitted++
+			continue
+		}
+		usedBytes += len(encoded)
+		result = append(result, record)
+	}
+	return result, omitted
 }
 
 func readRepositoryKnowledge(root string) ([]KnowledgeFile, error) {

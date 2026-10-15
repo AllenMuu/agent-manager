@@ -2,6 +2,7 @@
 package diagnostic
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
+	"github.com/AllenMuu/skill-manager/internal/memorypipeline"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/resource"
 	"github.com/AllenMuu/skill-manager/internal/skillrepo"
@@ -100,6 +102,31 @@ func Scan(library, project string, journals ...*operation.Journal) ([]Finding, e
 	}
 	for _, root := range unsupportedRoots {
 		findings = append(findings, Finding{Path: root, Message: "unsupported agent skill location", Code: "doctor.unsupported_skill_location"})
+	}
+	pipelineRoot, resolveErr := filepath.EvalSymlinks(project)
+	if resolveErr != nil && !os.IsNotExist(resolveErr) {
+		return nil, fmt.Errorf("resolve project memory pipeline path: %w", resolveErr)
+	}
+	if resolveErr == nil {
+		pipeline, openErr := memorypipeline.OpenProjectStoreReadOnly(pipelineRoot)
+		if openErr != nil && !errors.Is(openErr, memorypipeline.ErrPipelineNotInitialized) {
+			return nil, fmt.Errorf("inspect project memory pipeline: %w", openErr)
+		}
+		if openErr == nil {
+			defer pipeline.Close()
+			proposals, err := pipeline.ListOutstandingProposals(context.Background())
+			if err != nil {
+				return nil, fmt.Errorf("inspect project memory proposals: %w", err)
+			}
+			for _, proposal := range proposals {
+				findings = append(findings, Finding{
+					Path:    pipeline.Path(),
+					Message: fmt.Sprintf("memory proposal %s requires operator review (%s)", proposal.ID, proposal.Status),
+					Code:    "doctor.pending_memory_proposal",
+					Args:    map[string]string{"proposal_id": proposal.ID, "status": string(proposal.Status)},
+				})
+			}
+		}
 	}
 	if _, err := os.Stat(filepath.Join(project, ".git")); err == nil {
 		if err := exec.Command("git", "-C", project, "rev-parse", "--is-inside-work-tree").Run(); err != nil {

@@ -1,17 +1,85 @@
 package diagnostic_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/diagnostic"
+	"github.com/AllenMuu/skill-manager/internal/memorypipeline"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 )
+
+func TestScanReportsPendingMemoryProposalWithoutPublishingIt(t *testing.T) {
+	project, library := t.TempDir(), t.TempDir()
+	store, err := memorypipeline.InitializeProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := memorypipeline.RunEvidence{
+		Ref:    memorypipeline.RunEvidenceRef{ProjectID: "diagnostic-project", Runtime: "fixture", NativeRunID: "doctor-run", CreatedAt: time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)},
+		Status: "completed", Decisions: []string{"private proposal content must not be printed"},
+	}
+	ref, err := memorypipeline.ReferenceFor(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.Ref = ref
+	if _, err := store.ImportEvidence(context.Background(), ref); err != nil {
+		t.Fatal(err)
+	}
+	extraction, err := memorypipeline.ExtractEvidence(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Consolidate(context.Background(), extraction); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := diagnostic.Scan(library, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, finding := range findings {
+		if finding.Code == "doctor.pending_memory_proposal" {
+			found = true
+			if strings.Contains(finding.Message, "private proposal content") || finding.Args["status"] != string(memorypipeline.ProposalPending) {
+				t.Fatalf("diagnostic exposed content or lost state: %#v", finding)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("pending memory proposal was not reported: %#v", findings)
+	}
+	store, err = memorypipeline.OpenProjectStore(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	proposals, err := store.ListOutstandingProposals(context.Background())
+	if err != nil || len(proposals) != 1 || proposals[0].Status != memorypipeline.ProposalPending {
+		t.Fatalf("Doctor changed proposal state: %#v %v", proposals, err)
+	}
+}
+
+func TestScanWithoutPipelineDoesNotInitializeMemoryDatabase(t *testing.T) {
+	project, library := t.TempDir(), t.TempDir()
+	if _, err := diagnostic.Scan(library, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".agent-manager", "memory.db")); !os.IsNotExist(err) {
+		t.Fatalf("Doctor initialized local memory pipeline state: %v", err)
+	}
+}
 
 func TestScanReportsCatalogOrphanUnsupportedAndGitGuidance(t *testing.T) {
 	root := t.TempDir()

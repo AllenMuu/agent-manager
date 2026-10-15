@@ -131,6 +131,30 @@ knowledge type, inert content, source/evidence references, state and layer metad
 RAW/ATOMIC/COMPOSITE/PROFILE are layers, not automatic consolidation behavior.
 _Avoid_: provider object, executable Skill or Task
 
+**Run evidence reference**:
+An immutable project-scoped pointer to a terminal run's normalized source snapshot, including runtime, native run ID, creation time, import status, and content hash. It identifies source history without copying or owning that history.
+_Avoid_: archived session, trusted Memory, copied run store
+
+**Derived memory**:
+Untrusted, project-local knowledge extracted deterministically from imported run evidence and stored separately from canonical Memory. Every record retains evidence references, confidence, lifecycle state, and independent usage metadata.
+_Avoid_: verified fact, canonical record, raw transcript
+
+**Project memory summary**:
+A bounded generated view over recent evidence summaries. It is a retrieval aid, not a trusted canonical Memory record.
+_Avoid_: authoritative project brief
+
+**Memory proposal**:
+A provenance-linked request to add one derived item to canonical Project Memory. It remains local and pending until an operator confirms the exact Memory Gateway plan; an uncertain write is reconciled without automatic replay.
+_Avoid_: direct promotion, accepted record before Gateway confirmation
+
+**Progressive memory retrieval**:
+The staged retrieval order of compact project summary, bounded current canonical Memory, relevant derived memory, and raw evidence only after an explicit lookup.
+_Avoid_: full-history prompt injection
+
+**Skill candidate**:
+A review item for a repeated, explicitly generalizable procedure with independent successful or verified run evidence and no contradictory failed outcome. Approval records a human review decision; it does not create or install a Skill.
+_Avoid_: generated Skill, automatic installation
+
 **Memory owner partition**:
 An exact USER or PROJECT owner, or an AGENT/SESSION partition within exactly one
 owning user or project. The identifiers partition data; they do not authenticate
