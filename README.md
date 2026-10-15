@@ -6,7 +6,35 @@ Agent Manager focuses on project-aware Skills and shared Project Memory across c
 
 Agent Manager never executes managed-resource code and never installs dependencies.
 
-## Quick start: install Skills with the CLI or Web UI
+## Quick start: build & open the Web UI
+
+Build and start the local Web console from the repository root (requires Go 1.24 or later; prebuilt frontend assets are embedded, so Node.js is not required at runtime):
+
+```sh
+# 1. Build the Agent Manager binary
+go build ./cmd/agent-manager
+
+# 2. Start the Web console for the current project
+./agent-manager web --project .
+```
+
+The command prints the entry URL with a process-lifetime session token:
+```text
+Open Agent Manager Web at http://127.0.0.1:54321/#session=...
+Press Ctrl+C to stop.
+```
+Open that link in your browser to access the management dashboard and unified Skills workspace. Press `Ctrl+C` in your terminal to stop the server.
+
+> **Tip**: If you modify the React client in `web/`, rebuild its embedded assets before compiling Go:
+> ```sh
+> cd web && npm ci && npm run build && cd ..
+> ```
+
+---
+
+### Install and manage Skills with the CLI
+
+If you prefer installing and using the CLI globally:
 
 From the repository root, install the CLI with Go 1.24 or later:
 
