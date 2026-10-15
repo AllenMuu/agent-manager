@@ -345,6 +345,43 @@ describe('console entry and guarded activation', () => {
     expect(JSON.parse(calls.filter((call) => call.route === '/api/install/apply')[1].init.body as string)).toEqual({ previewId: 'preview-2' })
   })
 
+  it('retains a blocked preview returned with a string error after stale batch apply', async () => {
+    let previews = 0
+    let applies = 0
+    const { calls } = installFixture((route) => {
+      if (route === '/api/install/preview' && ++previews === 2) return jsonResponse({
+        error: 'destination is not a managed Skill link: /workspace/sample/.pi/skills/go-helper',
+        preview: {
+          skillIds: ['go-helper', 'go-test'],
+          targets: ['pi'],
+          plan: {
+            operation: 'activate',
+            changes: [{ path: '/workspace/sample/.pi/skills/go-helper', action: 'refuse conflicting destination' }],
+            warnings: [],
+          },
+        },
+      }, 409)
+      if (route === '/api/install/apply') {
+        applies++
+        return jsonResponse({ stale: true, result: { stale: true, applied: false } }, 409)
+      }
+    })
+    renderApp()
+    await selectBatch()
+    await previewBatch()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm installation' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('destination is not a managed Skill link: /workspace/sample/.pi/skills/go-helper')
+    expect(await screen.findByRole('heading', { name: 'Review installation' })).toBeInTheDocument()
+    expect(screen.getByText('/workspace/sample/.pi/skills/go-helper')).toBeInTheDocument()
+    const confirm = screen.getByRole('button', { name: 'Confirm installation' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(confirm)
+    expect(applies).toBe(1)
+    expect(calls.filter((call) => call.route === '/api/install/preview')).toHaveLength(2)
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+  })
+
   it('retains batch selection on cancellation and failed apply', async () => {
     installFixture((route) => route === '/api/install/apply' ? jsonResponse({ error: { code: 'apply_failed', message: 'Apply failed.' } }, 500) : undefined)
     renderApp()

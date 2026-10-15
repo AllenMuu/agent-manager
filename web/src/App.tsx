@@ -25,6 +25,7 @@ type View = 'workspace' | 'skills' | 'subagents' | 'diagnostics' | 'operations'
 type PageState<T> = { data: T | null; loading: boolean; error: unknown | null }
 type PlanEnvelope = { plan: OperationPlan }
 type PendingInstallationPreview = InstallationPreview & { inputGeneration: number }
+type InstallationPreviewResult = { preview: InstallationPreview; error: unknown | null }
 type Toast = { kind: 'success'; text: string; values?: Record<string, string | number> } | { kind: 'error'; error: unknown }
 
 const navItems: { id: View; label: string; eyebrow: string }[] = [
@@ -60,6 +61,17 @@ function blockedInstallationPreview(error: unknown): InstallationPreview | null 
       changes,
       warnings,
     },
+  }
+}
+
+async function requestInstallationPreview(token: string, payload: unknown): Promise<InstallationPreviewResult> {
+  try {
+    const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', payload)
+    return { preview: result.preview, error: null }
+  } catch (error) {
+    const preview = blockedInstallationPreview(error)
+    if (!preview) throw error
+    return { preview, error }
   }
 }
 
@@ -279,16 +291,7 @@ export function App() {
     invalidateBatchPreview()
     const inputGeneration = batchInputGeneration.current
     await runRequest(
-      async () => {
-        try {
-          const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload())
-          return { preview: result.preview, error: null as unknown | null }
-        } catch (error) {
-          const preview = blockedInstallationPreview(error)
-          if (!preview) throw error
-          return { preview, error }
-        }
-      },
+      () => requestInstallationPreview(token, batchPayload()),
       (result) => {
         if (inputGeneration !== batchInputGeneration.current) return
         setBatchPreview({ ...result.preview, inputGeneration })
@@ -309,15 +312,16 @@ export function App() {
         } catch (error) {
           setBatchPreview(null)
           if (!(error instanceof APIError) || error.status !== 409 || inputGeneration !== batchInputGeneration.current) throw error
-          const result = await post<{ preview: InstallationPreview }>(token, '/api/install/preview', batchPayload())
-          return { stale: true as const, preview: result.preview }
+          const result = await requestInstallationPreview(token, batchPayload())
+          return { stale: true as const, ...result }
         }
       },
       (result) => {
         if (result.stale) {
           if (inputGeneration !== batchInputGeneration.current) return
           setBatchPreview({ ...result.preview, inputGeneration })
-          setToast({ kind: 'success', text: 'The project changed after preview. Review this updated plan, then confirm again.' })
+          if (result.error) setToast({ kind: 'error', error: result.error })
+          else setToast({ kind: 'success', text: 'The project changed after preview. Review this updated plan, then confirm again.' })
           return
         }
         invalidateBatchPreview()
