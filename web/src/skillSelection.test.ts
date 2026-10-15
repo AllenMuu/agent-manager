@@ -4,8 +4,8 @@ import { getSkillSelectionAction, toggleSkillSelection } from './skillSelection'
 describe('getSkillSelectionAction', () => {
   it('maps selection size to the available action', () => {
     expect(getSkillSelectionAction([])).toBe('none');
-    expect(getSkillSelectionAction(['go-helper'])).toBe('activate');
-    expect(getSkillSelectionAction(['go-helper', 'go-test'])).toBe('batch-install');
+    expect(getSkillSelectionAction(['go-helper'])).toBe('install');
+    expect(getSkillSelectionAction(['go-helper', 'go-test'])).toBe('install');
   });
 });
 

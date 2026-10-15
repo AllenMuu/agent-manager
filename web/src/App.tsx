@@ -106,12 +106,9 @@ export function App() {
   const selectionAction: SkillSelectionAction = getSkillSelectionAction(selectedSkillIDs)
   const [query, setQuery] = useState('')
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
-  const [targets, setTargets] = useState<string[]>(['codex'])
   const [batchTargets, setBatchTargets] = useState<string[]>([])
   const [batchReplaceConflicts, setBatchReplaceConflicts] = useState(false)
   const [batchPreview, setBatchPreview] = useState<PendingInstallationPreview | null>(null)
-  const [pendingActivation, setPendingActivation] = useState(false)
-  const [forceReplace, setForceReplace] = useState(false)
   const [pendingPlan, setPendingPlan] = useState<OperationPlan | null>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [busy, setBusy] = useState(false)
@@ -282,22 +279,10 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, project])
 
-  const createActivationPlan = async () => {
-    if (!token || !project || mutationBlocked || pendingPlan || selectionAction !== 'activate' || !targets.length) return
-    await runRequest(
-      () => post<PlanEnvelope>(token, `${projectBase}/plans/activate`, {
-        skillIdentifiers: selectedSkillIDs,
-        targetAgents: targets,
-        ...(forceReplace ? { conflictStrategy: 'replace', forceConfirmed: true } : {}),
-      }),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(true) },
-    )
-  }
-
   const batchPayload = () => ({ skillIds: selectedSkillIDs, targets: batchTargets, replaceConflicts: batchReplaceConflicts })
 
   const createBatchPreview = async () => {
-    if (!token || mutationRequestInFlight.current || mutationBlocked || pendingPlan || selectionAction !== 'batch-install' || !batchTargetsValid) return
+    if (!token || mutationRequestInFlight.current || mutationBlocked || pendingPlan || selectionAction !== 'install' || !batchTargetsValid) return
     invalidateBatchPreview()
     const inputGeneration = batchInputGeneration.current
     await runRequest(
@@ -311,7 +296,7 @@ export function App() {
   }
 
   const applyBatchPreview = async () => {
-    if (!token || !batchPreview || !batchPreview.id.trim() || mutationRequestInFlight.current || pendingPlan || mutationBlocked || selectionAction !== 'batch-install' || !batchTargetsValid || batchPreview.inputGeneration !== batchInputGeneration.current) return
+    if (!token || !batchPreview || !batchPreview.id.trim() || mutationRequestInFlight.current || pendingPlan || mutationBlocked || selectionAction !== 'install' || !batchTargetsValid || batchPreview.inputGeneration !== batchInputGeneration.current) return
     const inputGeneration = batchPreview.inputGeneration
     await runRequest(
       async () => {
@@ -347,7 +332,7 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/remove`, { skillIdentifier: resource.identifier, targetAgent: resource.target }),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(false); invalidateBatchPreview() },
+      (result) => { setPendingPlan(result.plan); invalidateBatchPreview() },
     )
   }
 
@@ -355,7 +340,7 @@ export function App() {
     if (!token || !project) return
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/undo`, {}),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(false); invalidateBatchPreview() },
+      (result) => { setPendingPlan(result.plan); invalidateBatchPreview() },
     )
   }
 
@@ -364,18 +349,16 @@ export function App() {
     const route = finding.repairAction === 'reconcile' ? 'doctor-reconcile' : 'doctor-gitignore'
     await runRequest(
       () => post<PlanEnvelope>(token, `${projectBase}/plans/${route}`, { path: finding.path }),
-      (result) => { setPendingPlan(result.plan); setPendingActivation(false); invalidateBatchPreview() },
+      (result) => { setPendingPlan(result.plan); invalidateBatchPreview() },
     )
   }
 
   const executePlan = async () => {
-    if (!token || !pendingPlan || (pendingActivation && (mutationBlocked || selectionAction !== 'activate'))) return
+    if (!token || !pendingPlan) return
     await runRequest(
       () => post<{ operation: string; status: string }>(token, `/api/v1/plans/${pendingPlan.id}/execute`, {}),
       (result) => {
         setPendingPlan(null)
-        if (pendingActivation) setSelectedSkillIDs([])
-        setPendingActivation(false)
         setToast({ kind: 'success', text: '{operation} completed and journaled.', values: { operation: operationLabel(result.operation, translateMessage) } })
         if (project) void loadWorkspace(project.id)
         void loadDiagnostics()
@@ -383,7 +366,6 @@ export function App() {
       },
       (error) => {
         setPendingPlan(null)
-        setPendingActivation(false)
         setToast({ kind: 'error', error })
         if (project) void loadWorkspace(project.id)
         void loadDiagnostics()
@@ -398,7 +380,6 @@ export function App() {
       () => post<{ status: string }>(token, `/api/v1/plans/${pendingPlan.id}/cancel`, {}),
       () => {
         setPendingPlan(null)
-        setPendingActivation(false)
         setToast({ kind: 'success', text: 'The pending plan was cancelled.' })
       },
     )
@@ -466,7 +447,7 @@ export function App() {
       {!project ? (view === 'sync'
         ? <StorageSyncPage token={token} hasProject={false} />
         : <ProjectRegistration path={projectPath} setPath={setProjectPath} onSubmit={registerProject} busy={busy} />) : <>
-        {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} canExecute={!pendingActivation || !mutationBlocked} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
+        {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
         {view === 'workspace' && <Workspace
           page={workspace}
           busy={busy}
@@ -481,7 +462,7 @@ export function App() {
           selectionAction={selectionAction}
           unavailableSkillIDs={unavailableSkillIDs}
           mutationBlocked={mutationBlocked || !!pendingPlan}
-          inputsLocked={busy || pendingActivation}
+          inputsLocked={busy}
           onRetryRecommendations={() => void loadRecommendations(project.id)}
           onToggleSkill={(identifier) => { invalidateBatchPreview(); setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier)) }}
           query={query}
@@ -489,8 +470,6 @@ export function App() {
           onSearch={(event) => { event.preventDefault(); void loadSkills(query) }}
           selected={selectedSkill}
           onSelect={(skill) => { if (skill) void openSkill(skill); else setSelectedSkill(null) }}
-          targets={targets}
-          onToggleTarget={(target) => setTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target])}
           supportedTargets={fullCatalog.data?.targets ?? []}
           batchTargets={batchTargets}
           onToggleBatchTarget={(target) => { invalidateBatchPreview(); setBatchTargets((current) => current.includes(target) ? current.filter((item) => item !== target) : [...current, target]) }}
@@ -501,9 +480,6 @@ export function App() {
           onPreviewInstallation={() => void createBatchPreview()}
           onApplyInstallation={() => void applyBatchPreview()}
           onCancelInstallation={invalidateBatchPreview}
-          forceReplace={forceReplace}
-          setForceReplace={setForceReplace}
-          onActivate={() => void createActivationPlan()}
           busy={busy}
         />}
         {view === 'subagents' && <SubAgentsPage page={subagents} />}
@@ -1005,7 +981,7 @@ function Workspace({ page, busy, onActivate, onRemove, onDiagnostics }: {
   </div>
 }
 
-function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, unavailableSkillIDs, mutationBlocked, inputsLocked, onRetryRecommendations, onToggleSkill, query, setQuery, onSearch, selected, onSelect, targets, onToggleTarget, supportedTargets, batchTargets, onToggleBatchTarget, batchReplaceConflicts, setBatchReplaceConflicts, batchTargetsValid, batchPreview, onPreviewInstallation, onApplyInstallation, onCancelInstallation, forceReplace, setForceReplace, onActivate, busy }: {
+function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, unavailableSkillIDs, mutationBlocked, inputsLocked, onRetryRecommendations, onToggleSkill, query, setQuery, onSearch, selected, onSelect, supportedTargets, batchTargets, onToggleBatchTarget, batchReplaceConflicts, setBatchReplaceConflicts, batchTargetsValid, batchPreview, onPreviewInstallation, onApplyInstallation, onCancelInstallation, busy }: {
   page: PageState<InstallationCatalog>
   recommendations: PageState<RecommendationResult>
   selectedSkillIDs: string[]
@@ -1020,8 +996,6 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   onSearch: (event: React.FormEvent<HTMLFormElement>) => void
   selected: Skill | null
   onSelect: (skill: Skill | null) => void
-  targets: string[]
-  onToggleTarget: (target: string) => void
   supportedTargets: InstallationCatalog['targets']
   batchTargets: string[]
   onToggleBatchTarget: (target: string) => void
@@ -1032,9 +1006,6 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   onPreviewInstallation: () => void
   onApplyInstallation: () => void
   onCancelInstallation: () => void
-  forceReplace: boolean
-  setForceReplace: (value: boolean) => void
-  onActivate: () => void
   busy: boolean
 }) {
   const { t, message, installationMessage } = useLanguage()
@@ -1070,7 +1041,7 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
           <div className={styles.metadataRow}><span>{t('Source')} <strong>{selected.source || t('Local library')}</strong></span><span>{t('Tags')} <strong>{selected.tags.join(', ') || t('None')}</strong></span><span>{t('Compatibility')} <strong>{selected.compatibility.join(', ') || t('Not declared')}</strong></span></div>
           <div className={styles.documentLabel}>{t('SKILL.MD CONTENT')} <span>{t('READ ONLY · NEVER EXECUTED')}</span></div>
           <pre className={styles.skillBody}>{selected.body ?? t('Select a Skill to read its content.')}</pre>
-        </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded activation.')} />}
+        </> : <EmptyState title={t('Select a Skill')} detail={t('Open a catalog entry to inspect its metadata and plan a guarded installation.')} />}
       </section>
     </div>
     <div className={`${styles.panel} ${styles.selectionBar}`}>
@@ -1080,12 +1051,7 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
           <span>{identifier}{unavailableSkillIDs.includes(identifier) ? ` · ${t('Unavailable')}` : ''}</span>
           <button type="button" disabled={inputsLocked} aria-label={t('Deselect {identifier}', { identifier })} onClick={() => onToggleSkill(identifier)}>×</button>
         </li>)}</ul>
-        {selectionAction === 'activate' && <>
-          <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Activation targets')}</legend><div className={styles.targetChecks}>{['claude-code', 'codex', 'pi'].map((target) => <label key={target}><input type="checkbox" checked={targets.includes(target)} onChange={() => onToggleTarget(target)} /><span>{target}</span></label>)}</div></fieldset>
-          <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={forceReplace} onChange={(event) => setForceReplace(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span><small>{t('Requires this separate confirmation and is recorded in the review plan.')}</small></label>
-          <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !targets.length} onClick={onActivate}>{t('Review activation plan')}</button>
-        </>}
-        {selectionAction === 'batch-install' && <>
+        {selectionAction === 'install' && <>
           <fieldset className={styles.targetFieldset} disabled={inputsLocked}><legend>{t('Installation targets')}</legend><div className={styles.targetChecks}>{supportedTargets.map((target) => <label key={target.id}><input type="checkbox" checked={batchTargets.includes(target.id)} onChange={() => onToggleBatchTarget(target.id)} /><span>{target.label}</span></label>)}</div></fieldset>
           <label className={styles.forceCheck}><input type="checkbox" disabled={inputsLocked} checked={batchReplaceConflicts} onChange={(event) => setBatchReplaceConflicts(event.target.checked)} /><span>{t('Allow replacement of existing conflicts')}</span></label>
           <button className={styles.primaryButton} type="button" disabled={mutationBlocked || !batchTargetsValid} onClick={onPreviewInstallation}>{t('Preview installation')}</button>
