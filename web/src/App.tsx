@@ -546,6 +546,8 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   const [currentChoices, setCurrentChoices] = useState<Record<string, string>>({})
   const [importReview, setImportReview] = useState<{ planId: string; preview: SyncImportPreview } | null>(null)
   const [operationReview, setOperationReview] = useState<SyncOperationReview | null>(null)
+  const [updateCheckError, setUpdateCheckError] = useState<unknown | null>(null)
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
   const [updateCheck, setUpdateCheck] = useState<SkillUpdateCheck | null>(null)
   const [selectedUpdates, setSelectedUpdates] = useState<string[]>([])
   const [upstreamReview, setUpstreamReview] = useState<UpstreamUpdateReview | null>(null)
@@ -631,10 +633,21 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
   }
 
   const checkUpdates = async () => {
-    await perform(
-      () => post<SkillUpdateCheck>(token, '/api/v1/sync/updates/check'),
-      (result) => { setUpdateCheck(result); setSelectedUpdates([]) },
-    )
+    setBusy(true)
+    setCheckingUpdates(true)
+    setUpdateCheckError(null)
+    setError(null)
+    setNotice('')
+    try {
+      const result = await post<SkillUpdateCheck>(token, '/api/v1/sync/updates/check')
+      setUpdateCheck(result)
+      setSelectedUpdates([])
+    } catch (caught) {
+      setUpdateCheckError(caught)
+    } finally {
+      setCheckingUpdates(false)
+      setBusy(false)
+    }
   }
 
   const previewUpdates = async (ids: string[]) => {
@@ -738,10 +751,12 @@ function StorageSyncPage({ token, hasProject }: { token: string; hasProject: boo
 
     <section className={styles.panel} aria-labelledby="upstream-updates-heading">
       <div className={styles.panelTop}><span className={styles.kicker}>{t('RECORDED UPSTREAM SOURCES')}</span>
-        <button className={styles.textButton} type="button" disabled={busy || reviewActive} onClick={() => void checkUpdates()}>{busy ? t('Checking…') : t('Check for updates')}</button>
+        <button className={styles.textButton} type="button" disabled={busy || reviewActive} onClick={() => void checkUpdates()}>{checkingUpdates ? t('Checking…') : t('Check for updates')}</button>
       </div>
       <h2 id="upstream-updates-heading">{t('Check installed Skill updates')}</h2>
       <p>{t('Only this button contacts supported GitHub sources recorded by Skills CLI. Local and unsupported sources are shown without a network check.')}</p>
+      {checkingUpdates && <div role="status">{t('Checking…')}</div>}
+      {updateCheckError !== null && <div className={styles.syncError} role="alert">{formatError(updateCheckError)}</div>}
       {updateCheck && <>
         <div className={styles.syncMuted}>{t('Last checked: {time}', { time: new Date(updateCheck.checkedAt).toLocaleString() })}</div>
         {updateCheck.items.length === 0 ? <EmptyInline title={t('No Skills with recorded sources')} detail={t('Refresh the source inventory after installing a Skill with Skills CLI.')} /> : <div className={styles.updateList}>

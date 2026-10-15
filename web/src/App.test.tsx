@@ -75,7 +75,7 @@ describe('console entry and guarded activation', () => {
     expect(screen.getByRole('checkbox', { name: 'Select demo-skill' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: /Copy only/ })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Confirm import' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('1 Skill versions imported.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 Skill versions imported.'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Review global resync' }))
     expect(await screen.findByRole('heading', { name: 'Review managed destinations', level: 2 })).toBeInTheDocument()
@@ -151,9 +151,34 @@ describe('console entry and guarded activation', () => {
     expect(choiceRadios()[0]).toBeChecked()
 
     fireEvent.click(screen.getByRole('button', { name: 'Confirm import' }))
-    expect(await screen.findByRole('status')).toHaveTextContent('2 Skill versions imported.')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('2 Skill versions imported.'))
     const previewCalls = calls.filter((call) => call.route === '/api/v1/sync/import/preview')
     expect(previewCalls.map((call) => JSON.parse(call.body).currentChoices['demo-skill'])).toEqual([undefined, 'group-b', 'group-a'])
+  })
+
+  it('shows update check failures beside the button and allows retry', async () => {
+    let fail = true
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const route = String(input)
+      if (route === '/api/v1/sync/settings') return jsonResponse({ syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/library', locations: [], sources: [], groups: [], diagnostics: [] })
+      if (route === '/api/v1/sync/updates/check') {
+        if (fail) return jsonResponse({ error: { code: 'sync_timeout', message: 'Update check timed out' } }, 504)
+        return jsonResponse({ checkedAt: '2026-10-15T00:00:00Z', items: [] })
+      }
+      return jsonResponse({})
+    }))
+    window.history.replaceState(null, '', '/#session=tab-secret')
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    const heading = await screen.findByRole('heading', { name: 'Check installed Skill updates' })
+    const panel = within(heading.closest('section')!)
+    fireEvent.click(panel.getByRole('button', { name: 'Check for updates' }))
+    expect(await panel.findByRole('alert')).toHaveTextContent('Update check timed out')
+    fail = false
+    fireEvent.click(panel.getByRole('button', { name: 'Check for updates' }))
+    expect(await panel.findByText('No Skills with recorded sources')).toBeInTheDocument()
+    expect(panel.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('checks recorded upstream sources, previews selected or all updates, and waits for confirmation', async () => {
