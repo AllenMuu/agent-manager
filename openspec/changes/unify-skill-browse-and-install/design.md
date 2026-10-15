@@ -43,6 +43,14 @@ If recommendations fail, the workspace shows a local error and retry while keepi
 
 Changing selected Skills, targets, or the conflict setting clears any stale installation preview. If the server rejects a stale preview, show the updated preview and require a new review and confirmation. These states do not change server-side authorization or apply-time revalidation.
 
+### 4. Keep the workspace summary short and preserve full recommendation access
+
+The workspace shows at most the five highest-ranked distinct Skill recommendations. When recommendations occur in multiple project scopes, aggregate them by canonical Skill identifier, keep the highest score, merge matching evidence and scope paths, and sort by score descending then identifier ascending. The Skills view remains the full recommendation list; the workspace's “view all” action opens that view. Recommendation rows use fixed grid columns so each description begins at the same horizontal position regardless of the action label or description length.
+
+The workspace reads the existing authenticated `/api/v1/sync/sources` inventory and displays Global and Project sources in separate read-only lists. The Skills installation view uses these sources together with current project resources to determine which identifiers already exist. Existing identifiers appear checked and disabled in recommendations and catalog results, and are excluded from the selectable identifier state. If inventory cannot be read or includes diagnostics for locations that could not be inspected, selection and mutation remain disabled until a retry produces a complete inventory; diagnostics are shown so the partial source lists are not mistaken for complete lists.
+
+This reuses the existing source inventory and preserves its source paths and scope evidence; it does not add filesystem discovery or mutation behavior to the Web client.
+
 ## Risks / Trade-offs
 
 - Shared selection can make an item selected in one section appear selected in another; use one identifier-keyed state and show the selection consistently in both places.
