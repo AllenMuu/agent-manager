@@ -41,6 +41,57 @@ func TestLatestNormalizesLegacyJournalEntryWithoutRewritingFile(t *testing.T) {
 	}
 }
 
+func TestRecordedMaterializationRecognizesOwnedCopyAndRejectsChangedAfterState(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "library", "demo", "versions", "v1")
+	destination := filepath.Join(root, "project", ".codex", "skills", "demo")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "SKILL.md"), []byte("managed skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	before, err := journal.Capture([]string{destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("managed skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := journal.Capture([]string{destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.RecordPlanWithMaterializations(operation.NewPlan("activate"), before, after, []operation.Materialization{{
+		Destination: destination, Source: source, SourceVersion: "v1", Method: "copy",
+	}}); err != nil {
+		t.Fatalf("RecordPlanWithMaterializations() error = %v", err)
+	}
+	item, ok, err := journal.RecordedMaterialization(destination)
+	if err != nil || !ok {
+		t.Fatalf("RecordedMaterialization() = %#v, %v, %v; want managed copy", item, ok, err)
+	}
+	if item.Method != "copy" || item.SourceVersion != "v1" || item.Source != source {
+		t.Fatalf("materialization metadata = %#v", item)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("user edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := journal.RecordedMaterialization(destination); err != nil || ok {
+		t.Fatalf("changed destination remains journal-owned: ok=%v err=%v", ok, err)
+	}
+	if available, err := journal.UndoAvailable(); err != nil || available {
+		t.Fatalf("UndoAvailable() = %v, %v after edit; want false", available, err)
+	}
+}
+
 func TestUndoLatestRestoresLegacyJournalEntry(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "project", "skill")

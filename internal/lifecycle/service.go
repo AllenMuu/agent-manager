@@ -48,6 +48,15 @@ type Options struct {
 	ExpectedConflictFingerprints map[string]string
 	// ExpectedSourceFingerprints binds activation to reviewed Skill directory trees.
 	ExpectedSourceFingerprints map[string]string
+	// TargetSelections narrows one batch to specific existing activations per
+	// Skill. A nil map preserves the ordinary Skills-by-targets behavior.
+	TargetSelections map[string][]adapter.Target
+	// Rematerialize is reserved for an explicit resync plan and replaces only
+	// destinations that inventory proved are still managed.
+	Rematerialize bool
+	// JournalOperation distinguishes an explicit maintenance operation from a
+	// normal activation while retaining the same atomic mutation path.
+	JournalOperation string
 }
 
 func optionsOf(opts []Options) Options {
@@ -69,11 +78,12 @@ const (
 
 // Item is an entry in a project skill inventory.
 type Item struct {
-	Target     adapter.Target `json:"target"`
-	Identifier string         `json:"identifier"`
-	Path       string         `json:"path"`
-	SourcePath string         `json:"sourcePath,omitempty"`
-	Status     Status         `json:"status"`
+	Target          adapter.Target `json:"target"`
+	Identifier      string         `json:"identifier"`
+	Path            string         `json:"path"`
+	SourcePath      string         `json:"sourcePath,omitempty"`
+	Materialization string         `json:"materialization,omitempty"`
+	Status          Status         `json:"status"`
 }
 
 // ConfirmFunc displays a plan and returns whether the user confirmed it.
@@ -81,8 +91,9 @@ type ConfirmFunc func(operation.Plan) bool
 
 // Service performs guarded lifecycle changes against one local skill library.
 type Service struct {
-	LibraryPath string
-	Journal     *operation.Journal
+	LibraryPath     string
+	Journal         *operation.Journal
+	Materialization adapter.MaterializationMode
 	// BeforePublish is an optional test seam invoked before each staged publish.
 	BeforePublish func(string) error
 	// BeforeFinalPublish is an optional test seam invoked after the adapter has
@@ -134,12 +145,19 @@ func NewWithResourceHandler(libraryPath string, journal *operation.Journal, conf
 	if handler == nil {
 		handler = resource.NewSkillHandler()
 	}
-	return &Service{LibraryPath: libraryPath, Journal: journal, confirm: confirm, resourceHandler: handler}
+	return &Service{LibraryPath: libraryPath, Journal: journal, Materialization: adapter.MaterializeAuto, confirm: confirm, resourceHandler: handler}
 }
 
 // Add activates skill for each explicitly selected target using absolute soft links.
 func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Target, opts ...Options) (operation.Plan, error) {
 	options := optionsOf(opts)
+	mode := s.Materialization
+	if mode == "" {
+		mode = adapter.MaterializeAuto
+	}
+	if err := mode.Validate(); err != nil {
+		return operation.Plan{}, err
+	}
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return operation.Plan{}, err
@@ -179,6 +197,7 @@ func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Tar
 		if err != nil {
 			return plan, err
 		}
+		planned = withMaterializationPlan(planned, mode)
 		appendSkillPlan(&plan, planned)
 		paths = append(paths, placement.Destination)
 		requests = append(requests, request)
@@ -217,7 +236,7 @@ func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Tar
 		return plan, err
 	}
 	defer cleanup()
-	return plan, s.mutateWithBefore(plan, paths, beforeConfirmation, func() error {
+	return plan, s.mutateWithBeforeMaterializations(plan, paths, beforeConfirmation, func() error {
 		for i := range requests {
 			if err := adapter.ValidateProjectPlacement(adapter.Target(requests[i].Target), requests[i].ProjectPath, paths[i], base.Resource.ID); err != nil {
 				return err
@@ -231,17 +250,17 @@ func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Tar
 			}
 		}
 		return nil
-	}, func() error {
+	}, func() ([]operation.Materialization, error) {
 		for i, path := range paths {
 			var initialSnapshot *operation.Snapshot
 			if i < len(beforeConfirmation) {
 				initialSnapshot = &beforeConfirmation[i]
 			}
 			if err := s.publishSkill(requests[i], path, base.SourcePath, placementJournal, initialSnapshot); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		return nil
+		return s.materializationRecords(paths, requests)
 	})
 }
 
@@ -390,7 +409,10 @@ func (s *Service) addMany(project string, skills []catalog.Skill, targets []adap
 	defer cleanup()
 	journalPlan := plan
 	journalPlan.Operation = "activate"
-	return plan, s.mutateWithBefore(journalPlan, paths, beforeConfirmation, func() error {
+	if options.JournalOperation != "" {
+		journalPlan.Operation = options.JournalOperation
+	}
+	return plan, s.mutateWithBeforeMaterializations(journalPlan, paths, beforeConfirmation, func() error {
 		if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
 			return err
 		}
@@ -407,25 +429,25 @@ func (s *Service) addMany(project string, skills []catalog.Skill, targets []adap
 			}
 		}
 		return nil
-	}, func() error {
+	}, func() ([]operation.Materialization, error) {
 		for i, path := range paths {
 			if err := verifySourceFingerprints(skills, options.ExpectedSourceFingerprints); err != nil {
-				return err
+				return nil, err
 			}
 			var initialSnapshot *operation.Snapshot
 			if i < len(beforeConfirmation) {
 				initialSnapshot = &beforeConfirmation[i]
 			}
 			if err := s.publishSkill(requests[i], path, requests[i].Resource.Provenance.Source, placementJournal, initialSnapshot); err != nil {
-				return err
+				return nil, err
 			}
 			if s.BeforePublish != nil {
 				if err := s.BeforePublish("add-many-published"); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
-		return nil
+		return s.materializationRecords(paths, requests)
 	})
 }
 
@@ -464,12 +486,23 @@ func (s *Service) PreviewAddMany(project string, skills []catalog.Skill, targets
 
 func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, targets []adapter.Target, options Options, global bool) (addManyPreview, error) {
 	preview := addManyPreview{plan: operation.NewPlan("activate selected skills")}
+	mode := s.Materialization
+	if mode == "" {
+		mode = adapter.MaterializeAuto
+	}
+	if err := mode.Validate(); err != nil {
+		return preview, err
+	}
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return preview, err
 	}
 	seen := map[string]bool{}
 	for _, skill := range skills {
+		selectedTargets := targets
+		if options.TargetSelections != nil {
+			selectedTargets = options.TargetSelections[skill.Identifier]
+		}
 		base, err := s.planSkill(resource.SkillLifecycleRequest{
 			Action:       resource.LifecycleActivate,
 			LibraryPath:  s.LibraryPath,
@@ -478,7 +511,7 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 		if err != nil {
 			return preview, err
 		}
-		for _, target := range targets {
+		for _, target := range selectedTargets {
 			placement, err := s.resourcePlacementInScope(project, target, base.Resource, global)
 			if err != nil {
 				return preview, err
@@ -489,15 +522,28 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 			}
 			seen[path] = true
 			request := resource.SkillLifecycleRequest{
-				Action:        resource.LifecycleActivate,
-				LibraryPath:   s.LibraryPath,
-				ProjectPath:   project,
-				GlobalScope:   global,
-				Resource:      base.Resource,
-				PlacementPath: path,
-				Target:        string(target),
-				Conflict:      skillConflict(options.Conflict),
-				Force:         options.Force,
+				Action:               resource.LifecycleActivate,
+				LibraryPath:          s.LibraryPath,
+				ProjectPath:          project,
+				GlobalScope:          global,
+				Resource:             base.Resource,
+				PlacementPath:        path,
+				Target:               string(target),
+				Conflict:             skillConflict(options.Conflict),
+				Force:                options.Force,
+				RematerializeManaged: options.Rematerialize,
+			}
+			if options.Rematerialize {
+				materialization, status, ok, materialErr := s.copyActivation(path, skill.Identifier)
+				if materialErr != nil {
+					return preview, materialErr
+				}
+				if ok && status == Managed && materialization.Method == "copy" {
+					request.JournalCopyMatches = true
+					request.JournalMaterialization = "copy"
+					request.JournalSource = materialization.Source
+					request.JournalFingerprint = materialization.DestinationFingerprint
+				}
 			}
 			planned, err := s.planSkill(request)
 			if err != nil {
@@ -516,10 +562,90 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 			}
 			preview.paths = append(preview.paths, path)
 			preview.requests = append(preview.requests, request)
+			planned = withMaterializationPlan(planned, mode)
 			appendSkillPlan(&preview.plan, planned)
 		}
 	}
 	return preview, nil
+}
+
+func withMaterializationPlan(plan resource.SkillLifecyclePlan, mode adapter.MaterializationMode) resource.SkillLifecyclePlan {
+	for i := range plan.Changes {
+		change := &plan.Changes[i]
+		if change.Action == "create absolute link" {
+			change.Action = adapter.MaterializationAction(mode, false)
+			change.Detail = adapter.MaterializationDetail(change.Detail, mode)
+		} else if change.Action == "replace conflicting path with absolute link" {
+			change.Action = adapter.MaterializationAction(mode, true)
+			change.Detail = adapter.MaterializationDetail(change.Detail, mode)
+		}
+	}
+	return plan
+}
+
+func (s *Service) materializationRecords(paths []string, requests []resource.SkillLifecycleRequest) ([]operation.Materialization, error) {
+	if len(paths) != len(requests) {
+		return nil, ErrUnsafePath
+	}
+	result := make([]operation.Materialization, 0, len(paths))
+	for i, path := range paths {
+		source, err := filepath.Abs(requests[i].Resource.Provenance.Source)
+		if err != nil {
+			return nil, err
+		}
+		destination, err := filepath.Abs(path)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Lstat(destination)
+		if err != nil {
+			return nil, err
+		}
+		method := ""
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(destination)
+			if err != nil {
+				return nil, err
+			}
+			if !filepath.IsAbs(target) {
+				target, err = filepath.Abs(filepath.Join(filepath.Dir(destination), target))
+				if err != nil {
+					return nil, err
+				}
+			}
+			if filepath.Clean(target) != filepath.Clean(source) {
+				return nil, operation.ErrUnexpectedState
+			}
+			method = "symlink"
+		} else if info.IsDir() {
+			sourceDigest, err := operation.FingerprintPath(source)
+			if err != nil {
+				return nil, err
+			}
+			destinationDigest, err := operation.FingerprintPath(destination)
+			if err != nil {
+				return nil, err
+			}
+			if sourceDigest != destinationDigest {
+				return nil, operation.ErrUnexpectedState
+			}
+			method = "copy"
+		} else {
+			return nil, operation.ErrUnexpectedState
+		}
+		result = append(result, operation.Materialization{
+			Destination: destination, Source: source,
+			SourceVersion: sourceVersionKey(source), Method: method,
+		})
+	}
+	return result, nil
+}
+
+func sourceVersionKey(source string) string {
+	if filepath.Base(filepath.Dir(source)) == "versions" {
+		return filepath.Base(source)
+	}
+	return "legacy"
 }
 
 // List inventories supported project skill locations without changing them.
@@ -563,6 +689,17 @@ func (s *Service) List(project string) ([]Item, error) {
 					}
 				} else if !errors.Is(err, ErrUnsafePath) {
 					return nil, err
+				}
+				if item.Status == Managed {
+					item.Materialization = "symlink"
+				}
+			} else if info.IsDir() {
+				if materialization, status, ok, err := s.copyActivation(path, inspection.Identifier); err != nil {
+					return nil, err
+				} else if ok {
+					item.SourcePath = materialization.Source
+					item.Materialization = "copy"
+					item.Status = status
 				}
 			}
 			items = append(items, item)
@@ -634,11 +771,76 @@ func (s *Service) ListGlobal(home string) ([]Item, error) {
 						item.Status = Managed
 					}
 				}
+				if item.Status == Managed {
+					item.Materialization = "symlink"
+				}
+			} else if pathInfo.IsDir() {
+				if materialization, status, ok, err := s.copyActivation(path, entry.Name()); err != nil {
+					return nil, err
+				} else if ok {
+					item.SourcePath = materialization.Source
+					item.Materialization = "copy"
+					item.Status = status
+				}
 			}
 			items = append(items, item)
 		}
 	}
 	return items, nil
+}
+
+func (s *Service) copyActivation(path, identifier string) (operation.Materialization, Status, bool, error) {
+	if s.Journal == nil {
+		return operation.Materialization{}, Unmanaged, false, nil
+	}
+	materialization, ok, err := s.Journal.RecordedMaterialization(path)
+	if err != nil || !ok || materialization.Method != "copy" {
+		return materialization, Unmanaged, ok, err
+	}
+	status := Orphaned
+	handler := resource.NewSkillHandler()
+	owned, err := handler.ManagesSource(s.LibraryPath, identifier, materialization.Source)
+	if err != nil {
+		return materialization, status, true, err
+	}
+	if !owned {
+		return materialization, status, true, nil
+	}
+	sourceFingerprint, err := operation.FingerprintPath(materialization.Source)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return materialization, status, true, nil
+		}
+		return materialization, status, true, err
+	}
+	if sourceFingerprint != materialization.SourceFingerprint {
+		return materialization, status, true, nil
+	}
+	eligible, err := handler.Eligible(identifier, materialization.Source)
+	if err != nil {
+		return materialization, status, true, err
+	}
+	if eligible {
+		status = Managed
+	}
+	return materialization, status, true, nil
+}
+
+func (s *Service) validateJournalCopy(request resource.SkillLifecycleRequest) error {
+	if request.JournalMaterialization != "copy" {
+		return nil
+	}
+	if s.Journal == nil || !request.JournalCopyMatches || request.JournalFingerprint == "" {
+		return ErrUnsafePath
+	}
+	materialization, ok, err := s.Journal.RecordedMaterialization(request.PlacementPath)
+	if err != nil {
+		return err
+	}
+	if !ok || materialization.Method != "copy" || materialization.Source != request.JournalSource || materialization.DestinationFingerprint != request.JournalFingerprint {
+		return ErrUnsafePath
+	}
+	return nil
 }
 
 // unsupportedProjectSkills inventories agent-shaped project locations without
@@ -691,6 +893,9 @@ func (s *Service) removeInScope(root string, target adapter.Target, identifier s
 		if err := validateLifecyclePlacement(target, root, placement.Destination, identifier, global); err != nil {
 			return err
 		}
+		if err := s.validateJournalCopy(request); err != nil {
+			return err
+		}
 		replanned, err := s.planSkill(request)
 		if err != nil {
 			return err
@@ -710,10 +915,16 @@ func (s *Service) removeInScope(root string, target adapter.Target, identifier s
 		if replanned.CurrentSource != planned.CurrentSource {
 			return ErrUnsafePath
 		}
+		if err := s.validateJournalCopy(request); err != nil {
+			return err
+		}
 		if s.BeforePublish != nil {
 			if err := s.BeforePublish("remove-before"); err != nil {
 				return err
 			}
+		}
+		if request.JournalMaterialization == "copy" {
+			return adapter.RemoveManagedCopy(root, placement.Destination, request.JournalFingerprint)
 		}
 		return adapter.RemoveManagedLink(root, placement.Destination, planned.CurrentSource)
 	})
@@ -753,6 +964,14 @@ func (s *Service) buildRemovePreviewInScope(project string, target adapter.Targe
 	}
 	request := baseRequest
 	request.PlacementPath = placement.Destination
+	if materialization, status, ok, err := s.copyActivation(placement.Destination, identifier); err != nil {
+		return plan, project, placement, request, resource.SkillLifecyclePlan{}, err
+	} else if ok && materialization.Method == "copy" && status == Managed {
+		request.JournalCopyMatches = true
+		request.JournalMaterialization = "copy"
+		request.JournalSource = materialization.Source
+		request.JournalFingerprint = materialization.DestinationFingerprint
+	}
 	planned, err := s.planSkill(request)
 	if err != nil {
 		return plan, project, placement, request, resource.SkillLifecyclePlan{}, err
@@ -1074,6 +1293,12 @@ func (s *Service) mutate(plan operation.Plan, paths []string, validate func() er
 }
 
 func (s *Service) mutateWithBefore(plan operation.Plan, paths []string, before []operation.Snapshot, validate func() error, change func() error) error {
+	return s.mutateWithBeforeMaterializations(plan, paths, before, validate, func() ([]operation.Materialization, error) {
+		return nil, change()
+	})
+}
+
+func (s *Service) mutateWithBeforeMaterializations(plan operation.Plan, paths []string, before []operation.Snapshot, validate func() error, change func() ([]operation.Materialization, error)) error {
 	if s.Journal == nil {
 		return fmt.Errorf("operation journal is not configured")
 	}
@@ -1087,7 +1312,8 @@ func (s *Service) mutateWithBefore(plan operation.Plan, paths []string, before [
 			return err
 		}
 	}
-	if err := change(); err != nil {
+	materializations, err := change()
+	if err != nil {
 		var preserve *preservePathsError
 		if errors.As(err, &preserve) {
 			return rollbackError(err, s.Journal.Restore(excludingPaths(before, preserve.paths)))
@@ -1101,7 +1327,7 @@ func (s *Service) mutateWithBefore(plan operation.Plan, paths []string, before [
 	if err != nil {
 		return rollbackError(err, s.Journal.Restore(before))
 	}
-	if err := s.Journal.RecordPlan(plan, before, after); err != nil {
+	if err := s.Journal.RecordPlanWithMaterializations(plan, before, after, materializations); err != nil {
 		if errors.Is(err, operation.ErrJournalCommitted) {
 			return err
 		}
@@ -1159,7 +1385,7 @@ func (s *Service) publishSkill(request resource.SkillLifecycleRequest, path, exp
 	if planned.SourcePath != expectedSource {
 		return ErrUnsafePath
 	}
-	if err := placeFilesystem(planned, request, journal, initialSnapshot, s.BeforeFinalPublish, s.BeforeDiscard); err != nil {
+	if err := placeFilesystem(planned, request, journal, initialSnapshot, s.Materialization, s.BeforeFinalPublish, s.BeforeDiscard); err != nil {
 		var preserved *adapter.PreservedPathError
 		if errors.As(err, &preserved) {
 			return preservePath(err, preserved.Path)
@@ -1172,7 +1398,7 @@ func (s *Service) publishSkill(request resource.SkillLifecycleRequest, path, exp
 	return nil
 }
 
-func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.SkillLifecycleRequest, journal *operation.Journal, initialSnapshot *operation.Snapshot, beforeFinalPublish, beforeDiscard func() error) error {
+func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.SkillLifecycleRequest, journal *operation.Journal, initialSnapshot *operation.Snapshot, mode adapter.MaterializationMode, beforeFinalPublish, beforeDiscard func() error) error {
 	_, err := adapter.PlaceFilesystem(resource.PlacementPlan{Project: request.ProjectPath, Resource: planned.Resource}, adapter.FilesystemPlacementOptions{
 		Project:            request.ProjectPath,
 		Target:             adapter.Target(request.Target),
@@ -1180,6 +1406,9 @@ func placeFilesystem(planned resource.SkillLifecyclePlan, request resource.Skill
 		GlobalScope:        request.GlobalScope,
 		Conflict:           adapter.ConflictStrategy(request.Conflict),
 		Force:              request.Force,
+		Materialization:    mode,
+		ExistingCopyOwned:  request.JournalCopyMatches,
+		Rematerialize:      request.RematerializeManaged,
 		Journal:            journal,
 		InitialSnapshot:    initialSnapshot,
 		BeforeFinalPublish: beforeFinalPublish,

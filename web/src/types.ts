@@ -93,3 +93,51 @@ export type LatestOperation = {
   undoAvailable: boolean
   undoPreview?: { operation: string; operationRef?: MessageRef; changes: PlanChange[]; warnings: string[]; warningRefs?: (MessageRef | null)[] }
 } | null
+
+export type SyncMode = 'auto' | 'symlink-only' | 'copy-only'
+export type SyncSource = {
+  id: string
+  identifier: string
+  scope: 'global' | 'project'
+  location: string
+  path: string
+  checksum?: string
+  eligible: boolean
+  problem?: string
+  alreadyManaged?: boolean
+  managedMaterial?: string
+}
+export type SyncSourceGroup = {
+  id: string
+  identifier: string
+  checksum: string
+  versionKey: string
+  sources: SyncSource[]
+  alreadyPresent: boolean
+  conflict: boolean
+  conflictReason?: string
+  existingCurrent?: string
+  requiresCurrentChoice?: boolean
+  makeCurrent?: boolean
+}
+export type SyncLocation = { scope: 'global' | 'project'; label: string; path: string }
+export type SyncDiagnostic = { scope: 'global' | 'project'; path: string; message: string }
+export type SyncInventory = {
+  repositoryPath: string
+  locations: SyncLocation[]
+  sources: SyncSource[]
+  groups: SyncSourceGroup[]
+  diagnostics: SyncDiagnostic[]
+  globalResyncUndoAvailable: boolean
+  projectResyncUndoAvailable: boolean
+}
+export type SyncImportPreview = {
+  repositoryPath: string
+  groups: SyncSourceGroup[]
+  selectedGroupIds: string[]
+  currentChoices?: Record<string, string>
+  currentChoiceRequired?: string[]
+  repositoryStates: Record<string, string>
+  confirmationToken: string
+}
+export type SyncPlan = { id: string; scope?: string; plan: { operation: string; changes: PlanChange[]; warnings: string[] } }

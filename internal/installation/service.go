@@ -70,7 +70,8 @@ type pendingPreview struct {
 
 // Service owns short-lived installation previews shared by interface adapters.
 type Service struct {
-	LibraryPath string
+	LibraryPath     string
+	Materialization adapter.MaterializationMode
 
 	mu      sync.Mutex
 	pending map[string]pendingPreview
@@ -78,7 +79,16 @@ type Service struct {
 
 // New constructs a local installation application service.
 func New(libraryPath string) *Service {
-	return &Service{LibraryPath: libraryPath, pending: make(map[string]pendingPreview)}
+	return NewWithMaterialization(libraryPath, adapter.MaterializeAuto)
+}
+
+// NewWithMaterialization constructs an installation service using the
+// machine-local Skill synchronization setting.
+func NewWithMaterialization(libraryPath string, mode adapter.MaterializationMode) *Service {
+	if mode == "" {
+		mode = adapter.MaterializeAuto
+	}
+	return &Service{LibraryPath: libraryPath, Materialization: mode, pending: make(map[string]pendingPreview)}
 }
 
 // Preview validates a request and creates a session-scoped, short-lived plan.
@@ -93,6 +103,7 @@ func (s *Service) Preview(session string, request Request) (Preview, error) {
 		return Preview{}, err
 	}
 	life := lifecycle.New(s.LibraryPath, journal(normalized.Project, normalized.Global), nil)
+	life.Materialization = s.Materialization
 	plan, err := previewLifecycle(life, normalized, skills)
 	preview := Preview{
 		Project:  normalized.Project,
@@ -149,6 +160,7 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 		return ApplyResult{}, err
 	}
 	life := lifecycle.New(s.LibraryPath, operationJournal, nil)
+	life.Materialization = s.Materialization
 	state, err := filesystemState(normalized, skills)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("inspect installation preview state: %w", err)

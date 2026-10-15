@@ -1,6 +1,6 @@
 //go:build windows
 
-package operation
+package filelock
 
 import (
 	"os"
@@ -13,7 +13,7 @@ var (
 	unlockFileEx = syscall.NewLazyDLL("kernel32.dll").NewProc("UnlockFileEx")
 )
 
-func platformFileLock(file *os.File) (func() error, error) {
+func platformLock(file *os.File) (func() error, error) {
 	const exclusiveLock = 0x00000002
 	overlapped := &syscall.Overlapped{}
 	result, _, callErr := lockFileEx.Call(file.Fd(), exclusiveLock, 0, 1, 0, uintptr(unsafe.Pointer(overlapped)))

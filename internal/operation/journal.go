@@ -2,6 +2,7 @@ package operation
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,12 +31,24 @@ type Snapshot struct {
 
 // Entry is a confirmed reversible operation.
 type Entry struct {
-	Version      string     `json:"version,omitempty"`
-	ResourceKind string     `json:"resourceKind,omitempty"`
-	Operation    string     `json:"operation"`
-	At           time.Time  `json:"at"`
-	Before       []Snapshot `json:"before"`
-	After        []Snapshot `json:"after"`
+	Version          string            `json:"version,omitempty"`
+	ResourceKind     string            `json:"resourceKind,omitempty"`
+	Operation        string            `json:"operation"`
+	At               time.Time         `json:"at"`
+	Before           []Snapshot        `json:"before"`
+	After            []Snapshot        `json:"after"`
+	Materializations []Materialization `json:"materializations,omitempty"`
+}
+
+// Materialization records the Skill version and publication method for one
+// journal-owned activation destination.
+type Materialization struct {
+	Destination            string `json:"destination"`
+	Source                 string `json:"source"`
+	SourceVersion          string `json:"sourceVersion"`
+	Method                 string `json:"method"`
+	SourceFingerprint      string `json:"sourceFingerprint"`
+	DestinationFingerprint string `json:"destinationFingerprint"`
 }
 
 // RecordMetadata describes the versioned resource envelope for a journal
@@ -128,6 +141,12 @@ func (j *Journal) Record(operation string, before, after []Snapshot, metadata ..
 // RecordPlan appends a confirmed operation using the plan's versioned
 // resource metadata. Empty metadata retains the legacy Skill defaults.
 func (j *Journal) RecordPlan(plan Plan, before, after []Snapshot) error {
+	return j.RecordPlanWithMaterializations(plan, before, after, nil)
+}
+
+// RecordPlanWithMaterializations records activation ownership evidence with
+// the operation and its exact before/after snapshots.
+func (j *Journal) RecordPlanWithMaterializations(plan Plan, before, after []Snapshot, materializations []Materialization) error {
 	unlock, err := acquireFileLock(j.recordLockPath())
 	if err != nil {
 		return err
@@ -141,8 +160,88 @@ func (j *Journal) RecordPlan(plan Plan, before, after []Snapshot) error {
 	if err != nil {
 		return err
 	}
-	entries = append(entries, Entry{Version: version, ResourceKind: kind, Operation: plan.Operation, At: time.Now().UTC(), Before: before, After: after})
+	owned := make([]Materialization, len(materializations))
+	for i, item := range materializations {
+		if item.Method != "symlink" && item.Method != "copy" {
+			return fmt.Errorf("unsupported Skill materialization method %q", item.Method)
+		}
+		item.Destination, err = filepath.Abs(item.Destination)
+		if err != nil {
+			return fmt.Errorf("resolve materialization destination: %w", err)
+		}
+		item.Source, err = filepath.Abs(item.Source)
+		if err != nil {
+			return fmt.Errorf("resolve materialization source: %w", err)
+		}
+		found := false
+		for _, snapshot := range after {
+			if snapshot.Path == item.Destination && snapshot.Exists {
+				matches, matchErr := matchesSnapshot(snapshot)
+				if matchErr != nil {
+					return matchErr
+				}
+				if !matches {
+					return ErrUnexpectedState
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("materialization destination is not present in the recorded after-state")
+		}
+		item.SourceFingerprint, err = FingerprintPath(item.Source)
+		if err != nil {
+			return fmt.Errorf("fingerprint materialization source: %w", err)
+		}
+		item.DestinationFingerprint, err = FingerprintPath(item.Destination)
+		if err != nil {
+			return fmt.Errorf("fingerprint materialization destination: %w", err)
+		}
+		owned[i] = item
+	}
+	entries = append(entries, Entry{Version: version, ResourceKind: kind, Operation: plan.Operation, At: time.Now().UTC(), Before: before, After: after, Materializations: owned})
 	return j.write(entries)
+}
+
+// RecordedMaterialization returns the latest journal evidence for path only
+// while the current filesystem object still matches the recorded after-state.
+func (j *Journal) RecordedMaterialization(path string) (Materialization, bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return Materialization{}, false, err
+	}
+	entries, err := j.entries()
+	if err != nil {
+		return Materialization{}, false, err
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		for _, snapshot := range entry.After {
+			if snapshot.Path != abs {
+				continue
+			}
+			if !snapshot.Exists {
+				return Materialization{}, false, nil
+			}
+			matches, matchErr := matchesSnapshot(snapshot)
+			if matchErr != nil || !matches {
+				return Materialization{}, false, matchErr
+			}
+			for _, item := range entry.Materializations {
+				if item.Destination != abs {
+					continue
+				}
+				digest, err := FingerprintPath(abs)
+				if err != nil || digest != item.DestinationFingerprint {
+					return Materialization{}, false, err
+				}
+				return item, true, nil
+			}
+			return Materialization{}, false, nil
+		}
+	}
+	return Materialization{}, false, nil
 }
 
 // Latest returns the latest journal entry after normalizing legacy fields in
@@ -576,6 +675,9 @@ func (j *Journal) entries() ([]Entry, error) {
 		if err := validateMetadata(entries[i].Version, entries[i].ResourceKind); err != nil {
 			return nil, err
 		}
+		if err := validateMaterializations(entries[i]); err != nil {
+			return nil, err
+		}
 		if j.ValidateEntry != nil {
 			if err := j.ValidateEntry(entries[i]); err != nil {
 				return nil, err
@@ -583,6 +685,44 @@ func (j *Journal) entries() ([]Entry, error) {
 		}
 	}
 	return entries, nil
+}
+
+func validateMaterializations(entry Entry) error {
+	seen := make(map[string]bool, len(entry.Materializations))
+	for _, item := range entry.Materializations {
+		if item.Method != "copy" && item.Method != "symlink" {
+			return fmt.Errorf("operation journal contains unsupported Skill materialization method %q", item.Method)
+		}
+		if item.SourceVersion == "" {
+			return fmt.Errorf("operation journal Skill materialization has no source version")
+		}
+		for _, path := range []string{item.Destination, item.Source} {
+			if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+				return fmt.Errorf("operation journal Skill materialization contains a non-canonical path")
+			}
+		}
+		if seen[item.Destination] {
+			return fmt.Errorf("operation journal contains duplicate Skill materialization destinations")
+		}
+		seen[item.Destination] = true
+		for _, digest := range []string{item.SourceFingerprint, item.DestinationFingerprint} {
+			decoded, err := hex.DecodeString(digest)
+			if err != nil || len(decoded) != 32 {
+				return fmt.Errorf("operation journal Skill materialization contains an invalid fingerprint")
+			}
+		}
+		found := false
+		for _, snapshot := range entry.After {
+			if snapshot.Path == item.Destination && snapshot.Exists {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("operation journal Skill materialization is missing its destination after-state")
+		}
+	}
+	return nil
 }
 
 func (j *Journal) write(entries []Entry) error {

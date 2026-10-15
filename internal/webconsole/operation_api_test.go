@@ -687,6 +687,58 @@ func TestPlanExpiresWhileWaitingForSessionOperationLock(t *testing.T) {
 	}
 }
 
+func TestPlanExpiresWhileWaitingForSharedProjectOperationLock(t *testing.T) {
+	server, project, _, skillID := operationFixture(t)
+	var nowMu sync.RWMutex
+	now := time.Now().UTC()
+	server.now = func() time.Time {
+		nowMu.RLock()
+		defer nowMu.RUnlock()
+		return now
+	}
+	preview := request(t, server, http.MethodPost, "/api/v1/projects/"+server.project.ID+"/plans/activate", `{"skillIdentifiers":["`+skillID+`"],"targetAgents":["codex"]}`)
+	var envelope operationPlanEnvelope
+	if err := json.Unmarshal(preview.Body.Bytes(), &envelope); err != nil || preview.Code != http.StatusCreated {
+		t.Fatalf("create queued plan = %d %s %v", preview.Code, preview.Body.String(), err)
+	}
+	unlock, err := operation.ProjectJournal(project).LockOperation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		responseCh <- request(t, server, http.MethodPost, "/api/v1/plans/"+envelope.Plan.ID+"/execute", `{}`)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		server.plansMu.Lock()
+		state := server.plans[envelope.Plan.ID].state
+		server.plansMu.Unlock()
+		if state == storedPlanExecuting {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = unlock()
+			t.Fatal("execute request did not queue behind the shared project operation lock")
+		}
+		runtime.Gosched()
+	}
+	nowMu.Lock()
+	now = envelope.Plan.ExpiresAt
+	nowMu.Unlock()
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	result := <-responseCh
+	if result.Code != http.StatusGone || !strings.Contains(result.Body.String(), "plan_expired") {
+		t.Fatalf("queued expired execution = %d %s, want plan_expired", result.Code, result.Body.String())
+	}
+	target, _ := adapter.For(adapter.Codex)
+	if _, err := os.Lstat(target.ProjectSkillPath(project, skillID)); !os.IsNotExist(err) {
+		t.Fatalf("expired queued plan changed project state, lstat error = %v", err)
+	}
+}
+
 func TestRemovalAndUndoUseReviewableJournalPlans(t *testing.T) {
 	server, project, _, skillID := operationFixture(t)
 	projectID := server.project.ID
