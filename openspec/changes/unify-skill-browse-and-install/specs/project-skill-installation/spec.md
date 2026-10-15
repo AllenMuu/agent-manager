@@ -27,6 +27,18 @@ The system SHALL provide an installation workflow that accepts one or more expli
 - **WHEN** a user runs `agent-manager recommend` without invoking installation
 - **THEN** Agent Manager reports recommendations without changing project activations, the Skill library, the operation journal, or the global baseline
 
+#### Scenario: Existing Skills cannot be selected for installation
+- **WHEN** a recommended or catalog Skill identifier is already present in the current Global or Project source inventory, or in the current project inventory
+- **THEN** the WebUI displays it as checked and disabled and does not include it in the pending installation selection
+
+#### Scenario: Source inventory is unavailable
+- **WHEN** the WebUI cannot read the current Global and Project Skill source inventory
+- **THEN** it shows a retryable error, keeps Skill selection disabled, and permits selection after a successful retry
+
+#### Scenario: Source inventory is partial
+- **WHEN** the source inventory reports diagnostics for one or more Global or Project locations
+- **THEN** the WebUI displays the diagnostics, keeps Skill selection and installation disabled, and permits selection after a complete retry
+
 ### Requirement: Preview and confirm project installation
 The system SHALL display an installation plan before changing project files. The plan SHALL identify each selected Skill, target agent, project destination, and applicable compatibility warning or conflict. The CLI SHALL apply no changes unless the invocation includes `--yes`, and SHALL display the plan before applying it; the WebUI SHALL require a separate explicit confirmation after presenting the plan. The unified WebUI SHALL use the same installation preview and apply flow for one or more selected Skills and SHALL require explicit target selection for every selection size. A change to the WebUI selection, targets, or conflict setting SHALL clear the installation preview. An unavailable or ineligible selected Skill SHALL block installation until it is deselected.
 

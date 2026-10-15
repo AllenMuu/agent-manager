@@ -139,11 +139,35 @@
 .agentInfo strong { font-size: 12px; }
 .agentInfo span { overflow: hidden; color: #85867d; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .recommendationList { display: grid; margin-top: 8px; }
-.recommendationRow { display: flex; min-height: 86px; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 0; border-top: 1px solid #eeebe3; }
+.recommendationRow { display: grid; min-width: 0; min-height: 86px; grid-template-columns: 26px minmax(0, 1fr) max-content; align-items: start; gap: 12px; padding: 12px 0; border-top: 1px solid #eeebe3; }
+.recommendationRow > input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: #b84f31; }
+.recommendationCopy { display: grid; min-width: 0; gap: 2px; overflow-wrap: anywhere; }
+.recommendationCopy > p { margin: 2px 0 3px; color: #696d64; font-size: 12px; line-height: 1.5; }
+.recommendationHeading { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 6px 9px; }
 .recommendationRow strong { font-size: 13px; }
-.recommendationRow p { margin: 2px 0 3px; font-size: 12px; }
 .reasonText { color: #89897f; font-size: 10px; }
-.recommendationAction { display: grid; flex: 0 0 auto; justify-items: end; gap: 3px; }
+.recommendationAction { display: grid; min-width: 0; justify-items: end; gap: 3px; }
+.scopeInventoryPanel { grid-column: 1 / -1; }
+.scopeInventoryGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 13px; }
+.scopeInventoryGrid > .sourceInventoryState { grid-column: 1 / -1; }
+.scopeInventoryScope { min-width: 0; padding: 13px; border: 1px solid #e4dfd5; border-radius: 9px; background: #fcfbf7; }
+.scopeInventoryHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 9px; border-bottom: 1px solid #ece8e0; }
+.scopeInventoryHeading h3 { margin: 0; color: #343930; font-size: 14px; }
+.scopeSkillList { display: grid; max-height: min(62vh, 440px); overflow-y: auto; padding-right: 4px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.scopeSkillRow { display: grid; min-width: 0; gap: 6px; padding: 11px 0; border-bottom: 1px solid #efede7; }
+.scopeSkillHeader { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.scopeSkillHeader strong { overflow-wrap: anywhere; color: #33382f; font-size: 12px; }
+.scopeSkillLocation { display: grid; min-width: 0; gap: 2px; color: #77796f; font-size: 10px; }
+.scopeSkillLocation code { overflow-wrap: anywhere; color: #666a60; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.scopeSkillProblem { overflow-wrap: anywhere; color: #9b3c2b; font-size: 10px; }
+.scopeSkillEmpty { margin: 13px 0 2px; color: #85867d; font-size: 11px; }
+.sourceInventoryState { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 11px 13px; border: 1px solid #d9d4c8; border-radius: 8px; background: #fffdf8; color: #696d64; font-size: 12px; }
+.sourceInventoryState .loaderMark { width: 15px; height: 15px; }
+.sourceInventoryState small { flex-basis: 100%; overflow-wrap: anywhere; color: #77796f; }
+.sourceInventoryDiagnostics { display: grid; flex-basis: 100%; max-height: min(28vh, 180px); gap: 5px; overflow-y: auto; overflow-wrap: anywhere; overscroll-behavior: contain; }
+.sourceInventoryDiagnostics code { overflow-wrap: anywhere; }
+.sourceInventoryError { border-color: #e1b8ad; background: #fff9f5; color: #913a2c; }
+.sourceInventoryError .textButton { min-height: 36px; }
 .inventoryList { display: grid; margin-top: 8px; }
 .inventoryRow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 11px 0; border-top: 1px solid #eeebe3; }
 .resourceMain { display: grid; min-width: 0; grid-template-columns: max-content max-content max-content; align-items: center; gap: 5px 9px; }
@@ -197,7 +221,9 @@
 .skillBullet { display: grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center; border: 1px solid #dedacf; border-radius: 7px; color: #b84f31; font-size: 12px; }
 .skillSummary { display: grid; min-width: 0; flex: 1; gap: 1px; }
 .skillSummary strong { font-size: 12px; }
-.skillSummary span { overflow: hidden; color: #777a70; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.skillSummaryHeading { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+.skillSummaryHeading .pill { min-height: 20px; padding: 1px 7px; font-size: 9px; }
+.skillSummary .skillDescription { display: -webkit-box; overflow: hidden; color: #777a70; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .skillSummary small { color: #99998f; font-size: 9px; }
 .chevron { color: #a0a095; font-size: 22px; }
 .skillDetailPanel { position: sticky; top: 18px; }
@@ -282,7 +308,7 @@
   .pageHeading h1 { font-size: 29px; }
   .installationFrame { min-height: 700px; height: calc(100vh - 190px); }
   .syncScopes { grid-template-columns: minmax(0, 1fr); }
-  .workspaceGrid, .libraryLayout, .documentGrid { grid-template-columns: minmax(0, 1fr); }
+  .workspaceGrid, .libraryLayout, .documentGrid, .scopeInventoryGrid { grid-template-columns: minmax(0, 1fr); }
   .agentPanel { grid-row: auto; }
   .skillsWorkspace { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
   .skillsWorkspace:not([data-selection-action="none"]) { padding-bottom: calc(45vh + env(safe-area-inset-bottom, 0px) + 16px); }
@@ -300,9 +326,8 @@
   .registerStamp { right: 17px; bottom: 22px; width: 69px; height: 69px; opacity: .7; }
   .registerStamp span:first-child { font-size: 16px; }
   .registerStamp span:last-child { font-size: 7px; }
-  .recommendationRow { align-items: start; gap: 8px; }
-  .recommendationRow > div:not(.recommendationAction) { min-width: 0; overflow-wrap: anywhere; }
-  .recommendationAction { max-width: 112px; }
+  .recommendationRow { grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
+  .recommendationAction { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; justify-items: start; justify-content: flex-start; gap: 7px; }
   .recommendationAction .textButton { line-height: 1.25; }
   .resourceMain { grid-template-columns: max-content minmax(0, 1fr); }
   .inventoryRow { align-items: start; }

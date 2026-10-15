@@ -15,6 +15,22 @@ The console MUST provide one Skills navigation entry that opens a unified worksp
 - **WHEN** a Skill appears in both project recommendations and catalog results and the operator selects it in either section
 - **THEN** both appearances reflect one selection keyed by that Skill's identifier
 
+#### Scenario: Keep the workspace recommendation summary short
+- **WHEN** the workspace has more than five distinct Skill recommendations across its scopes
+- **THEN** it shows only the five highest-scoring identifiers in deterministic score-descending and identifier-ascending order, merges each identifier's scope and evidence, and provides an action to open all recommendations in Skills
+
+#### Scenario: Show scoped Skill sources in the workspace
+- **WHEN** the workspace reads the current Skill source inventory
+- **THEN** it shows Global and Project Skill locations in separate lists with each source path and status
+
+#### Scenario: Warn when the source inventory is partial
+- **WHEN** the source inventory contains diagnostics for locations that could not be inspected
+- **THEN** it shows the available sources with a warning and retry action instead of presenting the partial inventory as complete
+
+#### Scenario: Keep recommendation descriptions aligned
+- **WHEN** recommendation descriptions or action labels have different lengths
+- **THEN** every description starts in the same column and wraps without creating horizontal page overflow
+
 #### Scenario: Inspect a Skill
 - **WHEN** the operator opens a Skill detail
 - **THEN** the console displays its supported metadata and readable `SKILL.md` content without executing it

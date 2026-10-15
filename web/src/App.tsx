@@ -13,6 +13,7 @@ import type {
   MessageRef,
   OperationPlan,
   Project,
+  Recommendation,
   RecommendationResult,
   Resource,
   Skill,
@@ -89,6 +90,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+type WorkspaceRecommendation = Recommendation & { scopes: string[] }
+
+function compareStable(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+function recommendationTieKey(item: Recommendation) {
+  const evidence = (item.matchingEvidence ?? [])
+    .map((match) => `${match.technology}\u0000${match.field}`)
+    .sort(compareStable)
+    .join('\u0001')
+  return `${item.matchReasonRef?.key ?? ''}\u0000${item.matchReason}\u0000${evidence}`
+}
+
+function aggregateWorkspaceRecommendations(result: RecommendationResult): WorkspaceRecommendation[] {
+  const grouped = new Map<string, { best: Recommendation; scopes: Set<string>; evidence: Map<string, { technology: string; field: string }> }>()
+  for (const scope of result.scopes) {
+    for (const item of scope.recommendations) {
+      const current = grouped.get(item.identifier)
+      if (!current) {
+        grouped.set(item.identifier, {
+          best: item,
+          scopes: new Set([scope.path]),
+          evidence: new Map((item.matchingEvidence ?? []).map((match) => [JSON.stringify([match.technology, match.field]), match])),
+        })
+        continue
+      }
+      current.scopes.add(scope.path)
+      for (const match of item.matchingEvidence ?? []) current.evidence.set(JSON.stringify([match.technology, match.field]), match)
+      if (item.score > current.best.score || (item.score === current.best.score && compareStable(recommendationTieKey(item), recommendationTieKey(current.best)) < 0)) {
+        current.best = item
+      }
+    }
+  }
+  return [...grouped.entries()].map(([identifier, value]) => ({
+    ...value.best,
+    identifier,
+    scopes: [...value.scopes].sort(compareStable),
+    matchingEvidence: [...value.evidence.values()].sort((left, right) => compareStable(left.technology, right.technology) || compareStable(left.field, right.field)),
+  })).sort((left, right) => right.score - left.score || compareStable(left.identifier, right.identifier))
+}
+
+type WorkspaceSkillSourceGroup = { key: string; identifier: string; sources: SyncSource[] }
+
+function groupWorkspaceSkillSources(sources: SyncSource[], scope: SyncSource['scope']): WorkspaceSkillSourceGroup[] {
+  const groups = new Map<string, WorkspaceSkillSourceGroup>()
+  for (const source of sources) {
+    if (source.scope !== scope) continue
+    const key = JSON.stringify([source.identifier, source.checksum || source.id])
+    const group = groups.get(key)
+    if (group) group.sources.push(source)
+    else groups.set(key, { key, identifier: source.identifier, sources: [source] })
+  }
+  return [...groups.values()]
+    .map((group) => ({ ...group, sources: [...group.sources].sort((left, right) => compareStable(left.location, right.location) || compareStable(left.path, right.path)) }))
+    .sort((left, right) => compareStable(left.identifier, right.identifier) || compareStable(left.key, right.key))
+}
+
 export function App() {
   const { t, message: translateMessage, error: formatError } = useLanguage()
   const [token] = useState(() => bootstrapSession())
@@ -96,6 +155,7 @@ export function App() {
   const [projectPath, setProjectPath] = useState('')
   const [view, setView] = useState<View>(() => /^\/install\/?$/.test(window.location.pathname) ? 'skills' : 'workspace')
   const [workspace, setWorkspace] = useState<PageState<{ agents: Agent[]; recommendations: RecommendationResult; resources: Resource[] }>>(initialPage)
+  const [skillSourceInventory, setSkillSourceInventory] = useState<PageState<SyncInventory>>(initialPage)
   const [skills, setSkills] = useState<PageState<InstallationCatalog>>(initialPage)
   const [fullCatalog, setFullCatalog] = useState<PageState<InstallationCatalog>>(initialPage)
   const [subagents, setSubagents] = useState<PageState<{ definitions: SubAgent[]; diagnostics: SubAgentDiagnostic[] }>>(initialPage)
@@ -121,8 +181,21 @@ export function App() {
 
   const availableSkillIDs = new Set(fullCatalog.data?.skills.map((skill) => skill.identifier))
   const unavailableSkillIDs = fullCatalog.data ? selectedSkillIDs.filter((id) => !availableSkillIDs.has(id)) : []
-  const mutationBlocked = busy || skills.loading || !!skills.error || fullCatalog.loading || !!fullCatalog.error || !fullCatalog.data || unavailableSkillIDs.length > 0
+  const existingSkillIDs = useMemo(() => new Set([
+    ...(skillSourceInventory.data?.sources.map((source) => source.identifier) ?? []),
+    ...(workspace.data?.resources.map((resource) => resource.identifier) ?? []),
+  ]), [skillSourceInventory.data, workspace.data?.resources])
+  const sourceInventoryDiagnostics = skillSourceInventory.data?.diagnostics ?? []
+  const sourceInventoryBlocked = skillSourceInventory.loading || !!skillSourceInventory.error || !skillSourceInventory.data || sourceInventoryDiagnostics.length > 0
+  const mutationBlocked = busy || skills.loading || !!skills.error || fullCatalog.loading || !!fullCatalog.error || !fullCatalog.data || sourceInventoryBlocked || unavailableSkillIDs.length > 0
   const batchTargetsValid = batchTargets.length > 0 && batchTargets.every((target) => fullCatalog.data?.targets.some((supported) => supported.id === target))
+
+  useEffect(() => {
+    setSelectedSkillIDs((current) => {
+      const remaining = current.filter((identifier) => !existingSkillIDs.has(identifier))
+      return remaining.length === current.length ? current : remaining
+    })
+  }, [existingSkillIDs])
 
   const projectBase = project ? `/api/v1/projects/${project.id}` : ''
 
@@ -151,10 +224,24 @@ export function App() {
     }
   }, [token])
 
+  const loadSkillSources = useCallback(async () => {
+    if (!token) return
+    setSkillSourceInventory((current) => ({ ...current, loading: true, error: null }))
+    try {
+      const result = await get<SyncInventory>(token, '/api/v1/sync/sources')
+      setSkillSourceInventory({ data: result, loading: false, error: null })
+    } catch (error) {
+      setSkillSourceInventory((current) => ({ ...current, loading: false, error }))
+    }
+  }, [token])
+
   useEffect(() => { void loadSystem() }, [loadSystem])
   useEffect(() => {
-    if (project && view === 'workspace') void loadWorkspace(project.id)
-  }, [project, view, loadWorkspace])
+    if (project && view === 'workspace') {
+      void loadWorkspace(project.id)
+      void loadSkillSources()
+    }
+  }, [project, view, loadWorkspace, loadSkillSources])
 
   const runRequest = useCallback(async <T,>(action: () => Promise<T>, onSuccess: (value: T) => void, onError?: (error: unknown) => void) => {
     // Ref ownership is synchronous, so navigation or same-tick events cannot overlap requests.
@@ -218,8 +305,11 @@ export function App() {
   }, [token])
 
   useEffect(() => {
-    if (project && view === 'skills') void loadRecommendations(project.id)
-  }, [project, view, loadRecommendations])
+    if (project && view === 'skills') {
+      void loadRecommendations(project.id)
+      void loadSkillSources()
+    }
+  }, [project, view, loadRecommendations, loadSkillSources])
 
   const openSkill = async (skill: Skill) => {
     setSelectedSkill(skill)
@@ -322,7 +412,10 @@ export function App() {
         invalidateBatchPreview()
         setSelectedSkillIDs([])
         setToast({ kind: 'success', text: 'Selected Skills installed successfully.' })
-        if (project) void loadWorkspace(project.id)
+        if (project) {
+          void loadWorkspace(project.id)
+          void loadSkillSources()
+        }
         void loadLatest()
       },
     )
@@ -360,14 +453,20 @@ export function App() {
       (result) => {
         setPendingPlan(null)
         setToast({ kind: 'success', text: '{operation} completed and journaled.', values: { operation: operationLabel(result.operation, translateMessage) } })
-        if (project) void loadWorkspace(project.id)
+        if (project) {
+          void loadWorkspace(project.id)
+          void loadSkillSources()
+        }
         void loadDiagnostics()
         void loadLatest()
       },
       (error) => {
         setPendingPlan(null)
         setToast({ kind: 'error', error })
-        if (project) void loadWorkspace(project.id)
+        if (project) {
+          void loadWorkspace(project.id)
+          void loadSkillSources()
+        }
         void loadDiagnostics()
         void loadLatest()
       },
@@ -436,7 +535,7 @@ export function App() {
       </div>
       <div className={styles.pageHeading}>
         <div><span className={styles.kicker}>AGENT MANAGER / {String(navItems.findIndex((item) => item.id === view) + 1).padStart(2, '0')}</span><h1>{pageTitle}</h1></div>
-        {project && view === 'workspace' && <button className={styles.secondaryButton} type="button" onClick={() => void loadWorkspace(project.id)} disabled={workspace.loading}>↻ <span>{t('Refresh')}</span></button>}
+        {project && view === 'workspace' && <button className={styles.secondaryButton} type="button" onClick={() => { void loadWorkspace(project.id); void loadSkillSources() }} disabled={workspace.loading || skillSourceInventory.loading}>↻ <span>{t('Refresh')}</span></button>}
       </div>
 
       {toast && <div className={`${styles.notice} ${toast.kind === 'error' ? styles.noticeError : styles.noticeSuccess}`} role={toast.kind === 'error' ? 'alert' : 'status'}>
@@ -450,8 +549,11 @@ export function App() {
         {pendingPlan && <PlanReview plan={pendingPlan} busy={busy} onExecute={() => void executePlan()} onCancel={() => void cancelPlan()} />}
         {view === 'workspace' && <Workspace
           page={workspace}
+          skillSources={skillSourceInventory}
           busy={busy}
-          onActivate={openWorkspaceSkill}
+          onOpenSkill={openWorkspaceSkill}
+          onOpenRecommendations={() => navigate('skills')}
+          onRetrySkillSources={() => void loadSkillSources()}
           onRemove={(resource) => void createRemovalPlan(resource)}
           onDiagnostics={() => navigate('diagnostics')}
         />}
@@ -461,10 +563,20 @@ export function App() {
           selectedSkillIDs={selectedSkillIDs}
           selectionAction={selectionAction}
           unavailableSkillIDs={unavailableSkillIDs}
+          existingSkillIDs={[...existingSkillIDs]}
+          sourceInventoryReady={!sourceInventoryBlocked}
+          sourceInventoryLoading={skillSourceInventory.loading}
+          sourceInventoryError={skillSourceInventory.error}
+          sourceInventoryDiagnostics={sourceInventoryDiagnostics}
           mutationBlocked={mutationBlocked || !!pendingPlan}
-          inputsLocked={busy}
+          inputsLocked={busy || sourceInventoryBlocked}
           onRetryRecommendations={() => void loadRecommendations(project.id)}
-          onToggleSkill={(identifier) => { invalidateBatchPreview(); setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier)) }}
+          onRetrySourceInventory={() => void loadSkillSources()}
+          onToggleSkill={(identifier) => {
+            if (existingSkillIDs.has(identifier)) return
+            invalidateBatchPreview()
+            setSelectedSkillIDs((current) => toggleSkillSelection(current, identifier))
+          }}
           query={query}
           setQuery={setQuery}
           onSearch={(event) => { event.preventDefault(); void loadSkills(query) }}
@@ -917,21 +1029,27 @@ function ProjectRegistration({ path, setPath, onSubmit, busy }: { path: string; 
   </section>
 }
 
-function Workspace({ page, busy, onActivate, onRemove, onDiagnostics }: {
+function Workspace({ page, skillSources, busy, onOpenSkill, onOpenRecommendations, onRetrySkillSources, onRemove, onDiagnostics }: {
   page: PageState<{ agents: Agent[]; recommendations: RecommendationResult; resources: Resource[] }>
-  onActivate: (skill: Skill) => void
+  skillSources: PageState<SyncInventory>
+  onOpenSkill: (skill: Skill) => void
+  onOpenRecommendations: () => void
+  onRetrySkillSources: () => void
   onRemove: (resource: Resource) => void
   onDiagnostics: () => void
   busy: boolean
 }) {
-  const { t, message } = useLanguage()
+  const { t, message, error: formatError } = useLanguage()
   if (page.loading && !page.data) return <LoadingState label={t('Reading this project…')} />
   if (page.error) return <ErrorState error={page.error} />
   if (!page.data) return <EmptyState title={t('Workspace is ready')} detail={t('Refresh to read the project inventory.')} />
   const { agents, recommendations, resources } = page.data
   const hiddenAgentIDs = new Set(['codebuddy', 'junie', 'lingma', 'vscode'])
   const visibleAgents = agents.filter((agent) => !hiddenAgentIDs.has(agent.id))
-  const recommended = recommendations.scopes.flatMap((scope) => scope.recommendations.map((item) => ({ ...item, scope: scope.path })))
+  const recommended = aggregateWorkspaceRecommendations(recommendations)
+  const visibleRecommendations = recommended.slice(0, 5)
+  const globalSkills = groupWorkspaceSkillSources(skillSources.data?.sources ?? [], 'global')
+  const projectSkills = groupWorkspaceSkillSources(skillSources.data?.sources ?? [], 'project')
   const technologies = recommendations.scopes.flatMap((scope) => scope.technologies.map((technology) => ({
     ...technology,
     scope: scope.path,
@@ -958,12 +1076,26 @@ function Workspace({ page, busy, onActivate, onRemove, onDiagnostics }: {
     </section>
 
     <section className={styles.panel}>
-      <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL RECOMMENDATIONS')}</span><span className={styles.countMark}>{recommended.length.toString().padStart(2, '0')}</span></div>
-      {recommended.length ? <div className={styles.recommendationList}>{recommended.map((item, index) => <article className={styles.recommendationRow} key={`${item.scope}-${item.identifier}`}>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('SKILL RECOMMENDATIONS')}</span><span className={styles.countMark}>{visibleRecommendations.length.toString().padStart(2, '0')} / {recommended.length.toString().padStart(2, '0')}</span></div>
+      {recommended.length ? <div className={styles.recommendationList}>{visibleRecommendations.map((item, index) => <article className={styles.recommendationRow} key={item.identifier}>
         <span className={styles.findingIndex}>{String(index + 1).padStart(2, '0')}</span>
-        <div><strong>{item.identifier}</strong><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span></div>
-        <div className={styles.recommendationAction}><span className={styles.pill}>{statusLabel(item.confidence, t)} · {item.score}</span><button type="button" className={styles.textButton} onClick={() => onActivate({ identifier: item.identifier, name: item.identifier, description: item.description, tags: [], compatibility: [] })}>{t('Review activation →')}</button></div>
+        <div className={styles.recommendationCopy}><strong>{item.identifier}</strong><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span><span className={styles.reasonText}>{t('Matched in {scopes}', { scopes: item.scopes.join(' · ') })}</span></div>
+        <div className={styles.recommendationAction}><span className={styles.pill}>{statusLabel(item.confidence, t)} · {item.score}</span><button type="button" className={styles.textButton} onClick={() => onOpenSkill({ identifier: item.identifier, name: item.identifier, description: item.description, tags: [], compatibility: [] })}>{t('Read details →')}</button></div>
       </article>)}</div> : <EmptyInline title={t('No matching Skills')} detail={t('Search the eligible library to browse available Skills.')} />}
+      {recommended.length > 5 && <button type="button" className={styles.textButton} onClick={onOpenRecommendations}>{t('View all {count} recommendations →', { count: recommended.length })}</button>}
+    </section>
+
+    <section className={`${styles.panel} ${styles.scopeInventoryPanel}`}>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('SCOPED SKILL LOCATIONS')}</span><span className={styles.countMark}>{skillSources.data?.sources.length.toString().padStart(2, '0') ?? '—'}</span></div>
+      {skillSources.loading && !skillSources.data ? <LoadingState label={t('Reading Skill locations…')} /> : skillSources.error ? <div className={`${styles.stateBox} ${styles.errorState}`} role="alert"><strong>{t('Could not read current Skill locations.')}</strong><span>{formatError(skillSources.error)}</span><button type="button" className={styles.secondaryButton} disabled={skillSources.loading} onClick={onRetrySkillSources}>{t('Retry Skill location scan')}</button></div> : <div className={styles.scopeInventoryGrid}>
+        {skillSources.data?.diagnostics.length ? <div className={`${styles.sourceInventoryState} ${styles.sourceInventoryError}`} role="alert">
+          <strong>{t('Some Skill locations could not be read.')}</strong>
+          <div className={styles.sourceInventoryDiagnostics}>{skillSources.data.diagnostics.map((diagnostic) => <small key={JSON.stringify([diagnostic.scope, diagnostic.path, diagnostic.message])}>{t(diagnostic.scope === 'global' ? 'Global' : 'Project')} · <code>{diagnostic.path}</code> — {diagnostic.message}</small>)}</div>
+          <button type="button" className={styles.secondaryButton} disabled={skillSources.loading} onClick={onRetrySkillSources}>{t('Retry Skill location scan')}</button>
+        </div> : null}
+        <SkillSourceScope scope="global" title={t('Global Skills')} groups={globalSkills} diagnostics={skillSources.data?.diagnostics ?? []} loading={skillSources.loading} />
+        <SkillSourceScope scope="project" title={t('Project Skills')} groups={projectSkills} diagnostics={skillSources.data?.diagnostics ?? []} loading={skillSources.loading} />
+      </div>}
     </section>
 
     <section className={`${styles.panel} ${styles.inventoryPanel}`}>
@@ -981,15 +1113,41 @@ function Workspace({ page, busy, onActivate, onRemove, onDiagnostics }: {
   </div>
 }
 
-function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, unavailableSkillIDs, mutationBlocked, inputsLocked, onRetryRecommendations, onToggleSkill, query, setQuery, onSearch, selected, onSelect, supportedTargets, batchTargets, onToggleBatchTarget, batchReplaceConflicts, setBatchReplaceConflicts, batchTargetsValid, batchPreview, onPreviewInstallation, onApplyInstallation, onCancelInstallation, busy }: {
+function SkillSourceScope({ scope, title, groups, diagnostics, loading }: { scope: SyncSource['scope']; title: string; groups: WorkspaceSkillSourceGroup[]; diagnostics: SyncInventory['diagnostics']; loading: boolean }) {
+  const { t } = useLanguage()
+  const hasScopeDiagnostics = diagnostics.some((diagnostic) => diagnostic.scope === scope)
+  return <section className={styles.scopeInventoryScope}>
+    <div className={styles.scopeInventoryHeading}><h3>{title}</h3><span className={styles.countMark}>{groups.length.toString().padStart(2, '0')}</span></div>
+    {groups.length ? <div className={styles.scopeSkillList}>{groups.map((group) => {
+      const status = group.sources.some((source) => source.alreadyManaged)
+        ? 'Managed'
+        : group.sources.some((source) => source.eligible && !source.problem) ? 'Eligible' : 'Needs attention'
+      return <article className={styles.scopeSkillRow} key={group.key}>
+        <div className={styles.scopeSkillHeader}><strong>{group.identifier}</strong><span className={`${styles.pill} ${status === 'Managed' ? styles.pillReady : status === 'Needs attention' ? styles.pillMuted : ''}`}>{t(status)}</span></div>
+        {group.sources.map((source) => <div className={styles.scopeSkillLocation} key={source.id}>
+          <span>{source.location}</span><code>{source.path}</code>
+          {source.problem && <small className={styles.scopeSkillProblem}>{source.problem}</small>}
+        </div>)}
+      </article>
+    })}</div> : <p className={styles.scopeSkillEmpty}>{loading ? t('Reading Skill locations…') : hasScopeDiagnostics ? t('Could not verify every Skill location in this scope.') : scope === 'global' ? t('No global Skills found.') : t('No project-level Skills found.')}</p>}
+  </section>
+}
+
+function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, unavailableSkillIDs, existingSkillIDs, sourceInventoryReady, sourceInventoryLoading, sourceInventoryError, sourceInventoryDiagnostics, mutationBlocked, inputsLocked, onRetryRecommendations, onRetrySourceInventory, onToggleSkill, query, setQuery, onSearch, selected, onSelect, supportedTargets, batchTargets, onToggleBatchTarget, batchReplaceConflicts, setBatchReplaceConflicts, batchTargetsValid, batchPreview, onPreviewInstallation, onApplyInstallation, onCancelInstallation, busy }: {
   page: PageState<InstallationCatalog>
   recommendations: PageState<RecommendationResult>
   selectedSkillIDs: string[]
   selectionAction: SkillSelectionAction
   unavailableSkillIDs: string[]
+  existingSkillIDs: string[]
+  sourceInventoryReady: boolean
+  sourceInventoryLoading: boolean
+  sourceInventoryError: unknown | null
+  sourceInventoryDiagnostics: SyncInventory['diagnostics']
   mutationBlocked: boolean
   inputsLocked: boolean
   onRetryRecommendations: () => void
+  onRetrySourceInventory: () => void
   onToggleSkill: (identifier: string) => void
   query: string
   setQuery: (value: string) => void
@@ -1008,19 +1166,30 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
   onCancelInstallation: () => void
   busy: boolean
 }) {
-  const { t, message, installationMessage } = useLanguage()
+  const { t, message, installationMessage, error: formatError } = useLanguage()
+  const existingIDs = new Set(existingSkillIDs)
   return <div className={styles.skillsWorkspace} data-selection-action={selectionAction}>
+    {!sourceInventoryReady && <div className={`${styles.sourceInventoryState} ${sourceInventoryError || sourceInventoryDiagnostics.length ? styles.sourceInventoryError : ''}`} role={sourceInventoryError || sourceInventoryDiagnostics.length ? 'alert' : 'status'}>
+      {sourceInventoryError ? <><span>{t('Could not confirm which Skills are already present.')}</span><small>{formatError(sourceInventoryError)}</small><button type="button" className={styles.textButton} disabled={busy || sourceInventoryLoading} onClick={onRetrySourceInventory}>{t('Retry Skill location scan')}</button></> : sourceInventoryDiagnostics.length ? <>
+        <span>{t('Some Skill locations could not be verified. Installation is disabled until a complete scan succeeds.')}</span>
+        <div className={styles.sourceInventoryDiagnostics}>{sourceInventoryDiagnostics.map((diagnostic) => <small key={JSON.stringify([diagnostic.scope, diagnostic.path, diagnostic.message])}>{t(diagnostic.scope === 'global' ? 'Global' : 'Project')} · <code>{diagnostic.path}</code> — {diagnostic.message}</small>)}</div>
+        <button type="button" className={styles.textButton} disabled={busy || sourceInventoryLoading} onClick={onRetrySourceInventory}>{t('Retry Skill location scan')}</button>
+      </> : <><span>{t('Reading current Skill locations…')}</span><span className={styles.loaderMark} aria-hidden="true" /></>}
+    </div>}
     <section className={styles.panel} aria-label={t('Recommended Skills')}>
       <div className={styles.panelTop}><span className={styles.kicker}>{t('RECOMMENDED SKILLS')}</span></div>
       {recommendations.loading ? <LoadingState label={t('Reading this project…')} /> : recommendations.error ? <><ErrorState error={recommendations.error} /><button type="button" className={styles.secondaryButton} onClick={onRetryRecommendations}>{t('Retry recommendations')}</button></> : recommendations.data?.scopes.some((scope) => scope.recommendations.length) ? <>
         {!recommendations.data.scanComplete && <div className={styles.inlineWarning}>{t('Partial scan · review scan diagnostics')}</div>}
         {recommendations.data.scopes.map((scope, scopeIndex) => <div key={`${scope.path}-${scopeIndex}`}>
           <p className={styles.mutedText}>{scope.path}</p>
-          {scope.recommendations.map((item, itemIndex) => <article className={styles.recommendationRow} key={`${item.identifier}-${itemIndex}`}>
-            <input type="checkbox" aria-label={t('Select {identifier}', { identifier: item.identifier })} checked={selectedSkillIDs.includes(item.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(item.identifier)} />
-            <div><strong>{item.identifier}</strong><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span></div>
+          {scope.recommendations.map((item, itemIndex) => {
+            const alreadyPresent = existingIDs.has(item.identifier)
+            return <article className={styles.recommendationRow} key={`${item.identifier}-${itemIndex}`}>
+            <input type="checkbox" aria-label={t('Select {identifier}', { identifier: item.identifier })} checked={alreadyPresent || selectedSkillIDs.includes(item.identifier)} disabled={inputsLocked || alreadyPresent} onChange={() => onToggleSkill(item.identifier)} />
+            <div className={styles.recommendationCopy}><div className={styles.recommendationHeading}><strong>{item.identifier}</strong>{alreadyPresent && <span className={`${styles.pill} ${styles.pillReady}`}>{t('Already present')}</span>}</div><p>{item.description}</p><span className={styles.reasonText}>{recommendationReason(item.matchReasonRef, item.matchingEvidence ?? [], item.matchReason, message, t)}</span></div>
             <div className={styles.recommendationAction}><span className={styles.pill}>{statusLabel(item.confidence, t)} · {item.score}</span><button type="button" className={styles.textButton} onClick={() => onSelect({ identifier: item.identifier, name: item.identifier, description: item.description, tags: [], compatibility: [] })}>{t('Read details →')}</button></div>
-          </article>)}
+          </article>
+          })}
         </div>)}
       </> : <EmptyInline title={t('No matching Skills')} detail={t('Search the eligible library to browse available Skills.')} />}
     </section>
@@ -1028,11 +1197,15 @@ function SkillsPage({ page, recommendations, selectedSkillIDs, selectionAction, 
       <section className={`${styles.panel} ${styles.libraryPanel}`} aria-label={t('Eligible library')}>
         <div className={styles.panelTop}><span className={styles.kicker}>{t('ELIGIBLE LIBRARY')}</span><span className={styles.countMark}>{page.data?.skills.length.toString().padStart(2, '0') ?? '—'}</span></div>
         <form className={styles.searchForm} onSubmit={onSearch}><label className={styles.srOnly} htmlFor="skill-search">{t('Search Skills')}</label><input id="skill-search" type="search" placeholder={t('Find by name, tag, or description')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className={styles.secondaryButton} type="submit" disabled={busy || page.loading}>{t('Search')}</button></form>
-        {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => <div key={skill.identifier}>
-          <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked} onChange={() => onToggleSkill(skill.identifier)} />
+        {page.loading ? <LoadingState label={t('Searching eligible Skills…')} /> : page.error ? <ErrorState error={page.error} /> : page.data?.skills.length ? <div className={styles.skillList}>{page.data.skills.map((skill) => {
+          const alreadyPresent = existingIDs.has(skill.identifier)
+          return <div key={skill.identifier}>
+          <input type="checkbox" aria-label={t('Select {identifier}', { identifier: skill.identifier })} checked={alreadyPresent || selectedSkillIDs.includes(skill.identifier)} disabled={inputsLocked || alreadyPresent} onChange={() => onToggleSkill(skill.identifier)} />
           <button type="button" className={`${styles.skillRow} ${selected?.identifier === skill.identifier ? styles.skillRowActive : ''}`} onClick={() => onSelect(skill)}>
-            <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><strong>{skill.name || skill.identifier}</strong><span>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small><small>{t('Source: {source}', { source: skill.source || t('Local library') })}</small></span><span className={styles.chevron}>›</span>
-        </button></div>)}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
+            <span className={styles.skillBullet}>↗</span><span className={styles.skillSummary}><span className={styles.skillSummaryHeading}><strong>{skill.name || skill.identifier}</strong>{alreadyPresent && <span className={`${styles.pill} ${styles.pillReady}`}>{t('Already present')}</span>}</span><span className={styles.skillDescription}>{skill.description}</span><small>{skill.tags.length ? skill.tags.join(' · ') : t('No tags')}</small><small>{t('Source: {source}', { source: skill.source || t('Local library') })}</small></span><span className={styles.chevron}>›</span>
+          </button>
+          </div>
+        })}</div> : <EmptyInline title={t('No eligible Skills found')} detail={t('Try another term or add a valid SKILL.md to the configured library.')} />}
       </section>
       <section className={`${styles.panel} ${styles.skillDetailPanel}`} aria-label={t('Skill detail')}>
         {selected ? <>
