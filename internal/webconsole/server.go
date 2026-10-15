@@ -53,6 +53,7 @@ type Server struct {
 	mu                         sync.RWMutex
 	plansMu                    sync.Mutex
 	operationMu                sync.Mutex
+	upstreamUpdateMu           sync.Mutex
 	token                      string
 	origin                     string
 	assets                     fs.FS

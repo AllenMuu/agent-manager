@@ -1,6 +1,7 @@
 package webconsole
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -28,6 +29,8 @@ const (
 	syncPlanImport     syncPlanKind = "import"
 	syncPlanResync     syncPlanKind = "resync"
 	syncPlanResyncUndo syncPlanKind = "resync-undo"
+	syncPlanUpdate     syncPlanKind = "upstream-update"
+	syncPlanUpdateUndo syncPlanKind = "upstream-update-undo"
 )
 
 type storedSyncPlan struct {
@@ -35,6 +38,7 @@ type storedSyncPlan struct {
 	kind          syncPlanKind
 	expiresAt     time.Time
 	importPreview skillsync.Preview
+	upstreamPlan  skillsync.PreparedUpdatePlan
 	resync        lifecycle.ResyncPlan
 	undoScope     lifecycle.ResyncScope
 	undoJournal   *operation.Journal
@@ -53,6 +57,16 @@ func (s *Server) handleSyncAPI(w http.ResponseWriter, r *http.Request) bool {
 	switch r.URL.Path {
 	case "/api/v1/sync/sources":
 		s.handleSyncSources(w, r)
+	case "/api/v1/sync/updates/check":
+		s.handleUpdatesCheck(w, r)
+	case "/api/v1/sync/updates/preview":
+		s.handleUpdatesPreview(w, r)
+	case "/api/v1/sync/updates/apply":
+		s.handleUpdatesApply(w, r)
+	case "/api/v1/sync/updates/undo/preview":
+		s.handleUpdatesUndoPreview(w, r)
+	case "/api/v1/sync/updates/undo/apply":
+		s.handleUpdatesUndoApply(w, r)
 	case "/api/v1/sync/import/preview":
 		s.handleImportPreview(w, r)
 	case "/api/v1/sync/import/apply":
@@ -135,6 +149,7 @@ func (s *Server) handleSyncSources(w http.ResponseWriter, r *http.Request) {
 	globalUndoAvailable := s.latestResyncUndoAvailable(lifecycle.ResyncGlobal, nil)
 	project := s.currentProject()
 	projectUndoAvailable := project != nil && s.latestResyncUndoAvailable(lifecycle.ResyncProject, project)
+	updateUndoAvailable := s.latestUpdateUndoAvailable(project)
 	writeJSON(w, http.StatusOK, struct {
 		RepositoryPath             string                     `json:"repositoryPath"`
 		Locations                  []skillsync.SourceLocation `json:"locations"`
@@ -143,7 +158,232 @@ func (s *Server) handleSyncSources(w http.ResponseWriter, r *http.Request) {
 		Diagnostics                []skillsync.Diagnostic     `json:"diagnostics"`
 		GlobalResyncUndoAvailable  bool                       `json:"globalResyncUndoAvailable"`
 		ProjectResyncUndoAvailable bool                       `json:"projectResyncUndoAvailable"`
-	}{s.libraryPath, inventory.Locations, inventory.Sources, groups, inventory.Diagnostics, globalUndoAvailable, projectUndoAvailable})
+		UpdateUndoAvailable        bool                       `json:"updateUndoAvailable"`
+	}{s.libraryPath, inventory.Locations, inventory.Sources, groups, inventory.Diagnostics, globalUndoAvailable, projectUndoAvailable, updateUndoAvailable})
+}
+
+func (s *Server) handleUpdatesCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Check upstream Skill updates with POST.")
+		return
+	}
+	service, _, err := s.newSkillSyncService()
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := service.CheckUpdates(ctx)
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleUpdatesPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Prepare selected upstream Skill updates with POST.")
+		return
+	}
+	var request struct {
+		SelectedSourceIDs []string `json:"selectedSourceIds"`
+	}
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+	service, project, err := s.newSkillSyncService()
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	if project != nil {
+		if err := project.validate(); err != nil {
+			writeAPIError(w, http.StatusConflict, "stale_project", "The registered project directory changed. Restart the console to register it again.")
+			return
+		}
+	}
+	s.upstreamUpdateMu.Lock()
+	defer s.upstreamUpdateMu.Unlock()
+	s.discardSyncPlans(syncPlanUpdate)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	prepared, err := service.PrepareUpdates(ctx, request.SelectedSourceIDs)
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	plan, err := s.storeSyncPlan(&storedSyncPlan{kind: syncPlanUpdate, upstreamPlan: prepared})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "plan_unavailable", "The update preview could not be stored in this session.")
+		return
+	}
+	writeJSON(w, http.StatusCreated, struct {
+		PlanID  string                  `json:"planId"`
+		Preview skillsync.UpdatePreview `json:"preview"`
+	}{plan.id, prepared.Preview})
+}
+
+func (s *Server) handleUpdatesApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Confirm selected upstream Skill updates with POST.")
+		return
+	}
+	var request struct {
+		PlanID string `json:"planId"`
+	}
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+	s.upstreamUpdateMu.Lock()
+	defer s.upstreamUpdateMu.Unlock()
+	plan, ok := s.consumeSyncPlan(request.PlanID, syncPlanUpdate)
+	if !ok {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The update preview expired or was already used. Check and review again.")
+		return
+	}
+	if !s.now().Before(plan.expiresAt) {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The update preview expired while waiting for another local operation. Check and review again.")
+		return
+	}
+	service, project, err := s.newSkillSyncService()
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	if project != nil {
+		if err := project.validate(); err != nil {
+			writeAPIError(w, http.StatusConflict, "stale_project", "The registered project directory changed after update review.")
+			return
+		}
+	}
+	journal, err := s.newUpstreamJournal(project)
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	service.Now = s.now
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	validated, err := service.RevalidateUpdates(ctx, plan.upstreamPlan)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			writeAPIError(w, http.StatusGatewayTimeout, "update_check_timeout", "Upstream revalidation did not finish in time. Check and review again.")
+			return
+		}
+		writeSyncError(w, err)
+		return
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		writeAPIError(w, http.StatusGatewayTimeout, "update_check_timeout", "The update plan expired while waiting for another local operation. Check and review again.")
+		return
+	}
+	if !s.now().Before(plan.expiresAt) {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The update preview expired while waiting for another local operation. Check and review again.")
+		return
+	}
+	if project != nil {
+		currentProject := s.currentProject()
+		if currentProject == nil || currentProject.ID != project.ID || currentProject.validate() != nil {
+			writeAPIError(w, http.StatusConflict, "stale_project", "The registered project directory changed after update review.")
+			return
+		}
+	}
+	if err := service.ApplyRevalidatedUpdates(ctx, validated, journal); err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Updated int `json:"updated"`
+	}{len(plan.upstreamPlan.Preview.Items)})
+}
+
+func (s *Server) handleUpdatesUndoPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Create an update Undo preview with POST.")
+		return
+	}
+	journal, err := s.newUpstreamJournal(s.currentProject())
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	entry, found, err := journal.Latest()
+	if err != nil || !found || entry.Operation != upstreamUpdateOperation || entry.ResourceKind != "skill" {
+		writeAPIError(w, http.StatusConflict, "undo_unavailable", "There is no upstream Skill update available to undo.")
+		return
+	}
+	available, err := journal.UndoAvailable()
+	if err != nil || !available {
+		writeAPIError(w, http.StatusConflict, "undo_unavailable", "Updated Skills or lock metadata changed after the update.")
+		return
+	}
+	undoPlan, err := journal.PreviewUndo()
+	if err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	plan, err := s.storeSyncPlan(&storedSyncPlan{kind: syncPlanUpdateUndo, undoJournal: journal, undoPlan: undoPlan, undoEntry: entry})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "plan_unavailable", "The update Undo preview could not be stored in this session.")
+		return
+	}
+	writeJSON(w, http.StatusCreated, struct {
+		PlanID string         `json:"planId"`
+		Plan   operation.Plan `json:"plan"`
+	}{plan.id, undoPlan})
+}
+
+func (s *Server) handleUpdatesUndoApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Confirm update Undo with POST.")
+		return
+	}
+	var request struct {
+		PlanID string `json:"planId"`
+	}
+	if !decodeJSONBody(w, r, &request) {
+		return
+	}
+	plan, ok := s.consumeSyncPlan(request.PlanID, syncPlanUpdateUndo)
+	if !ok {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The update Undo preview expired or was already used.")
+		return
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	if !s.now().Before(plan.expiresAt) || plan.undoJournal == nil || filepath.Clean(plan.undoJournal.Path) != filepath.Join(s.homeDir, ".agent-manager", "journal", "upstream-skills.json") {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The update Undo preview expired or its journal changed.")
+		return
+	}
+	entry, found, err := plan.undoJournal.Latest()
+	if err != nil || !found || !reflect.DeepEqual(entry, plan.undoEntry) {
+		writeAPIError(w, http.StatusConflict, "stale_plan", "The latest upstream update changed after Undo review.")
+		return
+	}
+	if err := plan.undoJournal.UndoLatest(func(current operation.Plan) bool { return reflect.DeepEqual(current, plan.undoPlan) }); err != nil {
+		writeSyncError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Status string `json:"status"`
+	}{"undone"})
+}
+
+func (s *Server) latestUpdateUndoAvailable(project *registeredProject) bool {
+	journal, err := s.newUpstreamJournal(project)
+	if err != nil {
+		return false
+	}
+	entry, found, err := journal.Latest()
+	if err != nil || !found || entry.Operation != upstreamUpdateOperation || entry.ResourceKind != "skill" {
+		return false
+	}
+	available, err := journal.UndoAvailable()
+	return err == nil && available
 }
 
 func (s *Server) latestResyncUndoAvailable(scope lifecycle.ResyncScope, project *registeredProject) bool {
@@ -592,8 +832,25 @@ func (s *Server) storeSyncPlan(plan *storedSyncPlan) (*storedSyncPlan, error) {
 			delete(s.syncPlans, id)
 		}
 	}
+	if plan.kind == syncPlanUpdate {
+		for id, existing := range s.syncPlans {
+			if existing.kind == syncPlanUpdate {
+				delete(s.syncPlans, id)
+			}
+		}
+	}
 	s.syncPlans[plan.id] = plan
 	return plan, nil
+}
+
+func (s *Server) discardSyncPlans(kind syncPlanKind) {
+	s.plansMu.Lock()
+	defer s.plansMu.Unlock()
+	for id, existing := range s.syncPlans {
+		if existing.kind == kind {
+			delete(s.syncPlans, id)
+		}
+	}
 }
 
 func (s *Server) consumeSyncPlan(id string, kind syncPlanKind) (*storedSyncPlan, bool) {
@@ -610,9 +867,13 @@ func (s *Server) consumeSyncPlan(id string, kind syncPlanKind) (*storedSyncPlan,
 
 func writeSyncError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, skillsync.ErrStalePreview), errors.Is(err, skillsync.ErrNeedsChoice), errors.Is(err, skillrepo.ErrConflict), errors.Is(err, skillrepo.ErrUnsafe), errors.Is(err, lifecycle.ErrPlanChanged), errors.Is(err, operation.ErrUnexpectedState), errors.Is(err, operation.ErrUnsafePath):
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		writeAPIError(w, http.StatusGatewayTimeout, "sync_timeout", "The sync operation did not finish before its request ended.")
+	case errors.Is(err, skillsync.ErrUpdatePlanTooLarge):
+		writeAPIError(w, http.StatusRequestEntityTooLarge, "update_plan_too_large", err.Error())
+	case errors.Is(err, skillsync.ErrStalePreview), errors.Is(err, skillsync.ErrNeedsChoice), errors.Is(err, skillsync.ErrStaleUpdatePlan), errors.Is(err, skillrepo.ErrConflict), errors.Is(err, skillrepo.ErrUnsafe), errors.Is(err, lifecycle.ErrPlanChanged), errors.Is(err, operation.ErrUnexpectedState), errors.Is(err, operation.ErrUnsafePath):
 		writeAPIError(w, http.StatusConflict, "stale_plan", err.Error())
-	case errors.Is(err, skillsync.ErrInvalidSelection), errors.Is(err, skillsync.ErrUnsafeSource), errors.Is(err, lifecycle.ErrUnsafePath):
+	case errors.Is(err, skillsync.ErrInvalidSelection), errors.Is(err, skillsync.ErrInvalidUpdateSelection), errors.Is(err, skillsync.ErrUnsafeSource), errors.Is(err, lifecycle.ErrUnsafePath):
 		writeAPIError(w, http.StatusBadRequest, "invalid_sync_request", err.Error())
 	default:
 		writeAPIError(w, http.StatusInternalServerError, "sync_failed", err.Error())

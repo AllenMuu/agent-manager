@@ -2,7 +2,11 @@ package webconsole
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -23,6 +28,14 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/skillrepo"
 	"github.com/AllenMuu/skill-manager/internal/skillsync"
 )
+
+func TestWriteSyncErrorMapsRequestTimeoutToGatewayTimeout(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeSyncError(response, context.DeadlineExceeded)
+	if response.Code != http.StatusGatewayTimeout || !strings.Contains(response.Body.String(), `"code":"sync_timeout"`) {
+		t.Fatalf("timeout response = %d %s, want 504 sync_timeout", response.Code, response.Body.String())
+	}
+}
 
 func TestSyncAPIRequiresSessionAndTrustedOrigin(t *testing.T) {
 	server, _, _, _ := newSyncTestServer(t, false)
@@ -48,6 +61,165 @@ func TestSyncAPIRequiresSessionAndTrustedOrigin(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("sources with untrusted origin status = %d, body=%s, want 403", response.Code, response.Body.String())
 	}
+}
+
+func TestUpstreamUpdateCheckIsAuthenticatedAndKeepsLocalSourcesOffline(t *testing.T) {
+	server, home, _, _ := newSyncTestServer(t, false)
+	writeSyncSkill(t, filepath.Join(home, ".agents", "skills", "local-only"), "Local Only", "A local-only source.")
+
+	unauthenticated := httptest.NewRecorder()
+	server.ServeHTTP(unauthenticated, httptest.NewRequest(http.MethodPost, "/api/v1/sync/updates/check", strings.NewReader(`{}`)))
+	if unauthenticated.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated update check = %d %s, want 401", unauthenticated.Code, unauthenticated.Body.String())
+	}
+
+	response := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/updates/check", `{}`)
+	var checked skillsync.UpdateCheck
+	if err := json.Unmarshal(response.Body.Bytes(), &checked); err != nil || response.Code != http.StatusOK {
+		t.Fatalf("update check = %d %s; decode error = %v", response.Code, response.Body.String(), err)
+	}
+	if len(checked.Items) != 1 || checked.Items[0].Status != skillsync.UpdateStatusLocal || checked.Items[0].CanUpdate {
+		t.Fatalf("local-only update result = %+v, want local and not updatable", checked.Items)
+	}
+	preview := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/updates/preview", `{"selectedSourceIds":["`+checked.Items[0].ID+`"]}`)
+	if preview.Code != http.StatusBadRequest || !strings.Contains(preview.Body.String(), "invalid_sync_request") {
+		t.Fatalf("local source update preview = %d %s, want rejected selection", preview.Code, preview.Body.String())
+	}
+}
+
+func TestStoreSyncPlanKeepsOnlyOnePendingUpstreamUpdatePlan(t *testing.T) {
+	server := &Server{syncPlans: make(map[string]*storedSyncPlan), now: time.Now}
+	first, err := server.storeSyncPlan(&storedSyncPlan{kind: syncPlanUpdate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := server.storeSyncPlan(&storedSyncPlan{kind: syncPlanUpdate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := server.syncPlans[first.id]; exists {
+		t.Fatal("previous upstream update plan remained retained after a new preview was stored")
+	}
+	if _, exists := server.syncPlans[second.id]; !exists || len(server.syncPlans) != 1 {
+		t.Fatalf("stored update plans = %+v, want only the newest preview", server.syncPlans)
+	}
+}
+
+func TestUpdateApplyRevalidatesRemoteBeforeTakingLocalOperationLock(t *testing.T) {
+	server, home, _, _ := newSyncTestServer(t, false)
+	currentContent := []byte("---\nname: remote-demo\ndescription: old\n---\n\n# Old\n")
+	updatedContent := []byte("---\nname: remote-demo\ndescription: updated\n---\n\n# Updated\n")
+	skillPath := filepath.Join(home, ".agents", "skills", "remote-demo")
+	if err := os.MkdirAll(skillPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), currentContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock := fmt.Sprintf(`{"version":3,"skills":{"remote-demo":{"source":"acme/skills","sourceType":"github","ref":"main","skillPath":"skills/remote-demo/SKILL.md","skillFolderHash":%q}}}`, syncTestGitTreeHash(currentContent))
+	if err := os.WriteFile(filepath.Join(home, ".agents", ".skill-lock.json"), []byte(lock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remoteHash := syncTestGitTreeHash(updatedContent)
+	treeBody, err := json.Marshal(map[string]any{"truncated": false, "tree": []map[string]any{
+		{"path": "skills/remote-demo", "mode": "040000", "type": "tree", "sha": remoteHash},
+		{"path": "skills/remote-demo/SKILL.md", "mode": "100644", "type": "blob", "sha": "0123456789012345678901234567890123456789", "size": len(updatedContent)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var remoteRequests atomic.Int64
+	previousTransport := http.DefaultTransport
+	http.DefaultTransport = syncTestRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var body []byte
+		switch {
+		case request.URL.Host == "api.github.com" && strings.HasPrefix(request.URL.Path, "/repos/acme/skills/git/trees/"):
+			remoteRequests.Add(1)
+			body = treeBody
+		case request.URL.Host == "raw.githubusercontent.com" && request.URL.Path == "/acme/skills/main/skills/remote-demo/SKILL.md":
+			remoteRequests.Add(1)
+			body = updatedContent
+		default:
+			return syncTestHTTPResponse(request, http.StatusNotFound, []byte("not found")), nil
+		}
+		return syncTestHTTPResponse(request, http.StatusOK, body), nil
+	})
+	defer func() { http.DefaultTransport = previousTransport }()
+
+	checkedResponse := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/updates/check", `{}`)
+	var checked skillsync.UpdateCheck
+	if err := json.Unmarshal(checkedResponse.Body.Bytes(), &checked); err != nil || checkedResponse.Code != http.StatusOK || len(checked.Items) != 1 || !checked.Items[0].CanUpdate {
+		t.Fatalf("update check = %d %s; decode error=%v", checkedResponse.Code, checkedResponse.Body.String(), err)
+	}
+	previewResponse := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/updates/preview", `{"selectedSourceIds":["`+checked.Items[0].ID+`"]}`)
+	var preview struct {
+		PlanID string `json:"planId"`
+	}
+	if err := json.Unmarshal(previewResponse.Body.Bytes(), &preview); err != nil || previewResponse.Code != http.StatusCreated || preview.PlanID == "" {
+		t.Fatalf("update preview = %d %s; decode error=%v", previewResponse.Code, previewResponse.Body.String(), err)
+	}
+	remoteRequests.Store(0)
+
+	server.operationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			server.operationMu.Unlock()
+		}
+	}()
+	responseCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		responseCh <- syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/updates/apply", `{"planId":"`+preview.PlanID+`"}`)
+	}()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for remoteRequests.Load() == 0 {
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-deadline.C:
+			server.operationMu.Unlock()
+			locked = false
+			response := <-responseCh
+			if response.Code != http.StatusOK {
+				t.Fatalf("update apply = %d %s", response.Code, response.Body.String())
+			}
+			t.Fatal("remote revalidation waited for the local operation lock")
+		}
+	}
+	server.operationMu.Unlock()
+	locked = false
+	select {
+	case response := <-responseCh:
+		if response.Code != http.StatusOK {
+			t.Fatalf("update apply = %d %s", response.Code, response.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("update apply did not finish after the local operation lock was released")
+	}
+}
+
+type syncTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (roundTrip syncTestRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func syncTestHTTPResponse(request *http.Request, status int, body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(bytes.NewReader(body)),
+		Request:    request,
+	}
+}
+
+func syncTestGitTreeHash(content []byte) string {
+	blobInput := append([]byte(fmt.Sprintf("blob %d\x00", len(content))), content...)
+	blobHash := sha1.Sum(blobInput)
+	treeBody := append([]byte("100644 SKILL.md\x00"), blobHash[:]...)
+	treeInput := append([]byte(fmt.Sprintf("tree %d\x00", len(treeBody))), treeBody...)
+	treeHash := sha1.Sum(treeInput)
+	return hex.EncodeToString(treeHash[:])
 }
 
 func TestSyncImportPlanExpiresWhileWaitingForSessionOperationLock(t *testing.T) {

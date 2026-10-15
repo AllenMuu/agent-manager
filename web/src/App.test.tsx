@@ -156,6 +156,59 @@ describe('console entry and guarded activation', () => {
     expect(previewCalls.map((call) => JSON.parse(call.body).currentChoices['demo-skill'])).toEqual([undefined, 'group-b', 'group-a'])
   })
 
+  it('checks recorded upstream sources, previews selected or all updates, and waits for confirmation', async () => {
+    const updateItems = [
+      { id: 'global:remote-a', identifier: 'remote-a', scope: 'global', path: '/home/user/.agents/skills/remote-a', origin: 'acme/skills', originType: 'github', ref: 'main', status: 'available', currentHash: 'old-a', upstreamHash: 'new-a', checkedAt: '2026-10-15T00:00:00Z', canUpdate: true },
+      { id: 'project:remote-b', identifier: 'remote-b', scope: 'project', path: '/workspace/.agents/skills/remote-b', origin: 'acme/tools', originType: 'github', ref: 'main', status: 'available', currentHash: 'old-b', upstreamHash: 'new-b', checkedAt: '2026-10-15T00:00:00Z', canUpdate: true },
+      { id: 'global:local', identifier: 'local-skill', scope: 'global', path: '/home/user/.agents/skills/local-skill', origin: 'Local', originType: 'local', status: 'local', checkedAt: '2026-10-15T00:00:00Z', canUpdate: false },
+    ]
+    const calls: { route: string; body: string }[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const route = String(input)
+      const body = String(init.body ?? '')
+      calls.push({ route, body })
+      if (route === '/api/v1/system') return jsonResponse({})
+      if (route === '/api/v1/sync/settings') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', syncMode: 'auto' })
+      if (route === '/api/v1/sync/sources') return jsonResponse({ repositoryPath: '/home/user/.agent-manager/skills', locations: [], sources: [], groups: [], diagnostics: [], updateUndoAvailable: false })
+      if (route === '/api/v1/sync/updates/check') return jsonResponse({ checkedAt: '2026-10-15T00:00:00Z', items: updateItems })
+      if (route === '/api/v1/sync/updates/preview') {
+        const { selectedSourceIds } = JSON.parse(body) as { selectedSourceIds: string[] }
+        return jsonResponse({ planId: 'update-plan', preview: { items: updateItems.filter((item) => selectedSourceIds.includes(item.id)).map((item) => ({ ...item, ref: 'main' })) } }, 201)
+      }
+      if (route === '/api/v1/sync/updates/apply') return jsonResponse({ updated: 1 })
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/#session=tab-secret')
+
+    renderApp()
+    fireEvent.click(await screen.findByRole('button', { name: /Storage & Sync/ }))
+    expect(await screen.findByRole('heading', { name: 'Check installed Skill updates', level: 2 })).toBeInTheDocument()
+    expect(calls.some((call) => call.route === '/api/v1/sync/updates/check')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(await screen.findAllByText('Update available')).toHaveLength(2)
+    expect(screen.getByText('Local source')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select update for remote-a' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Update selected' }))
+    expect(await screen.findByRole('heading', { name: 'Review Skill updates', level: 2 })).toBeInTheDocument()
+    expect(screen.getAllByText('/home/user/.agents/skills/remote-a')).toHaveLength(2)
+    expect(screen.getAllByText('Current hash: old-a')).toHaveLength(2)
+    expect(screen.getAllByText('New hash: new-a')).toHaveLength(2)
+    expect(calls.some((call) => call.route === '/api/v1/sync/updates/apply')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Skill updates' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('1 Skills updated from their recorded sources.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    await screen.findAllByText('Update available')
+    fireEvent.click(screen.getByRole('button', { name: 'Update all available' }))
+    await screen.findByRole('heading', { name: 'Review Skill updates', level: 2 })
+    const previews = calls.filter((call) => call.route === '/api/v1/sync/updates/preview')
+    expect(JSON.parse(previews[0].body).selectedSourceIds).toEqual(['global:remote-a'])
+    expect(JSON.parse(previews[1].body).selectedSourceIds).toEqual(['global:remote-a', 'project:remote-b'])
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  })
+
   it('shows marker evidence and handles SubAgents without compatibility agents', async () => {
     const project: Project = { id: 'project-session-id', name: 'sample', path: '/workspace/sample' }
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -296,6 +349,19 @@ describe('console entry and guarded activation', () => {
     renderApp()
     expect(screen.getByRole('button', { name: /Skills/ })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByRole('searchbox', { name: 'Search Skills' })).toBeInTheDocument()
+  })
+
+  it('shows recorded Skill source in the management list and details', async () => {
+    const skill: Skill = { ...operationSkills[0], source: 'acme/skills', sourceType: 'github', immutableRef: 'abc123' }
+    installFixture((route) => {
+      if (route === '/api/catalog?q=') return jsonResponse({ skills: [skill], targets: supportedTargets })
+      if (route === `/api/v1/skills/${skill.identifier}`) return jsonResponse({ skill })
+    })
+    renderApp()
+    const row = await screen.findByRole('button', { name: /Go Helper/ })
+    expect(screen.getByText('Source: acme/skills')).toBeInTheDocument()
+    fireEvent.click(row)
+    expect(await screen.findByText('acme/skills')).toBeInTheDocument()
   })
 
   it('keeps the narrow-screen reading order as recommendations, catalog, inline details, then selection actions', async () => {

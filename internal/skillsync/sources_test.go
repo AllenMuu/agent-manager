@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/skillrepo"
@@ -68,6 +69,118 @@ func TestDiscoverTreatsMissingLocationsAsEmpty(t *testing.T) {
 	if len(inventory.Sources) != 0 || len(inventory.Diagnostics) != 0 {
 		t.Fatalf("absent source roots were not empty: %+v", inventory)
 	}
+}
+
+func TestDiscoverAttachesSkillsCLIOriginMetadata(t *testing.T) {
+	root := t.TempDir()
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	globalSkill := filepath.Join(home, ".agents", "skills", "remote-demo")
+	projectSkill := filepath.Join(project, ".agents", "skills", "local-demo")
+	for _, path := range []string{home, project} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill(t, globalSkill, "remote")
+	writeSkill(t, projectSkill, "local")
+	globalLock := `{"version":3,"skills":{"remote-demo":{"source":"acme/skills","sourceType":"github","ref":"main","skillPath":"skills/remote-demo/SKILL.md","skillFolderHash":"0123456789012345678901234567890123456789","installedAt":"2026-10-01T12:00:00Z","updatedAt":"2026-10-02T12:00:00Z"}}}`
+	if err := os.WriteFile(filepath.Join(home, ".agents", ".skill-lock.json"), []byte(globalLock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectLock := `{"version":1,"skills":{"local-demo":{"source":"../my-skill","sourceType":"local","computedHash":"012345678901234567890123456789012345678901234567890123456789abcd"}}}`
+	if err := os.WriteFile(filepath.Join(project, "skills-lock.json"), []byte(projectLock), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Source{}
+	for _, source := range inventory.Sources {
+		byID[source.Identifier] = source
+	}
+	remote := byID["remote-demo"]
+	if remote.Origin != "acme/skills" || remote.OriginType != "github" || remote.OriginRef != "main" || remote.OriginSkillPath != "skills/remote-demo/SKILL.md" || remote.UpdatedAt == nil {
+		t.Fatalf("remote origin = %+v", remote)
+	}
+	if local := byID["local-demo"]; local.OriginType != "local" || local.Origin == "" {
+		t.Fatalf("local origin = %+v", local)
+	}
+}
+
+func TestDiscoverTracksNewestLocalModificationAcrossDivergentVersions(t *testing.T) {
+	root := t.TempDir()
+	home, project := filepath.Join(root, "home"), filepath.Join(root, "project")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	older := filepath.Join(home, ".agents", "skills", "time-demo")
+	newer := filepath.Join(project, ".agents", "skills", "time-demo")
+	writeSkill(t, older, "older")
+	writeSkill(t, newer, "newer")
+	olderTime := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	newerTime := olderTime.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(older, "SKILL.md"), olderTime, olderTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(newer, "SKILL.md"), newerTime, newerTime); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := Discover(home, project, filepath.Join(root, "library"), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := groupSources(inventory.Sources)
+	if len(groups) != 2 {
+		t.Fatalf("groups = %+v, want two divergent candidates", groups)
+	}
+	newerCount := 0
+	for _, group := range groups {
+		if group.NewerLocalModification {
+			newerCount++
+			if !group.ModifiedAt.Equal(newerTime) {
+				t.Fatalf("newer group's modified time = %s, want %s", group.ModifiedAt, newerTime)
+			}
+		}
+	}
+	if newerCount != 1 {
+		t.Fatalf("newer candidate count = %d, groups=%+v", newerCount, groups)
+	}
+}
+
+func TestGroupSourcesMarksNewerOnlyWhenDivergentTimesAreComparable(t *testing.T) {
+	older := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	timeSource := func(id, checksum string, modifiedAt *time.Time) Source {
+		return Source{ID: id, Identifier: "demo", Checksum: checksum, Eligible: true, ModifiedAt: modifiedAt}
+	}
+
+	t.Run("one content group has no comparison", func(t *testing.T) {
+		groups := groupSources([]Source{
+			timeSource("global", "same", &older),
+			timeSource("project", "same", &newer),
+		})
+		if len(groups) != 1 || groups[0].NewerLocalModification {
+			t.Fatalf("groups = %+v, want one unmarked content group", groups)
+		}
+	})
+
+	t.Run("a missing candidate timestamp prevents comparison", func(t *testing.T) {
+		groups := groupSources([]Source{
+			timeSource("known", "content-a", &newer),
+			timeSource("unknown", "content-b", nil),
+		})
+		for _, group := range groups {
+			if group.NewerLocalModification {
+				t.Fatalf("group %q marked newer without comparable timestamps: %+v", group.Checksum, group)
+			}
+		}
+	})
 }
 
 func TestDiscoverRejectsSymlinkAncestorsAndUnsafeTrees(t *testing.T) {
