@@ -6,7 +6,35 @@
 >
 > 它提供 CLI 和本地 Web 控制台，但**不会启动 AI 代理**。Claude Code、Codex 和 Pi 当前也没有接入运行时策略执行或共享 Memory 的原生适配器。
 
-## 快速开始：用 CLI 或 Web 应用安装 Skill
+## 快速开始：编译并启动 Web 控制台
+
+从仓库根目录编译并启动 Web 应用（需要 Go 1.24 或更高版本；Web 前端静态资源已内置，无需单独安装 Node.js）：
+
+```sh
+# 1. 编译 Agent Manager
+go build ./cmd/agent-manager
+
+# 2. 启动 Web 控制台并打开当前项目
+./agent-manager web --project .
+```
+
+启动后终端会输出带有进程级临时会话 Token 的访问地址：
+```text
+Open Agent Manager Web at http://127.0.0.1:54321/#session=...
+Press Ctrl+C to stop.
+```
+在浏览器中打开该链接即可进入管理后台及统一“技能”工作区。在终端按 `Ctrl+C` 可停止服务。
+
+> **提示**：若需要二次开发或修改 `web/` 下的 React 前端代码，请在重新编译 Go 前重建嵌入式资源：
+> ```sh
+> cd web && npm ci && npm run build && cd ..
+> ```
+
+---
+
+### 用 CLI 安装与管理 Skill
+
+如果你更倾向于使用全局命令行工具：
 
 在仓库根目录安装 CLI（需要 Go 1.24 或更高版本）：
 
