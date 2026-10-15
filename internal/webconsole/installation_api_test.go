@@ -8,10 +8,154 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/AllenMuu/skill-manager/internal/installation"
+	"github.com/AllenMuu/skill-manager/internal/operation"
 )
+
+func TestConsoleBatchInstallationUsesSavedCopyOnlyMode(t *testing.T) {
+	for _, initialMode := range []string{"auto", "copy-only"} {
+		t.Run(initialMode, func(t *testing.T) {
+			library, project := t.TempDir(), t.TempDir()
+			for _, id := range []string{"first", "second"} {
+				writeInstallationSkill(t, library, id)
+			}
+			server := newInstallationSyncTestServer(t, project, library, initialMode)
+			if initialMode == "auto" {
+				response := request(t, server, http.MethodPut, "/api/v1/sync/settings", `{"syncMode":"copy-only"}`)
+				if response.Code != http.StatusOK {
+					t.Fatalf("save copy-only status=%d body=%s", response.Code, response.Body)
+				}
+			}
+			preview := previewInstallationBatch(t, server)
+			for _, change := range preview.Plan.Changes {
+				if change.Action != "copy Skill tree" || !strings.Contains(change.Detail, "(copy-only)") {
+					t.Fatalf("copy-only preview change=%+v", change)
+				}
+			}
+			response := request(t, server, http.MethodPost, "/api/install/apply", `{"previewId":"`+preview.ID+`"}`)
+			if response.Code != http.StatusOK {
+				t.Fatalf("apply status=%d body=%s", response.Code, response.Body)
+			}
+			for _, id := range []string{"first", "second"} {
+				destination := filepath.Join(project, ".codex", "skills", id)
+				info, err := os.Lstat(destination)
+				if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					t.Fatalf("copy-only destination %s is not a real directory: info=%v err=%v", destination, info, err)
+				}
+				got, err := os.ReadFile(filepath.Join(destination, "SKILL.md"))
+				if err != nil || !strings.Contains(string(got), "name: "+id+"\n") {
+					t.Fatalf("copied Skill %s content=%q err=%v", id, got, err)
+				}
+			}
+			entry, found, err := operation.ProjectJournal(project).Latest()
+			if err != nil || !found || len(entry.Materializations) != 2 {
+				t.Fatalf("batch journal entry=%+v found=%v err=%v", entry, found, err)
+			}
+		})
+	}
+}
+
+func TestConsoleBatchInstallationRejectsPreviewAfterSyncModeChange(t *testing.T) {
+	library, project := t.TempDir(), t.TempDir()
+	for _, id := range []string{"first", "second"} {
+		writeInstallationSkill(t, library, id)
+	}
+	server := newInstallationSyncTestServer(t, project, library, "auto")
+	preview := previewInstallationBatch(t, server)
+	response := request(t, server, http.MethodPut, "/api/v1/sync/settings", `{"syncMode":"copy-only"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("save copy-only status=%d body=%s", response.Code, response.Body)
+	}
+	response = request(t, server, http.MethodPost, "/api/install/apply", `{"previewId":"`+preview.ID+`"}`)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"stale":true`) {
+		t.Fatalf("mode-changed apply status=%d body=%s; want stale conflict", response.Code, response.Body)
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".codex")); !os.IsNotExist(err) {
+		t.Fatalf("stale mode preview changed destinations: %v", err)
+	}
+	if _, found, err := operation.ProjectJournal(project).Latest(); err != nil || found {
+		t.Fatalf("stale mode preview changed journal: found=%v err=%v", found, err)
+	}
+}
+
+func TestConsoleBatchPreviewAndSyncSettingsUpdateAreRaceFree(t *testing.T) {
+	library, project := t.TempDir(), t.TempDir()
+	for _, id := range []string{"first", "second"} {
+		writeInstallationSkill(t, library, id)
+	}
+	server := newInstallationSyncTestServer(t, project, library, "auto")
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 40; index++ {
+			mode := "auto"
+			if index%2 == 0 {
+				mode = "copy-only"
+			}
+			response := syncHTTPRequest(server, http.MethodPut, "/api/v1/sync/settings", `{"syncMode":"`+mode+`"}`)
+			if response.Code != http.StatusOK {
+				t.Errorf("save mode status=%d body=%s", response.Code, response.Body)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 40; index++ {
+			response := syncHTTPRequest(server, http.MethodPost, "/api/install/preview", `{"skillIds":["first","second"],"targets":["codex"]}`)
+			var payload struct {
+				Preview installation.Preview `json:"preview"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || response.Code != http.StatusOK || len(payload.Preview.Plan.Changes) != 2 {
+				t.Errorf("batch preview status=%d body=%s err=%v", response.Code, response.Body, err)
+				return
+			}
+			changes := payload.Preview.Plan.Changes
+			if changes[0].Action != changes[1].Action {
+				t.Errorf("preview mixed synchronization modes: %+v", changes)
+				return
+			}
+		}
+	}()
+	close(start)
+	workers.Wait()
+}
+
+func previewInstallationBatch(t *testing.T, server *Server) installation.Preview {
+	t.Helper()
+	response := request(t, server, http.MethodPost, "/api/install/preview", `{"skillIds":["first","second"],"targets":["codex"]}`)
+	var payload struct {
+		Preview installation.Preview `json:"preview"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || response.Code != http.StatusOK || payload.Preview.ID == "" || len(payload.Preview.Plan.Changes) != 2 {
+		t.Fatalf("batch preview status=%d body=%s err=%v", response.Code, response.Body, err)
+	}
+	return payload.Preview
+}
+
+func newInstallationSyncTestServer(t *testing.T, project, library, mode string) *Server {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("sync_mode: "+mode+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(Options{
+		Origin: "http://127.0.0.1:8787", ProjectPath: project, LibraryPath: library,
+		ConfigPath: configPath, SyncMode: mode, HomeDir: t.TempDir(), DataRoot: t.TempDir(),
+		SkillInstallation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
 
 func TestInstallationAPIsRequireConsoleSessionAndOrigin(t *testing.T) {
 	library, project := t.TempDir(), t.TempDir()

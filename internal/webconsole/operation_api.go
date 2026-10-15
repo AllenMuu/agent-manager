@@ -41,6 +41,7 @@ type storedPlan struct {
 	expiresAt            time.Time
 	activation           *activationRequest
 	removal              *removalRequest
+	doctorRepair         *diagnosticRepairRequest
 	state                storedPlanState
 }
 
@@ -178,6 +179,25 @@ func (s *Server) createOperationPlan(w http.ResponseWriter, r *http.Request, kin
 		stored.snapshotFingerprints = cloneFingerprints(snapshotFingerprints)
 		s.savePlan(stored)
 		writeJSON(w, http.StatusCreated, operationPlanEnvelope{Plan: makePlanView(stored, preview)})
+	case doctorReconcilePlan, doctorGitignorePlan:
+		var request diagnosticRepairRequest
+		if !decodeJSONBody(w, r, &request) {
+			return
+		}
+		preview, fingerprint, err := s.previewDiagnosticRepair(project, kind, request)
+		if err != nil {
+			writePlanError(w, err)
+			return
+		}
+		stored, err := s.newStoredPlan(project.ID, kind, fingerprint)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "plan_creation_failed", "A secure operation plan could not be created.")
+			return
+		}
+		copy := request
+		stored.doctorRepair = &copy
+		s.savePlan(stored)
+		writeJSON(w, http.StatusCreated, operationPlanEnvelope{Plan: makePlanView(stored, preview)})
 	default:
 		writeAPIError(w, http.StatusNotFound, "not_found", "The operation plan route was not found.")
 	}
@@ -236,6 +256,7 @@ func (s *Server) previewActivation(project *registeredProject, request activatio
 		return operation.Plan{}, "", nil, nil, err
 	}
 	service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+	service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 	plan, err := service.PreviewAddMany(project.Path, selected, targets, options)
 	if err != nil {
 		return plan, "", nil, nil, fmt.Errorf("activation cannot be safely planned: %w", err)
@@ -420,6 +441,26 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 		writeAPIError(w, http.StatusConflict, "stale_plan", "The registered project changed; create a fresh preview.")
 		return
 	}
+	if plan.kind == "activate" || plan.kind == "remove" {
+		journal, err := s.journalForProject(project)
+		if err != nil {
+			s.finishPlan(plan, storedPlanCompleted)
+			writePlanError(w, err)
+			return
+		}
+		unlock, err := journal.LockOperation()
+		if err != nil {
+			s.finishPlan(plan, storedPlanCompleted)
+			writeAPIError(w, http.StatusInternalServerError, "operation_lock_failed", "The project operation could not acquire its local operation lock.")
+			return
+		}
+		defer unlock()
+		if !s.now().Before(plan.expiresAt) {
+			s.finishPlan(plan, storedPlanStale)
+			writeAPIError(w, http.StatusGone, "plan_expired", "The operation plan expired while waiting for another local operation; create a fresh preview.")
+			return
+		}
+	}
 	var preview operation.Plan
 	var currentFingerprint string
 	var err error
@@ -430,6 +471,12 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 		preview, currentFingerprint, err = s.previewRemoval(project, *plan.removal)
 	case "undo":
 		preview, currentFingerprint, _, err = s.previewUndo(project)
+	case doctorReconcilePlan, doctorGitignorePlan:
+		if plan.doctorRepair == nil {
+			err = errors.New("Doctor repair plan has no selected finding")
+			break
+		}
+		preview, currentFingerprint, err = s.previewDiagnosticRepair(project, plan.kind, *plan.doctorRepair)
 	default:
 		err = errors.New("unknown operation plan kind")
 	}
@@ -469,6 +516,7 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 			break
 		}
 		service := lifecycle.New(s.libraryPath, journal, func(operation.Plan) bool { return true })
+		service.Materialization = adapter.MaterializationMode(s.currentSyncMode())
 		service.BeforeFinalPublish = func() error {
 			if err := validateProjectJournalLayout(project); err != nil {
 				return err
@@ -502,6 +550,8 @@ func (s *Server) executeOperationPlan(w http.ResponseWriter, r *http.Request, id
 		}
 		journal.BeforeRestorePublish = func(string) error { return validateProjectJournalLayout(project) }
 		err = journal.UndoLatestWithFingerprints(func(operation.Plan) bool { return true }, cloneFingerprints(plan.snapshotFingerprints))
+	case doctorReconcilePlan, doctorGitignorePlan:
+		err = s.executeDoctorRepair(project, plan)
 	}
 	if err != nil {
 		s.finishPlan(plan, storedPlanCompleted)

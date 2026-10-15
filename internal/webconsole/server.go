@@ -15,12 +15,16 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/adapter"
+	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/webui"
 )
 
@@ -33,6 +37,8 @@ var embeddedUI embed.FS
 type Options struct {
 	Origin            string
 	LibraryPath       string
+	ConfigPath        string
+	SyncMode          string
 	HomeDir           string
 	DataRoot          string
 	ProjectPath       string
@@ -52,10 +58,13 @@ type Server struct {
 	assets                     fs.FS
 	installation               *webui.Module
 	libraryPath                string
+	configPath                 string
+	syncMode                   string
 	homeDir                    string
 	dataRoot                   string
 	project                    *registeredProject
 	plans                      map[string]*storedPlan
+	syncPlans                  map[string]*storedSyncPlan
 	now                        func() time.Time
 	listen                     func(string, string) (net.Listener, error)
 	beforeJournalDirectorySync func() error
@@ -77,6 +86,14 @@ func New(options Options) (*Server, error) {
 			return nil, err
 		}
 	}
+	syncMode := config.SyncMode(options.SyncMode).Effective()
+	if err := syncMode.Validate(); err != nil {
+		return nil, err
+	}
+	homeDir, err := canonicalHomeDirectory(options.HomeDir)
+	if err != nil {
+		return nil, err
+	}
 	assets := options.Assets
 	if assets == nil {
 		var err error
@@ -94,11 +111,14 @@ func New(options Options) (*Server, error) {
 		origin:      options.Origin,
 		assets:      assets,
 		libraryPath: options.LibraryPath,
-		homeDir:     options.HomeDir,
+		configPath:  options.ConfigPath,
+		syncMode:    string(syncMode),
+		homeDir:     homeDir,
 		dataRoot:    options.DataRoot,
 		now:         now,
 		listen:      net.Listen,
 		plans:       make(map[string]*storedPlan),
+		syncPlans:   make(map[string]*storedSyncPlan),
 	}
 	if options.ProjectPath != "" {
 		if _, err := server.registerProject(options.ProjectPath); err != nil {
@@ -109,13 +129,34 @@ func New(options Options) (*Server, error) {
 		if options.ProjectPath == "" {
 			return nil, fmt.Errorf("the Skill installation tab requires a registered project")
 		}
-		module, err := webui.NewModule(options.ProjectPath, options.LibraryPath, server.token)
+		module, err := webui.NewModuleWithMaterialization(options.ProjectPath, options.LibraryPath, server.token, func() adapter.MaterializationMode {
+			return adapter.MaterializationMode(server.currentSyncMode())
+		})
 		if err != nil {
 			return nil, err
 		}
 		server.installation = module
 	}
 	return server, nil
+}
+
+func canonicalHomeDirectory(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("user home directory is required")
+	}
+	absolute, err := filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve user home directory: %w", err)
+	}
+	info, err := os.Lstat(canonical)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("user home directory must be a real directory")
+	}
+	return filepath.Clean(canonical), nil
 }
 
 // Listen opens a TCP4 listener on 127.0.0.1 only and records its exact origin.
@@ -155,6 +196,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.installation != nil && isInstallationAPIPath(r.URL.Path) {
 			s.installation.APIHandler().ServeHTTP(w, r)
+			return
+		}
+		if s.handleSyncAPI(w, r) {
 			return
 		}
 		s.handleAPI(w, r)

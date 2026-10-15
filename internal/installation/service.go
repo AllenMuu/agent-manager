@@ -64,13 +64,16 @@ type pendingPreview struct {
 	session string
 	request Request
 	plan    operation.Plan
+	mode    adapter.MaterializationMode
 	state   [32]byte
 	expires time.Time
 }
 
 // Service owns short-lived installation previews shared by interface adapters.
 type Service struct {
-	LibraryPath string
+	LibraryPath     string
+	Materialization adapter.MaterializationMode
+	materialization func() adapter.MaterializationMode
 
 	mu      sync.Mutex
 	pending map[string]pendingPreview
@@ -78,7 +81,36 @@ type Service struct {
 
 // New constructs a local installation application service.
 func New(libraryPath string) *Service {
-	return &Service{LibraryPath: libraryPath, pending: make(map[string]pendingPreview)}
+	return NewWithMaterialization(libraryPath, adapter.MaterializeAuto)
+}
+
+// NewWithMaterialization constructs an installation service using the
+// machine-local Skill synchronization setting.
+func NewWithMaterialization(libraryPath string, mode adapter.MaterializationMode) *Service {
+	if mode == "" {
+		mode = adapter.MaterializeAuto
+	}
+	return &Service{LibraryPath: libraryPath, Materialization: mode, pending: make(map[string]pendingPreview)}
+}
+
+// NewWithMaterializationProvider uses a concurrency-safe settings reader. Each
+// preview and apply captures one mode, so an update invalidates prior previews
+// without changing the materialization of an operation already in progress.
+func NewWithMaterializationProvider(libraryPath string, mode func() adapter.MaterializationMode) *Service {
+	service := New(libraryPath)
+	service.materialization = mode
+	return service
+}
+
+func (s *Service) currentMaterialization() adapter.MaterializationMode {
+	mode := s.Materialization
+	if s.materialization != nil {
+		mode = s.materialization()
+	}
+	if mode == "" {
+		return adapter.MaterializeAuto
+	}
+	return mode
 }
 
 // Preview validates a request and creates a session-scoped, short-lived plan.
@@ -93,6 +125,8 @@ func (s *Service) Preview(session string, request Request) (Preview, error) {
 		return Preview{}, err
 	}
 	life := lifecycle.New(s.LibraryPath, journal(normalized.Project, normalized.Global), nil)
+	mode := s.currentMaterialization()
+	life.Materialization = mode
 	plan, err := previewLifecycle(life, normalized, skills)
 	preview := Preview{
 		Project:  normalized.Project,
@@ -119,7 +153,7 @@ func (s *Service) Preview(session string, request Request) (Preview, error) {
 	preview.ID = id
 	s.mu.Lock()
 	s.expireLocked(time.Now())
-	s.pending[id] = pendingPreview{session: session, request: normalized, plan: plan, state: state, expires: time.Now().Add(previewLifetime)}
+	s.pending[id] = pendingPreview{session: session, request: normalized, plan: plan, mode: mode, state: state, expires: time.Now().Add(previewLifetime)}
 	s.mu.Unlock()
 	return preview, nil
 }
@@ -149,6 +183,12 @@ func (s *Service) Apply(session, previewID string) (ApplyResult, error) {
 		return ApplyResult{}, err
 	}
 	life := lifecycle.New(s.LibraryPath, operationJournal, nil)
+	mode := s.currentMaterialization()
+	life.Materialization = mode
+	if mode != pending.mode {
+		plan, _ := previewLifecycle(life, normalized, skills)
+		return ApplyResult{Stale: true, Plan: plan}, nil
+	}
 	state, err := filesystemState(normalized, skills)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("inspect installation preview state: %w", err)

@@ -35,7 +35,7 @@ func TestScanReportsCatalogOrphanUnsupportedAndGitGuidance(t *testing.T) {
 	}
 }
 
-func TestScanReportsAdapterCapabilitiesAndUnmanagedResources(t *testing.T) {
+func TestScanExcludesAdapterCapabilitiesAndReportsUnmanagedResources(t *testing.T) {
 	root := t.TempDir()
 	library := filepath.Join(root, "library")
 	project := filepath.Join(root, "project")
@@ -54,9 +54,14 @@ func TestScanReportsAdapterCapabilitiesAndUnmanagedResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := findingsText(findings)
-	for _, want := range []string{"adapter capabilities", "filesystem-read", "unmanaged resource", "orphaned managed link", "unsupported agent skill location"} {
+	for _, want := range []string{"unmanaged resource", "orphaned managed link", "unsupported agent skill location"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("findings %q do not contain %q", joined, want)
+		}
+	}
+	for _, finding := range findings {
+		if finding.Code == "doctor.adapter_capabilities" || strings.Contains(finding.Message, "adapter capabilities") {
+			t.Errorf("adapter capability metadata leaked into Doctor findings: %#v", finding)
 		}
 	}
 	if got := snapshotTree(t, root); got != before {
@@ -286,6 +291,71 @@ func TestReconcileRelinksOrphanOnlyAfterConfirmation(t *testing.T) {
 	}
 	if got, _ := os.Readlink(link); got != filepath.Join(library, "demo") {
 		t.Fatalf("link = %q", got)
+	}
+}
+
+func TestReconcilePathPreviewsAndRepairsOnlySelectedOrphan(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "new-library")
+	project := filepath.Join(root, "project")
+	links := map[string]string{}
+	oldTargets := map[string]string{}
+	for _, id := range []string{"first", "second"} {
+		mustWrite(t, filepath.Join(library, id, "SKILL.md"), "---\nname: "+id+"\ndescription: "+id+"\n---\n")
+		oldTarget := filepath.Join(root, "old-library", id)
+		mustWrite(t, filepath.Join(oldTarget, "SKILL.md"), "---\nname: "+id+"\ndescription: "+id+"\n---\n")
+		link := filepath.Join(project, ".codex", "skills", id)
+		mustLink(t, oldTarget, link)
+		links[id] = link
+		oldTargets[id] = oldTarget
+	}
+	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+	after, err := journal.Capture([]string{links["first"], links["second"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Record("activate", nil, after); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "old-library")); err != nil {
+		t.Fatal(err)
+	}
+
+	var preview operation.Plan
+	if _, err := diagnostic.ReconcilePath(library, project, journal, links["first"], func(plan operation.Plan) bool {
+		preview = plan
+		return false
+	}); !errors.Is(err, operation.ErrNotConfirmed) {
+		t.Fatalf("ReconcilePath() = %v, want confirmation refusal", err)
+	}
+	if len(preview.Changes) != 1 || preview.Changes[0].Path != links["first"] {
+		t.Fatalf("preview changes = %#v, want only %q", preview.Changes, links["first"])
+	}
+	if got, _ := os.Readlink(links["first"]); got != oldTargets["first"] {
+		t.Fatalf("selected link changed before confirmation: %q", got)
+	}
+
+	if _, err := diagnostic.ReconcilePath(library, project, journal, links["first"], func(operation.Plan) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(links["first"]); got != filepath.Join(library, "first") {
+		t.Fatalf("selected link target = %q", got)
+	}
+	if got, _ := os.Readlink(links["second"]); got != oldTargets["second"] {
+		t.Fatalf("unselected link changed: %q", got)
+	}
+}
+
+func TestReconcilePathRejectsPathsOutsideProject(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	var confirmed bool
+	_, err := diagnostic.ReconcilePath(filepath.Join(root, "library"), project, operation.New(filepath.Join(project, "journal.json")), filepath.Join(root, "outside", "skill"), func(operation.Plan) bool {
+		confirmed = true
+		return true
+	})
+	if err == nil || confirmed {
+		t.Fatalf("ReconcilePath() = %v, confirmed = %v; want path rejection before confirmation", err, confirmed)
 	}
 }
 

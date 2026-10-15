@@ -61,7 +61,7 @@ func publishLink(project, destination, source string, replace bool, snapshot ope
 			if errors.Is(err, os.ErrExist) {
 				return errors.Join(ErrUnsafePath, errLateConflict)
 			}
-			return err
+			return classifySymlinkError(err)
 		}
 		if !parent.Current() {
 			removeErr := parent.Remove(name)
@@ -159,7 +159,7 @@ func publishLink(project, destination, source string, replace bool, snapshot ope
 		if errors.Is(err, os.ErrExist) {
 			return preserve(errors.Join(ErrUnsafePath, errLateConflict))
 		}
-		return preserve(err)
+		return preserve(classifySymlinkError(err))
 	}
 	if !parent.Current() {
 		removeErr := parent.Remove(name)

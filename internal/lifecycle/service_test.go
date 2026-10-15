@@ -71,6 +71,259 @@ func TestAddCreatesAbsoluteLinksForSelectedTargetsAndWarnsOnCompatibility(t *tes
 	}
 }
 
+func TestCopyOnlyActivationCopiesGlobalAndProjectSkillsWithoutChangingSources(t *testing.T) {
+	for _, global := range []bool{false, true} {
+		name := "project"
+		if global {
+			name = "global"
+		}
+		t.Run(name, func(t *testing.T) {
+			root, project, skill := fixture(t)
+			home := filepath.Join(root, "home")
+			if err := os.MkdirAll(home, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			sourceBefore, err := operation.FingerprintPath(skill.SourcePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var preview operation.Plan
+			journal := operation.New(filepath.Join(root, "journal.json"))
+			service := lifecycle.New(filepath.Join(root, "library"), journal, func(plan operation.Plan) bool { preview = plan; return true })
+			service.Materialization = adapter.MaterializeCopyOnly
+			var destination string
+			if global {
+				target, _ := adapter.ForAgent(adapter.Codex)
+				destination = target.GlobalSkillPath(home, skill.Identifier)
+				if _, err := service.AddGlobalMany(home, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err != nil {
+					t.Fatalf("AddGlobalMany() error = %v", err)
+				}
+			} else {
+				target, _ := adapter.For(adapter.Codex)
+				destination = target.ProjectSkillPath(project, skill.Identifier)
+				if _, err := service.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err != nil {
+					t.Fatalf("AddMany() error = %v", err)
+				}
+			}
+			if len(preview.Changes) != 1 || preview.Changes[0].Action != "copy Skill tree" || !strings.Contains(preview.Changes[0].Detail, "copy-only") {
+				t.Fatalf("preview = %#v, want copy-only materialization", preview)
+			}
+			info, err := os.Lstat(destination)
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				t.Fatalf("destination = %#v, %v; want a copied directory", info, err)
+			}
+			if got, err := os.ReadFile(filepath.Join(destination, "SKILL.md")); err != nil || string(got) != "---\nname: demo\ndescription: demo\n---\n" {
+				t.Fatalf("copied Skill content = %q, %v", got, err)
+			}
+			recorded, ok, err := journal.RecordedMaterialization(destination)
+			if err != nil || !ok || recorded.Method != "copy" || recorded.Source != skill.SourcePath {
+				t.Fatalf("RecordedMaterialization() = %#v, %v, %v; want journal-owned copy", recorded, ok, err)
+			}
+			var inventory []lifecycle.Item
+			if global {
+				inventory, err = service.ListGlobal(home)
+			} else {
+				inventory, err = service.List(project)
+			}
+			if err != nil || !hasStatus(inventory, skill.Identifier, lifecycle.Managed) {
+				t.Fatalf("inventory = %#v, %v; want journal-owned copy as managed", inventory, err)
+			}
+			managedItemFound := false
+			for _, item := range inventory {
+				if item.Identifier == skill.Identifier && item.Path == destination {
+					managedItemFound = item.Materialization == "copy" && item.SourcePath == skill.SourcePath
+				}
+			}
+			if !managedItemFound {
+				t.Fatalf("inventory omitted copy ownership details for %s: %#v", destination, inventory)
+			}
+			if global {
+				if _, err := service.RemoveGlobal(home, adapter.Codex, skill.Identifier); err != nil {
+					t.Fatalf("RemoveGlobal() copy error = %v", err)
+				}
+			} else if _, err := service.Remove(project, adapter.Codex, skill.Identifier); err != nil {
+				t.Fatalf("Remove() copy error = %v", err)
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatalf("remove left copy at destination: %v", err)
+			}
+			if err := service.Undo(); err != nil {
+				t.Fatalf("Undo() removal error = %v", err)
+			}
+			if _, err := os.Lstat(destination); err != nil {
+				t.Fatalf("Undo() did not restore copied activation: %v", err)
+			}
+			sourceAfter, err := operation.FingerprintPath(skill.SourcePath)
+			if err != nil || sourceAfter != sourceBefore {
+				t.Fatalf("source changed: before=%s after=%s err=%v", sourceBefore, sourceAfter, err)
+			}
+			if err := service.Undo(); err != nil {
+				t.Fatalf("Undo() activation error = %v", err)
+			}
+			if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+				t.Fatalf("Undo left copy at destination: %v", err)
+			}
+			if _, ok, err := journal.RecordedMaterialization(destination); err != nil || ok {
+				t.Fatalf("Undo left copy journal ownership: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestCopyOnlyBatchFailureRollsBackPublishedDestinations(t *testing.T) {
+	root, project, first := fixture(t)
+	second := writeSkill(t, filepath.Join(root, "library", "second"), "second")
+	firstBefore, err := operation.FingerprintPath(first.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBefore, err := operation.FingerprintPath(second.SourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := adapter.For(adapter.Codex)
+	journal := operation.New(filepath.Join(root, "journal.json"))
+	service := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	service.Materialization = adapter.MaterializeCopyOnly
+	service.BeforePublish = func(stage string) error {
+		if stage == "add-many-published" {
+			return errors.New("injected failure after first copy")
+		}
+		return nil
+	}
+	if _, err := service.AddMany(project, []catalog.Skill{first, second}, []adapter.Target{adapter.Codex}); err == nil || !strings.Contains(err.Error(), "injected failure") {
+		t.Fatalf("AddMany() error = %v, want injected failure", err)
+	}
+	for _, skill := range []catalog.Skill{first, second} {
+		if _, err := os.Lstat(target.ProjectSkillPath(project, skill.Identifier)); !os.IsNotExist(err) {
+			t.Fatalf("failed batch left %s destination: %v", skill.Identifier, err)
+		}
+	}
+	for _, check := range []struct{ path, before string }{{first.SourcePath, firstBefore}, {second.SourcePath, secondBefore}} {
+		after, err := operation.FingerprintPath(check.path)
+		if err != nil || after != check.before {
+			t.Fatalf("source %s changed: before=%s after=%s err=%v", check.path, check.before, after, err)
+		}
+	}
+	if _, ok, err := journal.Latest(); err != nil || ok {
+		t.Fatalf("failed batch journal latest exists=%v err=%v; want no committed operation", ok, err)
+	}
+}
+
+func TestResyncAppliesOnlyJournalOwnedPlacementsAsOneUndoableScopeOperation(t *testing.T) {
+	root, project, skill := fixture(t)
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secondSource := filepath.Join(root, "second-source")
+	if err := os.MkdirAll(secondSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secondSource, "SKILL.md"), []byte("---\nname: other\ndescription: other\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := skillrepo.Open(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AddVersion("other", secondSource, skillrepo.VersionMetadata{Key: "v1", Version: "1"}, true); err != nil {
+		t.Fatal(err)
+	}
+	catalogSkills, _, err := catalog.Discover(filepath.Join(root, "library"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other catalog.Skill
+	for _, candidate := range catalogSkills {
+		if candidate.Identifier == "other" {
+			other = candidate
+		}
+	}
+	if other.Identifier == "" {
+		t.Fatal("second repository Skill was not discovered")
+	}
+	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+	service := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	if _, err := service.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AddMany(project, []catalog.Skill{other}, []adapter.Target{adapter.ClaudeCode}); err != nil {
+		t.Fatal(err)
+	}
+	unmanagedPath := filepath.Join(project, ".pi", "skills", "unmanaged")
+	if err := os.MkdirAll(unmanagedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unmanagedPath, "SKILL.md"), []byte("---\nname: unmanaged\ndescription: local\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service.Materialization = adapter.MaterializeCopyOnly
+	preview, err := service.PreviewResync(lifecycle.ResyncProject, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Plan.Changes) != 2 {
+		t.Fatalf("resync planned %d changes, want only two managed placements: %+v", len(preview.Plan.Changes), preview.Plan.Changes)
+	}
+	if len(preview.Options.TargetSelections[skill.Identifier]) != 1 || preview.Options.TargetSelections[skill.Identifier][0] != adapter.Codex ||
+		len(preview.Options.TargetSelections[other.Identifier]) != 1 || preview.Options.TargetSelections[other.Identifier][0] != adapter.ClaudeCode {
+		t.Fatalf("resync target mapping = %#v", preview.Options.TargetSelections)
+	}
+	if _, err := service.ApplyResync(preview, true); err != nil {
+		t.Fatal(err)
+	}
+	codex, _ := adapter.For(adapter.Codex)
+	claude, _ := adapter.For(adapter.ClaudeCode)
+	for _, destination := range []string{codex.ProjectSkillPath(project, skill.Identifier), claude.ProjectSkillPath(project, other.Identifier)} {
+		info, err := os.Lstat(destination)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("resync destination %s = %v, %v; want managed copy", destination, info, err)
+		}
+	}
+	for _, destination := range []string{codex.ProjectSkillPath(project, other.Identifier), claude.ProjectSkillPath(project, skill.Identifier)} {
+		if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+			t.Fatalf("resync enabled an unselected target %s: %v", destination, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(unmanagedPath, "SKILL.md")); err != nil {
+		t.Fatalf("unmanaged Skill was changed: %v", err)
+	}
+	if err := service.Undo(); err != nil {
+		t.Fatal(err)
+	}
+	for _, destination := range []string{codex.ProjectSkillPath(project, skill.Identifier), claude.ProjectSkillPath(project, other.Identifier)} {
+		info, err := os.Lstat(destination)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("Undo did not restore prior managed link %s: %v, %v", destination, info, err)
+		}
+	}
+}
+
+func TestResyncPreviewRejectsChangedDestination(t *testing.T) {
+	root, project, skill := fixture(t)
+	journal := operation.New(filepath.Join(project, ".skill-manager", "journal.json"))
+	service := lifecycle.New(filepath.Join(root, "library"), journal, func(operation.Plan) bool { return true })
+	if _, err := service.AddMany(project, []catalog.Skill{skill}, []adapter.Target{adapter.Codex}); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.PreviewResync(lifecycle.ResyncProject, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := adapter.For(adapter.Codex)
+	destination := path.ProjectSkillPath(project, skill.Identifier)
+	if err := os.Remove(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyResync(preview, true); !errors.Is(err, lifecycle.ErrPlanChanged) {
+		t.Fatalf("stale resync apply = %v", err)
+	}
+}
+
 func TestAddRequiresConfirmationAndRefusesUnmanagedDestination(t *testing.T) {
 	root, project, skill := fixture(t)
 	a, _ := adapter.For(adapter.Codex)

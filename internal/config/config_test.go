@@ -23,6 +23,111 @@ func TestLoadUsesAgentManagerSkillsInHomeDirectoryByDefault(t *testing.T) {
 	if loaded.LibraryPath != want {
 		t.Errorf("LibraryPath = %q, want %q", loaded.LibraryPath, want)
 	}
+	if loaded.SyncMode != config.SyncAuto {
+		t.Errorf("SyncMode = %q, want auto", loaded.SyncMode)
+	}
+}
+
+func TestLoadReadsDefaultConfigAndSyncMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".agent-manager", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("library: ./shared\nsync_mode: copy-only\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if loaded.LibraryPath != filepath.Join(home, ".agent-manager", "shared") {
+		t.Fatalf("LibraryPath = %q", loaded.LibraryPath)
+	}
+	if loaded.SyncMode != config.SyncCopyOnly {
+		t.Fatalf("SyncMode = %q, want copy-only", loaded.SyncMode)
+	}
+}
+
+func TestLoadRejectsUnsupportedSyncMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("sync_mode: hardlink\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil || !strings.Contains(err.Error(), "unsupported sync mode") {
+		t.Fatalf("Load() error = %v, want unsupported sync mode", err)
+	}
+}
+
+func TestLoadAcceptsEverySupportedSyncMode(t *testing.T) {
+	for _, mode := range []config.SyncMode{config.SyncAuto, config.SyncSymlinkOnly, config.SyncCopyOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("sync_mode: "+string(mode)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if loaded.SyncMode != mode {
+				t.Fatalf("SyncMode = %q, want %q", loaded.SyncMode, mode)
+			}
+		})
+	}
+}
+
+func TestSaveSyncModeCreatesDefaultConfigAndPreservesOtherValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".agent-manager", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := "# keep this comment\nversion: v1\nlibrary: ~/.agents/skills\ncustom: keep-me\nmemory:\n  provider: local\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveSyncMode("", config.SyncSymlinkOnly); err != nil {
+		t.Fatalf("SaveSyncMode() error = %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, preserved := range []string{"# keep this comment", "library: ~/.agents/skills", "custom: keep-me", "provider: local", "sync_mode: symlink-only"} {
+		if !strings.Contains(string(updated), preserved) {
+			t.Errorf("updated config omitted %q:\n%s", preserved, updated)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("config permissions = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestSaveSyncModeRejectsUnsupportedValue(t *testing.T) {
+	if err := config.SaveSyncMode(filepath.Join(t.TempDir(), "config.yaml"), config.SyncMode("hardlink")); err == nil {
+		t.Fatal("SaveSyncMode() error = nil, want unsupported mode")
+	}
+}
+
+func TestSaveSyncModeUsesExplicitConfigPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := config.SaveSyncMode(path, config.SyncCopyOnly); err != nil {
+		t.Fatalf("SaveSyncMode() error = %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SyncMode != config.SyncCopyOnly {
+		t.Fatalf("SyncMode = %q, want copy-only", loaded.SyncMode)
+	}
 }
 
 func TestLoadKeepsLegacyLibraryAvailableAsExplicitOverride(t *testing.T) {

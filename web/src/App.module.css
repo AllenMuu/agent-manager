@@ -38,6 +38,49 @@
 .mainArea { max-width: 1490px; min-height: 100vh; margin-left: 228px; padding: 0 54px 25px; }
 .topline { display: flex; min-height: 48px; align-items: center; gap: 13px; border-bottom: 1px solid #d9d4c8; color: #53594f; font-size: 11px; font-weight: 650; }
 .installationFrame { display: block; width: 100%; min-height: 850px; height: calc(100vh - 250px); border: 0; border-radius: 10px; background: #f5f3ed; }
+.syncPage { display: grid; gap: 14px; }
+.syncRepoPath { display: grid; gap: 5px; margin: 18px 0; padding: 12px 13px; border: 1px solid #e5e0d5; border-radius: 8px; background: #faf8f2; }
+.syncRepoPath span { color: #74776c; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.syncRepoPath code, .syncPlanRow code, .syncSourceNote code { overflow-wrap: anywhere; color: #666a60; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.syncModes { display: grid; gap: 8px; margin: 18px 0 0; padding: 0; border: 0; }
+.syncModes legend { margin-bottom: 9px; color: #434940; font-size: 12px; font-weight: 700; }
+.syncModes label { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid #e1ddd3; border-radius: 8px; background: #fffefa; cursor: pointer; }
+.syncModes input, .syncScopeHeading input, .syncSourceRow > input, .currentChoice input { width: 16px; height: 16px; flex: 0 0 16px; accent-color: #b84f31; }
+.syncModes span { display: grid; gap: 2px; }
+.syncModes strong { color: #33382f; font-size: 12px; }
+.syncModes small, .syncSourceRow small, .syncSourceNote small, .syncPlanRow small { overflow-wrap: anywhere; color: #77796f; font-size: 11px; line-height: 1.45; }
+.syncScopes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 17px; }
+.syncScope { min-width: 0; padding: 14px; border: 1px solid #e4dfd5; border-radius: 9px; background: #fcfbf7; }
+.syncScopeHeading { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding-bottom: 10px; border-bottom: 1px solid #ece8e0; }
+.syncScopeHeading h3 { margin: 4px 0 0; font-size: 17px; }
+.selectAll { display: inline-flex; align-items: center; gap: 6px; color: #676b61; font-size: 11px; white-space: nowrap; }
+.syncGroupList { display: grid; }
+.syncSourceRow { display: grid; grid-template-columns: 17px minmax(0, 1fr); align-items: start; gap: 8px; padding: 11px 0; border-bottom: 1px solid #efede7; cursor: pointer; }
+.syncSourceRow > span { display: grid; min-width: 0; gap: 3px; }
+.syncSourceRow strong, .syncSourceNote strong { overflow-wrap: anywhere; color: #33382f; font-size: 12px; }
+.syncSourceRow small { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.syncSourceNote { display: grid; gap: 4px; padding: 10px 0 2px; }
+.syncDiagnostics { display: grid; gap: 8px; margin-top: 15px; padding: 11px 13px; border: 1px solid #e4d7b8; border-radius: 8px; background: #fffaf0; }
+.syncDiagnostics > strong { color: #795a24; font-size: 11px; }
+.syncDiagnostics > div { display: grid; gap: 3px; }
+.syncDiagnostics code { overflow-wrap: anywhere; color: #777165; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.syncDiagnostics span { color: #6b675d; font-size: 11px; }
+.syncActions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 15px; }
+.syncActions .textButton { min-height: 36px; }
+.syncReview { padding: 20px; border: 1px solid #d8b99f; border-radius: 10px; background: #fffaf4; }
+.syncReview h2 { margin: 12px 0; font-size: 20px; }
+.syncPlanRow { display: grid; gap: 4px; padding: 11px 0; border-top: 1px solid #e9e0d5; }
+.syncPlanRow > strong { color: #343930; font-size: 12px; }
+.syncProblem { color: #9b3c2b !important; }
+.currentChoice { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid #d8c49d; border-radius: 8px; background: #fffdf7; }
+.currentChoice legend { padding: 0 5px; color: #64502c; font-size: 12px; font-weight: 700; }
+.currentChoice label { display: flex; gap: 8px; align-items: flex-start; font-size: 11px; }
+.currentChoice label span { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.currentChoice code { color: #77796f; font-size: 10px; }
+.syncMuted { color: #77796f; font-size: 11px; }
+.syncNotice, .syncError { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #b6cbb9; border-radius: 8px; background: #edf3eb; color: #315d42; font-size: 12px; }
+.syncNotice button { width: 32px; height: 32px; border: 0; background: transparent; color: inherit; font-size: 20px; cursor: pointer; }
+.syncError { border-color: #e1b8ad; background: #fff0eb; color: #913a2c; }
 .pathText { overflow: hidden; flex: 1; color: #85867b; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pageHeading { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 29px 0 22px; }
 .pageHeading h1 { margin: 5px 0 0; font-size: clamp(27px, 3.2vw, 39px); font-weight: 670; letter-spacing: -.045em; line-height: 1.1; }
@@ -169,8 +212,11 @@
 .definitionCard h2 { margin: 0; font-size: 17px; }
 .roleLine { margin: 4px 0 10px; color: #a7472d !important; font-size: 11px; font-weight: 650; }
 .instructions { margin: 0 0 11px; white-space: pre-wrap; }
+.panelTopActions { display: flex; align-items: center; gap: 10px; }
+.panel .panelTitle { margin: 0; color: #74776c; font-size: 10px; font-weight: 750; letter-spacing: .13em; line-height: 1.4; text-transform: uppercase; }
 .findingRow { display: flex; gap: 12px; padding: 13px 0; border-top: 1px solid #eeebe3; }
 .findingRow > div { display: grid; gap: 4px; }
+.findingHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .findingRow strong { font-size: 12px; }
 .findingRow p { margin: 0; font-size: 11px; }
 .findingRow code { overflow-wrap: anywhere; color: #898a80; font-size: 10px; }
@@ -224,6 +270,7 @@
   .pageHeading { padding: 21px 0 16px; }
   .pageHeading h1 { font-size: 29px; }
   .installationFrame { min-height: 700px; height: calc(100vh - 190px); }
+  .syncScopes { grid-template-columns: minmax(0, 1fr); }
   .workspaceGrid, .libraryLayout, .documentGrid { grid-template-columns: minmax(0, 1fr); }
   .agentPanel { grid-row: auto; }
   .skillsWorkspace { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }

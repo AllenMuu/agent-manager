@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/AllenMuu/skill-manager/internal/adapter"
+	"github.com/AllenMuu/skill-manager/internal/config"
 	"github.com/AllenMuu/skill-manager/internal/installation"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/spf13/cobra"
@@ -60,11 +62,11 @@ func newInstallCommand(options *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			lib, err := library(options)
+			settings, err := config.Load(options.configPath)
 			if err != nil {
 				return err
 			}
-			service := installation.New(lib)
+			service := installation.NewWithMaterialization(settings.LibraryPath, adapter.MaterializationMode(settings.SyncMode))
 			preview, previewErr := service.Preview("cli", installation.Request{
 				Project:  project,
 				Global:   global,

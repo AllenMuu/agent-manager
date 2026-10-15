@@ -39,6 +39,12 @@ type Module struct {
 // NewModule prepares the installation APIs to be mounted by the main Web
 // console. The console authenticates requests before dispatching to its API.
 func NewModule(project, library, session string) (*Module, error) {
+	return NewModuleWithMaterialization(project, library, session, nil)
+}
+
+// NewModuleWithMaterialization reads the parent console's synchronized setting
+// for each guarded preview and apply without mutating shared service options.
+func NewModuleWithMaterialization(project, library, session string, mode func() adapter.MaterializationMode) (*Module, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return nil, err
@@ -60,7 +66,7 @@ func NewModule(project, library, session string) (*Module, error) {
 		project:  project,
 		library:  library,
 		session:  session,
-		installs: installation.New(library),
+		installs: installation.NewWithMaterializationProvider(library, mode),
 	}}
 	module.api = module.server.apiHandler()
 	return module, nil

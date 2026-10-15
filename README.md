@@ -239,6 +239,15 @@ action. The operator must confirm execution separately, and replacement
 requires an additional explicit force confirmation. All successful mutations
 use the existing lifecycle or journal service.
 
+The **Diagnostics** view separates Doctor findings from static project-scan
+notes. It can preview and repair one orphaned managed link when its Skill is
+available in the configured library, or append an exact `.gitignore` rule for
+a managed link Git would otherwise track. Each repair requires confirmation
+and is journaled for Undo. Invalid catalog content, unmanaged resources,
+ambiguous links, unsupported locations, and links already in Git's index show
+manual guidance instead. Adapter capabilities remain in the agent inventory,
+not Doctor results.
+
 Every Skill/resource filesystem-mutating command previews its plan, requires confirmation (`--yes` or an interactive prompt), records a reversible filesystem operation-journal entry, and leaves unmanaged directories, ordinary files, and unexpected links untouched by default. `artifacts save` separately confirms a validated task-artifact write; `memory promote` separately confirms an append to provider-owned data. Neither operation creates a filesystem operation-journal entry or is reversible through `undo`. No Skill, SubAgent, status, inventory, or list workflow copies resource content or agent conversation data into Memory.
 
 ## Canonical SubAgents

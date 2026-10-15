@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AllenMuu/skill-manager/internal/filelock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,9 +25,10 @@ const (
 )
 
 var (
-	ErrNotFound = errors.New("skill repository entry not found")
-	ErrConflict = errors.New("skill repository version already exists")
-	ErrUnsafe   = errors.New("unsafe skill repository path or content")
+	ErrNotFound           = errors.New("skill repository entry not found")
+	ErrConflict           = errors.New("skill repository version already exists")
+	ErrUnsafe             = errors.New("unsafe skill repository path or content")
+	ErrRollbackIncomplete = errors.New("Skill repository transaction rollback was incomplete")
 )
 
 // Metadata is the repository index for one stable Skill identity.
@@ -41,24 +43,33 @@ type Metadata struct {
 // Empty provenance fields mean unknown; consumers must not infer them from
 // Skill instructions or directory names.
 type VersionMetadata struct {
-	Key                 string    `json:"key"`
-	Version             string    `json:"version"`
-	Source              string    `json:"source,omitempty"`
-	SourceType          string    `json:"sourceType,omitempty"`
-	Publisher           string    `json:"publisher,omitempty"`
-	ImmutableRef        string    `json:"immutableRef,omitempty"`
-	Checksum            string    `json:"checksum,omitempty"`
-	Tags                []string  `json:"tags,omitempty"`
-	SupportedLanguages  []string  `json:"supportedLanguages,omitempty"`
-	SupportedFrameworks []string  `json:"supportedFrameworks,omitempty"`
-	SupportedAgents     []string  `json:"supportedAgents,omitempty"`
-	Compatibility       []string  `json:"compatibility,omitempty"`
-	InstalledAt         time.Time `json:"installedAt,omitempty"`
-	UpdatedAt           time.Time `json:"updatedAt,omitempty"`
-	TrustLevel          string    `json:"trustLevel,omitempty"`
-	VerificationStatus  string    `json:"verificationStatus,omitempty"`
-	LastUsedAt          time.Time `json:"lastUsedAt,omitempty"`
-	LegacyProvenance    string    `json:"legacyProvenance,omitempty"`
+	Key                 string         `json:"key"`
+	Version             string         `json:"version"`
+	Source              string         `json:"source,omitempty"`
+	SourceType          string         `json:"sourceType,omitempty"`
+	Publisher           string         `json:"publisher,omitempty"`
+	ImmutableRef        string         `json:"immutableRef,omitempty"`
+	Checksum            string         `json:"checksum,omitempty"`
+	Tags                []string       `json:"tags,omitempty"`
+	SupportedLanguages  []string       `json:"supportedLanguages,omitempty"`
+	SupportedFrameworks []string       `json:"supportedFrameworks,omitempty"`
+	SupportedAgents     []string       `json:"supportedAgents,omitempty"`
+	Compatibility       []string       `json:"compatibility,omitempty"`
+	InstalledAt         time.Time      `json:"installedAt,omitempty"`
+	UpdatedAt           time.Time      `json:"updatedAt,omitempty"`
+	TrustLevel          string         `json:"trustLevel,omitempty"`
+	VerificationStatus  string         `json:"verificationStatus,omitempty"`
+	LastUsedAt          time.Time      `json:"lastUsedAt,omitempty"`
+	LegacyProvenance    string         `json:"legacyProvenance,omitempty"`
+	SourceOrigins       []SourceOrigin `json:"sourceOrigins,omitempty"`
+}
+
+// SourceOrigin records a supported local import location without inferring
+// provenance from Skill-authored files.
+type SourceOrigin struct {
+	Scope    string `json:"scope"`
+	Location string `json:"location"`
+	Path     string `json:"path"`
 }
 
 // Entry is one versioned or legacy Skill resolved to its content directory.
@@ -360,9 +371,24 @@ func (r *Repository) OwnsPath(identifier, path string) (bool, error) {
 // content is never overwritten. makeCurrent selects the added version for
 // subsequent default resolutions.
 func (r *Repository) AddVersion(identifier, sourcePath string, version VersionMetadata, makeCurrent bool) (Entry, error) {
+	if !validComponent(identifier) {
+		return Entry{}, fmt.Errorf("%w: invalid Skill identifier %q", ErrUnsafe, identifier)
+	}
+	checksum, err := treeChecksum(sourcePath)
+	if err != nil {
+		return Entry{}, fmt.Errorf("inspect Skill source: %w", err)
+	}
+	if version.Checksum != "" && version.Checksum != checksum {
+		return Entry{}, fmt.Errorf("%w: Skill source checksum changed after preview", ErrUnsafe)
+	}
 	lock := repositoryLock(r.root)
 	lock.Lock()
 	defer lock.Unlock()
+	unlock, err := lockRepositoryFile(r.root)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer unlock()
 	return r.addVersion(identifier, sourcePath, version, makeCurrent)
 }
 
@@ -373,7 +399,23 @@ func (r *Repository) AddVersionsBatch(sources []VersionSource) ([]Entry, error) 
 	lock := repositoryLock(r.root)
 	lock.Lock()
 	defer lock.Unlock()
+	unlock, err := lockRepositoryFile(r.root)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	return r.addVersionsBatch(sources, nil)
+}
+
+func lockRepositoryFile(root string) (func() error, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, fmt.Errorf("create Skill repository for its operation lock: %w", err)
+	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: Skill repository root is not a real directory", ErrUnsafe)
+	}
+	return filelock.Acquire(filepath.Join(root, ".skill-manager-operation.lock"))
 }
 
 func (r *Repository) addVersionsBatch(sources []VersionSource, afterPublish func(int, Entry) error) ([]Entry, error) {

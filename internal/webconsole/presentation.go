@@ -11,10 +11,13 @@ func messageRef(key string, args map[string]string) *messageRefDTO {
 
 func operationMessageRef(operation string) *messageRefDTO {
 	keys := map[string]string{
-		"activate":                 "plan.operation.activate",
-		"activate selected skills": "plan.operation.activate_selected_skills",
-		"remove":                   "plan.operation.remove",
-		"undo":                     "plan.operation.undo",
+		"activate":                         "plan.operation.activate",
+		"activate selected skills":         "plan.operation.activate_selected_skills",
+		"resynchronize managed Skills":     "plan.operation.resynchronize_managed_skills",
+		"remove":                           "plan.operation.remove",
+		"reconcile":                        "plan.operation.reconcile",
+		"update managed-link Git guidance": "plan.operation.gitignore",
+		"undo":                             "plan.operation.undo",
 	}
 	if key, ok := keys[operation]; ok {
 		return messageRef(key, nil)
@@ -39,6 +42,7 @@ func actionMessageRef(action string) *messageRefDTO {
 		"copy project skill into library":             "plan.action.copy_skill_to_library",
 		"replace directory with managed link":         "plan.action.replace_with_managed_link",
 		"repoint orphaned managed link":               "plan.action.repoint_orphaned_link",
+		"ignore managed link":                         "plan.action.gitignore_managed_link",
 	}[action]
 	if !ok {
 		return nil
