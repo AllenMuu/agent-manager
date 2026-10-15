@@ -22,7 +22,7 @@ func newWebCommand(options *rootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "web",
 		Short: "Start the local Web application",
-		Long:  "Start the authenticated local Web application on IPv4 loopback. It opens on the management dashboard and includes Skill installation as a navigation tab. The entry URL contains a process-session token in its URL fragment.",
+		Long:  "Start the authenticated local Web application on IPv4 loopback. It opens on the management dashboard and provides one unified Skills workspace for recommendations, catalog browsing, details, and guarded activation or batch installation. The entry URL contains a process-session token in its URL fragment.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if project == "" {

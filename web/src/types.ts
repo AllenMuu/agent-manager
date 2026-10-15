@@ -1,5 +1,5 @@
 export type Project = { id: string; name: string; path: string }
-export type ErrorEnvelope = { error: { code: string; message: string } }
+export type ErrorEnvelope = { error: { code: string; message: string } } | { error: string; preview?: InstallationPreview }
 export type MessageRef = { key: string; args?: Record<string, string> }
 export type Agent = {
   id: string
@@ -93,6 +93,16 @@ export type LatestOperation = {
   undoAvailable: boolean
   undoPreview?: { operation: string; operationRef?: MessageRef; changes: PlanChange[]; warnings: string[]; warningRefs?: (MessageRef | null)[] }
 } | null
+
+export type InstallationCatalog = { skills: Skill[]; targets: { id: string; label: string }[] }
+export type InstallationPreview = {
+  id: string
+  skillIds: string[]
+  targets: string[]
+  plan: { operation: string; changes: { path: string; action: string; detail?: string }[] | null; warnings: string[] | null }
+}
+
+export type InstallationApplyResult = { result: { applied: boolean; stale: boolean } }
 
 export type SyncMode = 'auto' | 'symlink-only' | 'copy-only'
 export type SyncSource = {

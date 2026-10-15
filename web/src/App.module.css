@@ -166,12 +166,22 @@
 .registerStamp span:first-child { color: #b84f31; font: 20px Georgia, serif; }
 .registerStamp span:last-child { font-size: 8px; font-weight: 700; letter-spacing: .12em; line-height: 1.35; }
 
+.skillsWorkspace { display: grid; min-width: 0; gap: 14px; overflow-wrap: anywhere; }
+.selectionBar { min-width: 0; }
+.selectionBar > p { margin: 0; }
+.selectionControls { margin-top: 10px; }
+.selectionControls ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
+.selectionControls li { display: flex; min-width: 0; max-width: 100%; align-items: center; gap: 8px; padding: 2px 6px 2px 10px; border: 1px solid #dedacf; border-radius: 8px; }
+.selectionControls li span { min-width: 0; overflow-wrap: anywhere; }
+.selectionControls li button { min-width: 40px; min-height: 40px; flex: 0 0 auto; border: 0; border-radius: 6px; background: #f7f4ec; cursor: pointer; }
 .libraryLayout { display: grid; grid-template-columns: minmax(290px, .78fr) minmax(0, 1.22fr); align-items: start; gap: 14px; }
 .libraryPanel { padding-bottom: 12px; }
 .searchForm { display: flex; gap: 8px; margin: 15px 0 9px; }
 .searchForm input { flex: 1; }
-.skillList { display: grid; }
-.skillRow { display: flex; min-height: 69px; align-items: center; gap: 10px; padding: 10px 7px; border: 0; border-top: 1px solid #eeebe3; background: transparent; cursor: pointer; text-align: left; }
+.skillList { display: grid; min-width: 0; }
+.skillList > div { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.skillList > div > input { flex: 0 0 auto; }
+.skillRow { display: flex; min-width: 0; width: 100%; min-height: 69px; align-items: center; gap: 10px; padding: 10px 7px; border: 0; border-top: 1px solid #eeebe3; background: transparent; cursor: pointer; text-align: left; }
 .skillRow:hover, .skillRowActive { background: #f7f4ec; }
 .skillBullet { display: grid; width: 27px; height: 27px; flex: 0 0 27px; place-items: center; border: 1px solid #dedacf; border-radius: 7px; color: #b84f31; font-size: 12px; }
 .skillSummary { display: grid; min-width: 0; flex: 1; gap: 1px; }
@@ -263,6 +273,12 @@
   .syncScopes { grid-template-columns: minmax(0, 1fr); }
   .workspaceGrid, .libraryLayout, .documentGrid { grid-template-columns: minmax(0, 1fr); }
   .agentPanel { grid-row: auto; }
+  .skillsWorkspace { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  .skillsWorkspace:not([data-selection-action="none"]) { padding-bottom: calc(45vh + env(safe-area-inset-bottom, 0px) + 16px); }
+  .selectionBar { position: fixed; z-index: 4; inset: auto 0 0; max-height: 45vh; max-height: 45dvh; overflow-y: auto; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-radius: 12px 12px 0 0; box-shadow: 0 -4px 18px #25292318; }
+  .selectionControls > .primaryButton { width: 100%; }
+  .skillsWorkspace .panelTop { flex-wrap: wrap; }
+  .skillsWorkspace .mutedText, .skillsWorkspace h2, .skillsWorkspace .metadataRow strong { overflow-wrap: anywhere; }
   .skillDetailPanel { position: static; }
   .registerPanel { min-height: 400px; grid-template-columns: 48px minmax(0, 1fr); gap: 10px 13px; padding: 22px 17px; }
   .registerCopy h2 { font-size: 26px; }

@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/AllenMuu/skill-manager/internal/cli"
@@ -11,6 +12,9 @@ func TestWebCommandExposesOnlyProjectAndLoopbackPortOptions(t *testing.T) {
 	command, _, err := root.Find([]string{"web"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(command.Long, "one unified Skills workspace") {
+		t.Fatalf("web help must describe one unified Skills workspace: %s", command.Long)
 	}
 	if command.Flags().Lookup("project") == nil || command.Flags().Lookup("port") == nil {
 		t.Fatal("web command is missing project or port flag")

@@ -9,6 +9,7 @@ type LanguageContextValue = {
   setLocale: (locale: Locale) => void
   t: (source: string, values?: Values) => string
   message: (ref: MessageRef | undefined, fallback: string) => string
+  installationMessage: (source: string) => string
   error: (error: unknown) => string
 }
 
@@ -77,6 +78,43 @@ const zh: Record<string, string> = {
   '{count} scan notes': '{count} 条扫描记录',
   'Doctor findings and supported repair plans are available on Diagnostics.': '可在“诊断”中查看 Doctor 问题，并为支持的情况预览修复方案。',
   'Open diagnostics': '打开诊断',
+  'Recommended Skills': '推荐 Skill',
+  'RECOMMENDED SKILLS': '推荐 Skill',
+  'Retry recommendations': '重试推荐',
+  'Eligible library': '可用库',
+  'Skill detail': 'Skill 详情',
+  'Read details →': '查看详情 →',
+  'Deselect {identifier}': '取消选择 {identifier}',
+  '{count} selected': '已选择 {count} 项',
+  'Selected Skills': '已选 Skill',
+  'Installation targets': '安装目标',
+  'Preview installation': '预览安装',
+  'Review installation': '审查安装',
+  'Confirm installation': '确认安装',
+  'Cancel installation': '取消安装',
+  'Installation could not be completed.': '无法完成安装。',
+  'Could not read the local Skill library.': '无法读取本地技能库。',
+  'Could not scan this project.': '无法扫描此项目。',
+  'Could not create an installation preview.': '无法创建安装预览。',
+  'Could not create an installation preview. Check that the local service is running and retry.': '无法创建安装预览。请确认本地服务仍在运行后重试。',
+  'Installation could not be completed. Check that the local service is running and retry.': '无法完成安装。请确认本地服务仍在运行后重试。',
+  'Could not reach the local Agent Manager service. Check that it is still running and retry.': '无法连接本地 Agent Manager 服务。请确认服务仍在运行后重试。',
+  'Selected Skills installed successfully. The operation is recorded and can be undone with the CLI.': '所选技能已成功安装。此操作已记录，可使用 CLI 撤销。',
+  'Replacement preview requested. Review the affected paths before confirming.': '已请求预览替换方案。请在确认前检查受影响的路径。',
+  'activate selected skills': '启用所选技能',
+  'create absolute link': '创建绝对路径链接',
+  'replace conflicting path with absolute link': '用绝对路径链接替换冲突路径',
+  'refuse conflicting destination': '拒绝替换冲突目标',
+  'replace conflict (force required)': '替换冲突项（需要强制确认）',
+  'resource is already installed; no changes made': '资源已安装；未进行更改',
+  'invalid installation request': '安装请求无效',
+  'no installation changes': '没有需要执行的安装变更',
+  'installation preview expired or unavailable': '安装预览已过期或不可用',
+  'conflict strategy requires force confirmation': '替换冲突项需要明确的强制确认',
+  'refusing unmanaged or unexpected path': '为保护数据，已拒绝操作非托管或异常路径',
+  'Skill "{skill}" is not declared compatible with {target}': '技能“{skill}”未声明与 {target} 兼容',
+  'The project changed after preview. Review this updated plan, then confirm again.': '预览后项目已发生变化。请审查更新后的方案，再次确认。',
+  'Selected Skills installed successfully.': '已成功安装所选 Skill。',
   '{count} project scan note': '{count} 条项目扫描记录',
   '{count} project scan notes': '{count} 条项目扫描记录',
   'ELIGIBLE LIBRARY': '可用库',
@@ -171,7 +209,6 @@ const zh: Record<string, string> = {
   'An unexpected local service error occurred.': '本地服务发生意外错误。',
   'Request failed with status {status}.': '请求失败，HTTP 状态码为 {status}。',
   'Console language': '控制台语言',
-  'Skill installation': '技能安装',
   'Storage & Sync': '存储与同步',
   'CENTRAL SKILL LIBRARY': '中央 Skill 库',
   'SOURCE INVENTORY': '来源清单',
@@ -382,6 +419,17 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   }
   const value = useMemo<LanguageContextValue>(() => {
     const t = (source: string, values?: Values) => interpolate(locale === 'zh-CN' ? zh[source] ?? source : source, values)
+    const installationMessage = (source: string) => {
+      if (locale === 'en') return source
+      const compatibility = source.match(/^(.+) is not declared compatible with (claude-code|codex|pi)$/)
+      if (compatibility) {
+        const target = { 'claude-code': 'Claude Code', codex: 'Codex', pi: 'Pi' }[compatibility[2]] ?? compatibility[2]
+        return t('Skill "{skill}" is not declared compatible with {target}', { skill: compatibility[1], target })
+      }
+      const missingSkill = source.match(/^Skill "(.+)" not found in configured library$/)
+      if (missingSkill) return `在配置的技能库中未找到技能“${missingSkill[1]}”`
+      return t(source)
+    }
     const message = (ref: MessageRef | undefined, fallback: string) => {
       if (!ref) return fallback
       if (locale === 'en') return fallback
@@ -396,6 +444,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     }
   const error = (value: unknown) => {
       if (value instanceof APIError) {
+        if (value.code === 'installation_error') return installationMessage(value.message)
         const translated = locale === 'zh-CN' ? apiErrors[value.code] : undefined
         if (!translated) return value.message
         const detail = apiErrorDetails[value.code]?.[value.message]
@@ -404,10 +453,10 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
         if (value.code === 'request_failed') return t('Request failed with status {status}.', { status: value.status })
         return translated
       }
-      if (value instanceof Error) return value.message
+      if (value instanceof Error) return value.message === 'Installation could not be completed.' ? t(value.message) : value.message
       return t('An unexpected local service error occurred.')
     }
-    return { locale, setLocale, t, message, error }
+    return { locale, setLocale, t, message, installationMessage, error }
   }, [locale])
 
   useEffect(() => {

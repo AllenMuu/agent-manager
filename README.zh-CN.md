@@ -26,7 +26,7 @@ agent-manager install go-helper review --project . --target codex --yes
 # 或将 Skill 显式激活到代理的全局目录
 agent-manager install go-helper --global --target codex --yes
 
-# Web：打开本地管理后台，再进入“技能安装”页签选择 Skill
+# Web：打开本地管理后台，再进入统一的“技能”工作区选择 Skill
 agent-manager web --project .
 ```
 
@@ -65,7 +65,7 @@ agent-manager recommend --project .
 agent-manager select --project .
 agent-manager add <skill> --project . --target codex --yes
 
-# 一次安装多个明确选择的项目 Skill，或打开包含技能安装页签的 Web 应用
+# 一次安装多个明确选择的项目 Skill，或打开包含统一技能工作区的 Web 应用
 agent-manager install go-helper review --project . --target codex --yes
 
 # 全局安装只作用于当前用户的代理 Skill 目录
@@ -74,7 +74,7 @@ agent-manager list --global
 agent-manager remove go-helper --global --target codex --yes
 agent-manager undo --global --yes
 
-# 启动管理后台和技能安装页签（共用一个本机地址）
+# 启动管理后台和统一技能工作区（共用一个本机地址）
 agent-manager web --project . --port 0
 ```
 
@@ -111,7 +111,7 @@ npm test
 npm run build
 ```
 
-`npm run build` 同时构建两个嵌入式客户端：`web/index.html` 对应 `internal/webconsole/ui`，`web/install/index.html` 对应 `internal/webui/dist`。
+`npm run build` 从 `web/index.html` 构建一个 React 客户端，输出到 `internal/webconsole/ui`；统一技能工作区包含在此客户端中。
 
 前端工具链支持 Node.js 22.12 及更高的 22.x 版本、24.x 或 26 及更高版本。
 
@@ -207,17 +207,21 @@ memory:
 | `policies validate/list/show` | 校验和查看本地版本化 AgentPolicy。 |
 | `runs list/show/events/kill` | 检查本地 AgentRun、策略快照、审批及审计事件；按能力请求终止。 |
 | `approvals list/show/approve/reject/expire` | 查看审批请求并记录人工决策。 |
-| `web` | 启动本地 Web 应用，包含管理后台和技能安装页签。 |
+| `web` | 启动包含统一技能工作区的本地 Web 应用。 |
 
 ## 本地 Web 应用
 
-启动管理后台和技能安装页签组成的本地 Web 应用：
+启动包含管理后台和统一技能工作区的本地 Web 应用：
 
 ```sh
 agent-manager web --project . --port 0
 ```
 
-`--project` 必填；`--port 0` 会让系统选择可用端口。命令启动一个只监听 `127.0.0.1` 的 Web 应用，并且只打印一个入口地址。默认打开管理后台，导航中的“技能安装”页签可浏览本地库并预览、确认安装。URL 片段带有随机的进程级会话令牌；浏览器会将令牌存入当前标签页的 `sessionStorage` 并从地址栏移除。API 使用 Bearer 令牌，写请求校验来源，不开放 CORS。按 `Ctrl+C` 会关闭会话并丢弃待处理计划。
+`--project` 必填；`--port 0` 会让系统选择可用端口。命令启动一个只监听 `127.0.0.1` 的 Web 应用，并且只打印一个入口地址。默认打开管理后台，导航中的“技能”入口打开统一技能工作区。URL 片段带有随机的进程级会话令牌；浏览器会将令牌存入当前标签页的 `sessionStorage` 并从地址栏移除。API 使用 Bearer 令牌，写请求校验来源，不开放 CORS。按 `Ctrl+C` 会关闭会话并丢弃待处理计划。
+
+统一技能工作区依次展示项目推荐、可搜索的本地可用目录和一个 Skill 详情面板。推荐与目录中的同一个 Skill 共用选择状态；查看详情不会选择 Skill 或修改文件。
+
+选择一个 Skill 后可审查启用方案，默认目标仍为 Codex。选择两个及以上 Skill 后进入批量安装，必须明确选择目标代理，再预览方案并确认安装；替换冲突需要单独确认。手机上按推荐、目录、内联详情的顺序展示，选择操作栏固定在底部。内置标签支持英文和简体中文；Skill 标识符、路径、内容及未知服务消息保持原文。兼容路径 `/install/` 打开同一技能工作区。
 
 每个进程只注册一个规范项目。控制台没有任意路径读取接口；激活、移除和可用的撤销操作会显示由服务端生成、有效期为 10 分钟的计划，并要求操作者再次确认。替换冲突还需要额外的强制确认。撤销仅覆盖控制台管理的项目目录；涉及共享 Skill 库或其他非托管路径的操作不会提供撤销入口。
 

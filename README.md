@@ -26,7 +26,7 @@ agent-manager install go-helper review --project . --target codex --yes
 # Or activate a Skill globally for selected agents
 agent-manager install go-helper --global --target codex --yes
 
-# Or open the local Web app, then select Skills from its installation tab
+# Or open the local Web app, then select its unified Skills workspace
 agent-manager web --project .
 ```
 
@@ -64,7 +64,7 @@ openspec doctor
 
 The Web console assets are checked in under `internal/webconsole/ui` so a Go
 binary does not need Node.js or network access at runtime. To change the React
-console or installation UI, use the pinned dependencies and rebuild those embedded assets:
+client, use the pinned dependencies and rebuild its embedded assets:
 
 ```text
 cd web
@@ -76,9 +76,8 @@ npm run build
 The frontend toolchain follows the pinned Vite/Vitest engine range: Node.js
 22.12+ on the 22.x line, 24.x, or 26+.
 
-The build preserves both embedded clients: the console in `internal/webconsole/ui`
-and the installation UI in `internal/webui/dist`. Their source entry points are
-`web/index.html` and `web/install/index.html`, respectively.
+The build compiles one React client from `web/index.html` into
+`internal/webconsole/ui`. This client includes the unified Skills workspace.
 
 ## Configuration
 
@@ -127,7 +126,7 @@ remains available.
 
 ```text
 agent-manager init --yes            # verify CLI and install the global Operator skill
-agent-manager web --project .      # open the management console and Skill installation tab
+agent-manager web --project .      # open the management console and unified Skills workspace
 agent-manager search <query>        # find Skills in the library
 agent-manager skill import          # preview legacy ~/.agents/skills candidates
 agent-manager skill versions <id>   # inspect stored versions and provenance
@@ -162,7 +161,7 @@ agent-manager eval run java-backend --agent-label codex --candidate-dir ./eval-r
 | Command | Purpose |
 |---|---|
 | `init` | Verify the CLI and install or update the minimal global Operator skill (guarded, confirmed) |
-| `web` | Start the authenticated local Web app with the management console and Skill installation tab on `127.0.0.1` |
+| `web` | Start the authenticated local Web app with one unified Skills workspace on `127.0.0.1` |
 | `search <query>` | Search library skill identifiers, descriptions, bodies, and tags |
 | `skill import [skill-id...]` | Preview the legacy `.agents/skills` library; selected entries require the displayed token and `--yes` to copy |
 | `recommend` | Detect the project stack statically and rank matching skills (read-only) |
@@ -209,15 +208,26 @@ agent-manager web --project . --port 0
 ```
 
 `--project` is required. The default port `0` asks the operating system for an
-available port. The command starts the management console and Skill installation
-tab on the same IPv4 loopback server (`127.0.0.1`) and prints one entry URL whose
+available port. The command starts the management console with one unified Skills
+workspace on an IPv4 loopback server (`127.0.0.1`) and prints one entry URL whose
 `#session=` fragment contains a random, process-lifetime token. The browser
 moves that token into tab-scoped `sessionStorage` and removes it from the
 address bar. API requests send it as a bearer token, require the exact current
 host and same origin for mutations, reject cross-site fetches, and grant no
 CORS access. Stop the command to discard the session and its pending plans.
-The management dashboard opens by default. Select **Skill installation** in the
-navigation to browse the local library and preview or confirm installations.
+The management dashboard opens by default. Select **Skills** in the navigation
+for project recommendations, the searchable eligible local catalog, and one
+Skill detail panel. A Skill selected in recommendations or the catalog shares
+the same selection. Opening details does not select a Skill or change files.
+
+Select one Skill to review its activation plan; Codex remains the default target.
+Select two or more Skills for batch installation, choose target agents explicitly,
+and preview the plan before confirming installation. Conflict replacement needs
+separate confirmation. On mobile, recommendations, catalog, and inline details
+appear in that order, with selection actions pinned to the bottom. Built-in labels
+support English and Simplified Chinese; Skill identifiers, paths, content, and
+unknown service messages retain their original text. The compatibility path
+`/install/` opens this same Skills workspace.
 
 The console registers one canonical project per process and exposes only the
 supported inventory, catalog, diagnostic, and operation APIs; it has no

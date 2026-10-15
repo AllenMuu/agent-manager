@@ -1,16 +1,13 @@
-// Package webui serves the embedded local installation interface.
+// Package webui provides the local Skill installation API module.
 package webui
 
 import (
 	"crypto/rand"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,68 +22,29 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/stack"
 )
 
-//go:embed dist
-var embedded embed.FS
-
 type server struct {
-	project   string
-	library   string
-	authority string
-	session   string
-	installs  *installation.Service
-	assets    fs.FS
+	project  string
+	library  string
+	session  string
+	installs *installation.Service
 }
 
-// Module mounts the Skill installation interface inside another authenticated
-// local Web server, sharing that server's session token and origin.
+// Module exposes Skill installation APIs inside an authenticated local Web
+// server, sharing that server's session token.
 type Module struct {
 	server *server
 	api    http.Handler
 }
 
-// NewLocalServer binds to IPv4 loopback and returns its URL and HTTP server.
-// The listener is returned separately so callers control serving and shutdown.
-func NewLocalServer(project, library string) (string, *http.Server, net.Listener, error) {
-	project, err := filepath.Abs(project)
-	if err != nil {
-		return "", nil, nil, err
-	}
-	info, err := os.Stat(project)
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("inspect project %s: %w", project, err)
-	}
-	if !info.IsDir() {
-		return "", nil, nil, fmt.Errorf("project path %s is not a directory", project)
-	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("listen on loopback: %w", err)
-	}
-	session, err := randomToken()
-	if err != nil {
-		_ = listener.Close()
-		return "", nil, nil, err
-	}
-	assets, err := fs.Sub(embedded, "dist")
-	if err != nil {
-		_ = listener.Close()
-		return "", nil, nil, err
-	}
-	state := &server{
-		project:   project,
-		library:   library,
-		authority: listener.Addr().String(),
-		session:   session,
-		installs:  installation.New(library),
-		assets:    assets,
-	}
-	url := "http://" + state.authority
-	return url, &http.Server{Handler: state.handler()}, listener, nil
-}
-
-// NewModule prepares the installation interface to be mounted by the main Web
+// NewModule prepares the installation APIs to be mounted by the main Web
 // console. The console authenticates requests before dispatching to its API.
 func NewModule(project, library, session string) (*Module, error) {
+	return NewModuleWithMaterialization(project, library, session, nil)
+}
+
+// NewModuleWithMaterialization reads the parent console's synchronized setting
+// for each guarded preview and apply without mutating shared service options.
+func NewModuleWithMaterialization(project, library, session string, mode func() adapter.MaterializationMode) (*Module, error) {
 	project, err := filepath.Abs(project)
 	if err != nil {
 		return nil, err
@@ -104,16 +62,11 @@ func NewModule(project, library, session string) (*Module, error) {
 			return nil, err
 		}
 	}
-	assets, err := fs.Sub(embedded, "dist")
-	if err != nil {
-		return nil, err
-	}
 	module := &Module{server: &server{
 		project:  project,
 		library:  library,
 		session:  session,
-		installs: installation.New(library),
-		assets:   assets,
+		installs: installation.NewWithMaterializationProvider(library, mode),
 	}}
 	module.api = module.server.apiHandler()
 	return module, nil
@@ -123,41 +76,6 @@ func NewModule(project, library, session string) (*Module, error) {
 // after it has authenticated and validated the request origin.
 func (m *Module) APIHandler() http.Handler {
 	return m.api
-}
-
-// ServeAssets serves the embedded installation client under the parent's
-// same-origin path. Same-origin embedding is allowed for the single-page app.
-func (m *Module) ServeAssets(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'self'; form-action 'self'")
-	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-	m.server.static(w, r)
-}
-
-func (s *server) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/catalog", s.catalog)
-	mux.HandleFunc("/api/recommend", s.recommend)
-	mux.HandleFunc("/api/install/preview", s.preview)
-	mux.HandleFunc("/api/install/apply", s.apply)
-	mux.HandleFunc("/", s.static)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
-		if r.Host != s.authority || !remoteIsLoopback(r.RemoteAddr) {
-			http.Error(w, "local requests only", http.StatusForbidden)
-			return
-		}
-		if origin := r.Header.Get("Origin"); origin != "" && origin != "http://"+s.authority {
-			http.Error(w, "origin is not allowed", http.StatusForbidden)
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.Header.Get("X-Agent-Manager-Session") != s.session {
-			http.Error(w, "session is not active", http.StatusForbidden)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
 }
 
 func (s *server) apiHandler() http.Handler {
@@ -320,28 +238,6 @@ func (s *server) apply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"result": result})
 }
 
-func (s *server) static(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		methodNotAllowed(w)
-		return
-	}
-	name := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/")
-	if name == "." || name == "" || name == "index.html" {
-		contents, err := fs.ReadFile(s.assets, "index.html")
-		if err != nil {
-			http.Error(w, "embedded WebUI is unavailable", http.StatusInternalServerError)
-			return
-		}
-		page := strings.ReplaceAll(string(contents), "__SESSION_TOKEN__", s.session)
-		contents = []byte(page)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(contents)
-		return
-	}
-	http.FileServer(http.FS(s.assets)).ServeHTTP(w, r)
-}
-
 func decodeJSON(w http.ResponseWriter, r *http.Request, out any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	decoder := json.NewDecoder(r.Body)
@@ -372,15 +268,6 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-}
-
-func remoteIsLoopback(address string) bool {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func randomToken() (string, error) {

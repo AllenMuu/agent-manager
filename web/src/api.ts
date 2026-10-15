@@ -5,6 +5,7 @@ export class APIError extends Error {
     readonly code: string,
     message: string,
     readonly status: number,
+    readonly responseBody?: unknown,
   ) {
     super(message)
     this.name = 'APIError'
@@ -19,10 +20,14 @@ export async function apiRequest<T>(token: string, route: string, init: RequestI
   const payload: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const error = payload as ErrorEnvelope | null
+    const errorValue = error?.error
+    const structuredError = typeof errorValue === 'object' && errorValue !== null ? errorValue : null
+    const plainMessage = typeof errorValue === 'string' ? errorValue : undefined
     throw new APIError(
-      error?.error?.code ?? 'request_failed',
-      error?.error?.message ?? `Request failed with status ${response.status}.`,
+      structuredError?.code ?? (plainMessage ? 'installation_error' : 'request_failed'),
+      structuredError?.message ?? plainMessage ?? `Request failed with status ${response.status}.`,
       response.status,
+      payload,
     )
   }
   return payload as T
