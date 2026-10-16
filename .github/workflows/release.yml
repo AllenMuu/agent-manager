@@ -1,0 +1,119 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'dist/npm/**'
+      - '.goreleaser.yml'
+      - '.github/workflows/release.yml'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing stable release tag to publish to npm (e.g. v0.1.0)'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate stable release tag
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$RELEASE_TAG" != v0.0.0 ]] || { echo 'Use a stable nonzero vMAJOR.MINOR.PATCH tag'; exit 1; }
+      - run: go test ./...
+      - run: go vet ./...
+      - run: npm test --prefix dist/npm
+      - name: Validate all release archives
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: release --snapshot --clean
+      - name: Verify packed CLI through npm and npx
+        run: node dist/npm/scripts/smoke.cjs
+      - name: Check npm package contents
+        working-directory: dist/npm
+        run: npm pack --dry-run --ignore-scripts
+  release:
+    if: github.event_name == 'push'
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  publish-npm:
+    if: >-
+      always() && needs.check.result == 'success' &&
+      (needs.release.result == 'success' || github.event_name == 'workflow_dispatch') &&
+      vars.NPM_PUBLISH == 'true'
+    needs: [check, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify release assets, set package version and publish
+        working-directory: dist/npm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "$RELEASE_TAG" != v0.0.0 ]] || exit 1
+          npm version "${RELEASE_TAG#v}" --no-git-tag-version --ignore-scripts
+          gh release download "$RELEASE_TAG" --repo AllenMuu/agent-manager --dir release-assets --pattern 'agent-manager_*' --pattern checksums.txt
+          node - <<'JS'
+          const fs = require('node:fs');
+          const { mapAsset, verifyChecksum } = require('./install.js');
+          const manifest = fs.readFileSync('release-assets/checksums.txt');
+          for (const platform of ['darwin', 'linux', 'win32']) {
+            for (const arch of ['x64', 'arm64']) {
+              const { asset } = mapAsset(platform, arch);
+              verifyChecksum(fs.readFileSync(`release-assets/${asset}`), manifest, asset);
+            }
+          }
+          JS
+          npm publish --access public --provenance
