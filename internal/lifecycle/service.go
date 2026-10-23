@@ -220,7 +220,7 @@ func (s *Service) Add(project string, skill catalog.Skill, targets []adapter.Tar
 			return plan, err
 		}
 		planned = withMaterializationPlan(planned, mode)
-		appendSkillPlan(&plan, planned)
+		appendSkillPlan(&plan, planned, mode)
 		paths = append(paths, placement.Destination)
 		requests = append(requests, request)
 	}
@@ -605,7 +605,7 @@ func (s *Service) buildAddManyPreview(project string, skills []catalog.Skill, ta
 		preview.paths = append(preview.paths, path)
 		preview.requests = append(preview.requests, request)
 		planned = withMaterializationPlan(planned, mode)
-		appendSkillPlan(&preview.plan, planned)
+		appendSkillPlan(&preview.plan, planned, mode)
 	}
 	if s.BatchStore != nil {
 		if err := s.BatchStore.CheckAvailable(preview.paths); err != nil {
@@ -1022,7 +1022,7 @@ func (s *Service) buildRemovePreviewInScope(project string, target adapter.Targe
 	if err != nil {
 		return plan, project, placement, request, resource.SkillLifecyclePlan{}, err
 	}
-	appendSkillPlan(&plan, planned)
+	appendSkillPlan(&plan, planned, "")
 	return plan, project, placement, request, planned, nil
 }
 
@@ -1051,7 +1051,7 @@ func (s *Service) Adopt(project string, target adapter.Target, identifier string
 	libraryPath := planned.Resource.Provenance.Source
 	libraryRoot := filepath.Join(s.LibraryPath, identifier)
 	plan := operation.NewPlan("adopt")
-	appendSkillPlan(&plan, planned)
+	appendSkillPlan(&plan, planned, adapter.MaterializeSymlinkOnly)
 	if !s.confirmed(plan) {
 		return plan, ErrNotConfirmed
 	}
@@ -1218,7 +1218,7 @@ func (s *Service) ForkMany(project, identifier string, targets []adapter.Target)
 		if err != nil {
 			return plan, err
 		}
-		appendSkillPlan(&plan, planned)
+		appendSkillPlan(&plan, planned, adapter.MaterializeCopyOnly)
 		paths, sources = append(paths, placement.Destination), append(sources, planned.SourcePath)
 		requests = append(requests, request)
 	}
@@ -1639,21 +1639,27 @@ func expectedLifecycleAfterWithSourceFingerprints(change operation.Change, known
 	if strings.Contains(action, "remove") {
 		return "absent", nil
 	}
-	parts := strings.SplitN(change.Detail, " (", 2)
-	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+	source := change.SourcePath
+	mode := change.MaterializationMode
+	if source == "" {
+		var legacyMode adapter.MaterializationMode
+		source, legacyMode, _ = adapter.ParseMaterializationDetail(change.Detail)
+		if mode == "" {
+			mode = string(legacyMode)
+		}
+	}
+	if strings.TrimSpace(source) == "" {
 		return "", fmt.Errorf("lifecycle publication is missing its source")
 	}
-	source, err := filepath.Abs(parts[0])
+	source, err := filepath.Abs(source)
 	if err != nil {
 		return "", err
 	}
-	mode := "symlink-only"
-	if strings.Contains(change.Detail, "copy-only") || strings.Contains(change.Action, "copy Skill tree") {
-		mode = "copy-only"
-	} else if strings.Contains(change.Detail, "auto: symlink first, copy fallback") {
-		mode = "auto"
-	} else if strings.Contains(change.Detail, "symlink-only") {
+	if mode == "" {
 		mode = "symlink-only"
+		if strings.Contains(change.Action, "copy Skill tree") || strings.Contains(change.Action, "Skill copy") {
+			mode = "copy-only"
+		}
 	}
 	fingerprint, err := operation.FingerprintPath(source)
 	if err != nil {
@@ -1683,11 +1689,14 @@ func plannedCopyFingerprints(plan operation.Plan) map[string]string {
 		if !strings.Contains(strings.ToLower(change.Action), "copy") {
 			continue
 		}
-		parts := strings.SplitN(change.Detail, " (", 2)
-		if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		source := change.SourcePath
+		if source == "" {
+			source, _, _ = adapter.ParseMaterializationDetail(change.Detail)
+		}
+		if strings.TrimSpace(source) == "" {
 			continue
 		}
-		source, err := filepath.Abs(parts[0])
+		source, err := filepath.Abs(source)
 		if err != nil {
 			continue
 		}
@@ -1766,9 +1775,15 @@ func (s *Service) planSkill(request resource.SkillLifecycleRequest) (resource.Sk
 	return plan, nil
 }
 
-func appendSkillPlan(destination *operation.Plan, source resource.SkillLifecyclePlan) {
+func appendSkillPlan(destination *operation.Plan, source resource.SkillLifecyclePlan, mode adapter.MaterializationMode) {
 	for _, change := range source.Changes {
-		destination.Changes = append(destination.Changes, operation.Change{Path: change.Path, Action: change.Action, Detail: change.Detail})
+		planned := operation.Change{Path: change.Path, Action: change.Action, Detail: change.Detail}
+		switch change.Action {
+		case "create absolute link", "replace conflicting path with absolute link", "copy Skill tree", "replace conflicting path with a Skill copy", "replace managed link with independent copy":
+			planned.SourcePath = source.SourcePath
+			planned.MaterializationMode = string(mode)
+		}
+		destination.Changes = append(destination.Changes, planned)
 	}
 	destination.Warnings = append(destination.Warnings, source.Warnings...)
 }

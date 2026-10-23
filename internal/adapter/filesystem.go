@@ -286,7 +286,10 @@ func PlaceFilesystem(plan resource.PlacementPlan, options FilesystemPlacementOpt
 	if options.SourceContent != nil {
 		preview.Changes = append(preview.Changes, operation.Change{Path: source, Action: "write managed SubAgent source"})
 	}
-	preview.Changes = append(preview.Changes, operation.Change{Path: destination, Action: MaterializationAction(mode, false), Detail: MaterializationDetail(source, mode)})
+	preview.Changes = append(preview.Changes, operation.Change{
+		Path: destination, Action: MaterializationAction(mode, false), Detail: MaterializationDetail(source, mode),
+		SourcePath: source, MaterializationMode: string(mode),
+	})
 	if alreadyInstalled {
 		preview.Changes = nil
 		preview.Warnings = append(preview.Warnings, "resource is already installed; no changes made")

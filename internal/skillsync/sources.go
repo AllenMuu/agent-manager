@@ -306,10 +306,12 @@ func discoverLocation(location SourceLocation, boundary string, limit int, globa
 		}
 		if overlaps {
 			if owned, ownErr := repo.OwnsPath(child.Name(), candidate.RealPath); ownErr == nil && owned {
+				candidate.ResolvedIdentifier = child.Name()
 				candidate.AlreadyManaged = true
 				candidate.ManagedMaterial = "symlink"
-				candidate.ResolvedIdentifier = child.Name()
-				candidate.ResolvedIdentifier = child.Name()
+				if len(candidate.LinkChain) == 1 {
+					candidate.MigrationEligible = false
+				}
 			} else {
 				candidate.Problem = "resolved Skill source overlaps the configured repository"
 				sources = append(sources, candidate)

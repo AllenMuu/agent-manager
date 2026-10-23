@@ -567,7 +567,7 @@ func TestProjectReferenceThroughMigratedGlobalEntryRemainsMigratable(t *testing.
 		t.Fatalf("migrate global entry: %v", err)
 	}
 
-	updated, _, err := service.Inventory()
+	updated, groups, err := service.Inventory()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,8 +577,15 @@ func TestProjectReferenceThroughMigratedGlobalEntryRemainsMigratable(t *testing.
 			projectSource = &updated.Sources[i]
 		}
 	}
-	if projectSource == nil || !projectSource.MigrationEligible {
-		t.Fatalf("project reference through migrated global entry = %#v, want independently migratable", projectSource)
+	if projectSource == nil || len(projectSource.LinkChain) < 2 || !projectSource.AlreadyManaged || !projectSource.MigrationEligible {
+		t.Fatalf("project reference through migrated global entry = %#v, want a managed source with an independently migratable link chain", projectSource)
+	}
+	for _, group := range groups {
+		for _, groupedSource := range group.Sources {
+			if groupedSource.ID == projectSource.ID {
+				t.Fatalf("managed project reference was included in an import group: %#v", group)
+			}
+		}
 	}
 	projectPreview, err := service.PreviewMigration([]string{projectSource.ID}, adapter.MaterializeSymlinkOnly)
 	if err != nil {

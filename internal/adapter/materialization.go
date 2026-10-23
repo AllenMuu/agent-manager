@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/AllenMuu/skill-manager/internal/operation"
@@ -35,6 +36,24 @@ func MaterializationDetail(source string, mode MaterializationMode) string {
 	default:
 		return source
 	}
+}
+
+// ParseMaterializationDetail reads the legacy display format used by batches
+// written before materialization intent was stored in structured fields.
+func ParseMaterializationDetail(detail string) (source string, mode MaterializationMode, ok bool) {
+	for _, candidate := range []struct {
+		suffix string
+		mode   MaterializationMode
+	}{
+		{suffix: " (auto: symlink first, copy fallback)", mode: MaterializeAuto},
+		{suffix: " (symlink-only)", mode: MaterializeSymlinkOnly},
+		{suffix: " (copy-only)", mode: MaterializeCopyOnly},
+	} {
+		if strings.HasSuffix(detail, candidate.suffix) {
+			return strings.TrimSuffix(detail, candidate.suffix), candidate.mode, true
+		}
+	}
+	return detail, "", false
 }
 
 func destinationCopyMatches(destination, source string) (bool, error) {

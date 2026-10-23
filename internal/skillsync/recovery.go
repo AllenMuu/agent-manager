@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/AllenMuu/skill-manager/internal/adapter"
 	"github.com/AllenMuu/skill-manager/internal/lifecycle"
 	"github.com/AllenMuu/skill-manager/internal/operation"
 	"github.com/AllenMuu/skill-manager/internal/skillrepo"
@@ -288,6 +289,9 @@ func (s *Service) ApplyRecovery(batchID string, action RecoveryAction) (Recovery
 		if action != RecoveryResolve || !hasAction(candidate.Actions, action) {
 			return candidate, fmt.Errorf("recovery action %q is not available", action)
 		}
+		if err := store.CheckWritable(); err != nil {
+			return candidate, err
+		}
 		return s.recoverImport(store, batch)
 	}
 
@@ -313,6 +317,9 @@ func (s *Service) ApplyRecovery(batchID string, action RecoveryAction) (Recovery
 	}
 	if !hasAction(candidate.Actions, action) {
 		return candidate, fmt.Errorf("recovery action %q is not available", action)
+	}
+	if err := store.CheckWritable(); err != nil {
+		return candidate, err
 	}
 	if action == RecoveryComplete {
 		return s.completeLifecycleBatch(store, journal, batch, candidate)
@@ -475,7 +482,7 @@ func (s *Service) inspectImportBatch(batch operation.Batch, candidate RecoveryCa
 		if checksum == "" {
 			checksum = recordChecksums[filepath.Base(step.Resource)+"\x00"+parts[1]]
 		}
-		versionPath := filepath.Join(step.Resource, "versions", parts[1])
+		versionPath := importVersionPath(step.Resource, parts[1])
 		actual, exists, fingerprintErr := fingerprintIfExists(versionPath)
 		if fingerprintErr != nil {
 			return RecoveryCandidate{}, fingerprintErr
@@ -512,6 +519,13 @@ func (s *Service) inspectImportBatch(batch operation.Batch, candidate RecoveryCa
 	return candidate, nil
 }
 
+func importVersionPath(identityPath, versionKey string) string {
+	if versionKey == "legacy" {
+		return identityPath
+	}
+	return filepath.Join(identityPath, "versions", versionKey)
+}
+
 func (s *Service) recoverImport(store *operation.BatchStore, batch operation.Batch) (RecoveryCandidate, error) {
 	discovery := NewDiscoveryStore(filepath.Join(s.syncRoot, "discoveries"))
 	records, err := discovery.ForBatch(batch.ID)
@@ -536,7 +550,7 @@ func (s *Service) recoverImport(store *operation.BatchStore, batch operation.Bat
 	commitIDs, abortIDs := []string{}, []string{}
 	reconciled := make(map[string]bool)
 	for _, record := range records {
-		path := filepath.Join(s.repositoryRoot, record.Identifier, "versions", record.VersionKey)
+		path := importVersionPath(filepath.Join(s.repositoryRoot, record.Identifier), record.VersionKey)
 		checksum, err := skillrepo.ChecksumTree(path)
 		if err == nil && checksum == record.Checksum {
 			versionID := record.Identifier + "\x00" + record.VersionKey
@@ -1004,15 +1018,18 @@ func recoveryMaterializations(batch operation.Batch) ([]operation.Materializatio
 		if strings.Contains(strings.ToLower(change.Action), "remove") {
 			continue
 		}
-		parts := strings.SplitN(change.Detail, " (", 2)
-		if parts[0] == "" {
+		source := change.SourcePath
+		if source == "" {
+			source, _, _ = adapter.ParseMaterializationDetail(change.Detail)
+		}
+		if source == "" {
 			continue
 		}
 		destination, err := filepath.Abs(change.Path)
 		if err != nil {
 			return nil, err
 		}
-		source, err := filepath.Abs(parts[0])
+		source, err = filepath.Abs(source)
 		if err != nil {
 			return nil, err
 		}
