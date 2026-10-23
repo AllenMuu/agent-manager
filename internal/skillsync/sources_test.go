@@ -560,6 +560,9 @@ func TestDiscoverExcludesRepositoryAndRecognizesManagedActivation(t *testing.T) 
 	for _, source := range inventory.Sources {
 		if source.Identifier == "managed" && source.AlreadyManaged && source.ManagedMaterial == "symlink" {
 			managedFound = true
+			if source.MigrationEligible {
+				t.Fatalf("managed activation was offered for migration: %+v", source)
+			}
 		}
 	}
 	if !managedFound {

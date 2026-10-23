@@ -45,6 +45,10 @@ func TestSyncAPIMigrationPreviewApplyAndUndoUseServerOwnedEntries(t *testing.T) 
 	if response := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/import/apply", `{"planId":"`+importPlan.PlanID+`"}`); response.Code != http.StatusOK {
 		t.Fatalf("import apply = %d %s", response.Code, response.Body.String())
 	}
+	clientPathResponse := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/migration/preview", `{"selectedSourceIds":["`+inventory.Sources[0].ID+`"],"path":"/tmp/client-controlled"}`)
+	if clientPathResponse.Code != http.StatusBadRequest {
+		t.Fatalf("migration preview accepted a client-supplied path: %d %s", clientPathResponse.Code, clientPathResponse.Body.String())
+	}
 	previewResponse := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/migration/preview", `{"selectedSourceIds":["`+inventory.Sources[0].ID+`"]}`)
 	if previewResponse.Code != http.StatusCreated {
 		t.Fatalf("migration preview = %d %s", previewResponse.Code, previewResponse.Body.String())
@@ -56,8 +60,8 @@ func TestSyncAPIMigrationPreviewApplyAndUndoUseServerOwnedEntries(t *testing.T) 
 	if err := json.Unmarshal(previewResponse.Body.Bytes(), &migrationPlan); err != nil || len(migrationPlan.Preview.Entries) != 1 || migrationPlan.Preview.Plan.Operation != skillsync.MigrationOperation {
 		t.Fatalf("decode migration preview = %#v, err %v", migrationPlan, err)
 	}
-	if strings.Contains(previewResponse.Body.String(), `"path":"/tmp/`) {
-		t.Fatalf("preview unexpectedly accepted a client path: %s", previewResponse.Body.String())
+	if got, want := migrationPlan.Preview.Entries[0].EntryPath, inventory.Sources[0].Path; got != want {
+		t.Fatalf("preview entry path = %q, want server-discovered path %q", got, want)
 	}
 	applyResponse := syncHTTPRequest(server, http.MethodPost, "/api/v1/sync/migration/apply", `{"planId":"`+migrationPlan.PlanID+`"}`)
 	if applyResponse.Code != http.StatusOK || !strings.Contains(applyResponse.Body.String(), `"batchId"`) {

@@ -186,8 +186,8 @@ export function App() {
   const availableSkillIDs = new Set(fullCatalog.data?.skills.map((skill) => skill.identifier))
   const unavailableSkillIDs = fullCatalog.data ? selectedSkillIDs.filter((id) => !availableSkillIDs.has(id)) : []
   const existingSkillIDs = useMemo(() => new Set([
-    ...(skillSourceInventory.data?.sources.map((source) => source.identifier) ?? []),
-    ...(workspace.data?.resources.map((resource) => resource.identifier) ?? []),
+    ...((skillSourceInventory.data?.sources ?? []).map((source) => source.identifier)),
+    ...((workspace.data?.resources ?? []).map((resource) => resource.identifier)),
   ]), [skillSourceInventory.data, workspace.data?.resources])
   const sourceInventoryDiagnostics = skillSourceInventory.data?.diagnostics ?? []
   const sourceInventoryBlocked = skillSourceInventory.loading || !!skillSourceInventory.error || !skillSourceInventory.data || sourceInventoryDiagnostics.length > 0
@@ -1256,8 +1256,10 @@ function Workspace({ page, skillSources, busy, onOpenSkill, onOpenRecommendation
   const visibleAgents = agents.filter((agent) => !hiddenAgentIDs.has(agent.id))
   const recommended = aggregateWorkspaceRecommendations(recommendations)
   const visibleRecommendations = recommended.slice(0, 5)
-  const globalSkills = groupWorkspaceSkillSources(skillSources.data?.sources ?? [], 'global')
-  const projectSkills = groupWorkspaceSkillSources(skillSources.data?.sources ?? [], 'project')
+  const inventorySources = skillSources.data?.sources ?? []
+  const inventoryDiagnostics = skillSources.data?.diagnostics ?? []
+  const globalSkills = groupWorkspaceSkillSources(inventorySources, 'global')
+  const projectSkills = groupWorkspaceSkillSources(inventorySources, 'project')
   const technologies = recommendations.scopes.flatMap((scope) => scope.technologies.map((technology) => ({
     ...technology,
     scope: scope.path,
@@ -1294,15 +1296,15 @@ function Workspace({ page, skillSources, busy, onOpenSkill, onOpenRecommendation
     </section>
 
     <section className={`${styles.panel} ${styles.scopeInventoryPanel}`}>
-      <div className={styles.panelTop}><span className={styles.kicker}>{t('SCOPED SKILL LOCATIONS')}</span><span className={styles.countMark}>{skillSources.data?.sources.length.toString().padStart(2, '0') ?? '—'}</span></div>
+      <div className={styles.panelTop}><span className={styles.kicker}>{t('SCOPED SKILL LOCATIONS')}</span><span className={styles.countMark}>{skillSources.data ? inventorySources.length.toString().padStart(2, '0') : '—'}</span></div>
       {skillSources.loading && !skillSources.data ? <LoadingState label={t('Reading Skill locations…')} /> : skillSources.error ? <div className={`${styles.stateBox} ${styles.errorState}`} role="alert"><strong>{t('Could not read current Skill locations.')}</strong><span>{formatError(skillSources.error)}</span><button type="button" className={styles.secondaryButton} disabled={skillSources.loading} onClick={onRetrySkillSources}>{t('Retry Skill location scan')}</button></div> : <div className={styles.scopeInventoryGrid}>
-        {skillSources.data?.diagnostics.length ? <div className={`${styles.sourceInventoryState} ${styles.sourceInventoryError}`} role="alert">
+        {inventoryDiagnostics.length ? <div className={`${styles.sourceInventoryState} ${styles.sourceInventoryError}`} role="alert">
           <strong>{t('Some Skill locations could not be read.')}</strong>
-          <div className={styles.sourceInventoryDiagnostics}>{skillSources.data.diagnostics.map((diagnostic) => <small key={JSON.stringify([diagnostic.scope, diagnostic.path, diagnostic.message])}>{t(diagnostic.scope === 'global' ? 'Global' : 'Project')} · <code>{diagnostic.path}</code> — {diagnostic.message}</small>)}</div>
+          <div className={styles.sourceInventoryDiagnostics}>{inventoryDiagnostics.map((diagnostic) => <small key={JSON.stringify([diagnostic.scope, diagnostic.path, diagnostic.message])}>{t(diagnostic.scope === 'global' ? 'Global' : 'Project')} · <code>{diagnostic.path}</code> — {diagnostic.message}</small>)}</div>
           <button type="button" className={styles.secondaryButton} disabled={skillSources.loading} onClick={onRetrySkillSources}>{t('Retry Skill location scan')}</button>
         </div> : null}
-        <SkillSourceScope scope="global" title={t('Global Skills')} groups={globalSkills} diagnostics={skillSources.data?.diagnostics ?? []} loading={skillSources.loading} />
-        <SkillSourceScope scope="project" title={t('Project Skills')} groups={projectSkills} diagnostics={skillSources.data?.diagnostics ?? []} loading={skillSources.loading} />
+        <SkillSourceScope scope="global" title={t('Global Skills')} groups={globalSkills} diagnostics={inventoryDiagnostics} loading={skillSources.loading} />
+        <SkillSourceScope scope="project" title={t('Project Skills')} groups={projectSkills} diagnostics={inventoryDiagnostics} loading={skillSources.loading} />
       </div>}
     </section>
 

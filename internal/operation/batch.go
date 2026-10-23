@@ -261,12 +261,21 @@ func (s *BatchStore) ensureRoot() error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("%w: batch store is not a real directory", ErrUnsafePath)
 	}
-	// Sync the chain on every entry. A prior attempt may have created the
-	// directory tree and then failed partway through syncing its ancestors.
-	if err := syncDirectoryChain(root); err != nil {
-		return fmt.Errorf("sync batch store directory chain: %w", err)
-	}
 	s.Root = root
+	return nil
+}
+
+// CheckWritable verifies that the batch store directory chain can be synced.
+// Call it before any operation that may mutate managed resources. Read-only
+// store operations deliberately avoid this platform-dependent durability
+// requirement.
+func (s *BatchStore) CheckWritable() error {
+	if err := s.ensureRoot(); err != nil {
+		return err
+	}
+	if err := syncDirectoryChain(s.Root); err != nil {
+		return fmt.Errorf("verify durable batch store: %w", err)
+	}
 	return nil
 }
 
@@ -329,6 +338,9 @@ func (s *BatchStore) listUnlocked() ([]Batch, error) {
 }
 
 func (s *BatchStore) write(batch Batch) error {
+	if err := s.CheckWritable(); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(batch, "", "  ")
 	if err != nil {
 		return err

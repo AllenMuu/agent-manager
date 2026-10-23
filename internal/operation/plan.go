@@ -5,9 +5,11 @@ import "strings"
 
 // Change is one filesystem change shown before an operation is confirmed.
 type Change struct {
-	Path   string `json:"path"`
-	Action string `json:"action"`
-	Detail string `json:"detail,omitempty"`
+	Path                string `json:"path"`
+	Action              string `json:"action"`
+	Detail              string `json:"detail,omitempty"`
+	SourcePath          string `json:"sourcePath,omitempty"`
+	MaterializationMode string `json:"materializationMode,omitempty"`
 }
 
 // Plan is a preview of a guarded operation.

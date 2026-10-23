@@ -39,6 +39,7 @@ func TestBatchStorePreparePersistsAndIsIdempotent(t *testing.T) {
 		ID: "batch-1", Kind: "reference-migration", Scope: "project",
 		Resources: []string{resource}, SourceRecordIDs: []string{"source-1"},
 		Steps: []BatchStep{{ID: "entry-1", Resource: resource, Action: "replace"}},
+		Plan:  Plan{Changes: []Change{{Path: resource, Action: "copy Skill tree", SourcePath: filepath.Dir(resource), MaterializationMode: "copy-only"}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,10 +55,14 @@ func TestBatchStorePreparePersistsAndIsIdempotent(t *testing.T) {
 	if reloaded.ID != prepared.ID || reloaded.Resources[0] != resource || reloaded.Steps[0].Action != "replace" {
 		t.Fatalf("reloaded batch lost prepared intent: %#v", reloaded)
 	}
+	if len(reloaded.Plan.Changes) != 1 || reloaded.Plan.Changes[0].SourcePath != filepath.Dir(resource) || reloaded.Plan.Changes[0].MaterializationMode != "copy-only" {
+		t.Fatalf("reloaded batch lost structured materialization intent: %#v", reloaded.Plan.Changes)
+	}
 	if _, err := store.Prepare(Batch{
 		ID: "batch-1", Kind: "reference-migration", Scope: "project",
 		Resources: []string{resource}, SourceRecordIDs: []string{"source-1"},
 		Steps: []BatchStep{{ID: "entry-1", Resource: resource, Action: "replace"}},
+		Plan:  Plan{Changes: []Change{{Path: resource, Action: "copy Skill tree", SourcePath: filepath.Dir(resource), MaterializationMode: "copy-only"}}},
 	}); err != nil {
 		t.Fatalf("same prepare should be idempotent: %v", err)
 	}

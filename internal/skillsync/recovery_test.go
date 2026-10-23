@@ -9,6 +9,38 @@ import (
 	"github.com/AllenMuu/skill-manager/internal/operation"
 )
 
+func TestImportVersionPathKeepsLegacyRecordsAtIdentityRoot(t *testing.T) {
+	identityPath := filepath.Join(t.TempDir(), "demo")
+	if got := importVersionPath(identityPath, "legacy"); got != identityPath {
+		t.Fatalf("legacy version path = %q, want identity root %q", got, identityPath)
+	}
+	if got, want := importVersionPath(identityPath, "v1"), filepath.Join(identityPath, "versions", "v1"); got != want {
+		t.Fatalf("versioned import path = %q, want %q", got, want)
+	}
+}
+
+func TestRecoveryMaterializationsPreservesParenthesesInLegacySourceDetail(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source (copy-only)")
+	destination := filepath.Join(t.TempDir(), "demo")
+	writeSkill(t, source, "parentheses in source path")
+	if err := os.Symlink(source, destination); err != nil {
+		t.Skipf("create source link: %v", err)
+	}
+	batch := operation.Batch{
+		Plan: operation.Plan{Changes: []operation.Change{{
+			Path: destination, Action: "create absolute link", Detail: source + " (symlink-only)",
+		}}},
+		Steps: []operation.BatchStep{{Resource: destination, ExpectedAfter: recoverySymlinkIntent(t, source)}},
+	}
+	materializations, err := recoveryMaterializations(batch)
+	if err != nil || len(materializations) != 1 {
+		t.Fatalf("recovery materializations = %#v, err %v", materializations, err)
+	}
+	if got, want := materializations[0].Source, source; got != want {
+		t.Fatalf("materialization source = %q, want %q", got, want)
+	}
+}
+
 func TestLifecycleRecoveryRollsBackOnlyVerifiedAfterState(t *testing.T) {
 	fixture := newSyncFixture(t)
 	service := fixture.service(t)
