@@ -35,4 +35,3 @@ cd ../agent-manager-issue-123
 ## 启动提示词
 
 > 请处理 Issue #123。先核对就绪状态、依赖和现有 PR，遵循 AGENTS.md 与 docs/issue-driven-development.md，在独立 worktree 完成该 Issue，执行适用验证并记录结果，提交 Draft PR 供我审查。遇到阻塞或需要扩大权限时停下说明。
-
