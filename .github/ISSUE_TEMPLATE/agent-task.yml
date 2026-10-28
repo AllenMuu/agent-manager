@@ -1,0 +1,47 @@
+name: Agent 开发任务
+description: 为单个 Agent 准备可独立交付的任务
+title: "[Task] "
+body:
+  - type: markdown
+    attributes:
+      value: 创建后先完善内容；维护者确认就绪后才添加 agent:ready。
+  - type: textarea
+    id: goal
+    attributes:
+      label: 背景与目标
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与非目标
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 可验证的验收标准
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依赖与参考
+      description: 列出前置 Issue、OpenSpec 和相关代码；没有依赖则写无。
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: 验证方式
+      description: 指定测试、人工验证和不可执行时的替代证据。
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: 风险及需要人工决策的问题
+      description: 标明权限、兼容性、数据或发布风险；没有则写无。
+    validations:
+      required: true
