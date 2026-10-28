@@ -18,4 +18,3 @@ create_if_missing agent:ready 0E8A16 'Ready for one agent after human triage'
 create_if_missing agent:in-progress FBCA04 'One agent is working on this issue'
 create_if_missing agent:blocked D93F0B 'Blocked pending a human decision or dependency'
 create_if_missing agent:review 1D76DB 'Draft PR awaiting human review'
-
