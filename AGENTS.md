@@ -39,3 +39,8 @@ The repository currently has one foundational commit, so no established commit c
 ## Design and Safety Requirements
 
 Preserve the separation between the Go domain core and delivery clients. Managed-skill operations must remain guarded, reversible, and explicit; they must not execute code contained in skills. Do not add network access or dependency installation to managed-skill workflows without updating the relevant specs and ADRs.
+
+## Issue-driven development
+
+For issue-driven work, follow [docs/issue-driven-development.md](docs/issue-driven-development.md). Use one issue per agent and an isolated worktree; follow existing OpenSpec requirements, report actual verification, and submit a Draft PR for human review.
+
