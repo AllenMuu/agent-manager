@@ -45,4 +45,3 @@ body:
       description: 标明权限、兼容性、数据或发布风险；没有则写无。
     validations:
       required: true
-
