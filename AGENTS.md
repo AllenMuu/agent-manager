@@ -43,4 +43,3 @@ Preserve the separation between the Go domain core and delivery clients. Managed
 ## Issue-driven development
 
 For issue-driven work, follow [docs/issue-driven-development.md](docs/issue-driven-development.md). Use one issue per agent and an isolated worktree; follow existing OpenSpec requirements, report actual verification, and submit a Draft PR for human review.
-
